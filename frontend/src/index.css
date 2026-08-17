@@ -1,0 +1,11 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #4f46e5;   /* indigo accent (buttons, active states) */
+  --color-ink:     #121c2a;   /* charcoal — main text */
+  --color-muted:   #464555;   /* muted text */
+  --color-surface: #f7f8fa;   /* light-gray surfaces */
+  --color-border:  #e5e7eb;   /* thin borders */
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+}

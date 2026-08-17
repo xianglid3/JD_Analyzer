@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Resume Editor</title>
+<!-- Material Symbols Outlined -->
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<style>
+        .material-symbols-outlined {
+            font-family: 'Material Symbols Outlined';
+            font-weight: normal;
+            font-style: normal;
+            font-size: 24px;
+            line-height: 1;
+            letter-spacing: normal;
+            text-transform: none;
+            display: inline-block;
+            white-space: nowrap;
+            word-wrap: normal;
+            direction: ltr;
+            -webkit-font-feature-settings: 'liga';
+            -webkit-font-smoothing: antialiased;
+        }
+    </style>
+<!-- Tailwind CSS with custom config -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "secondary-container": "#b6b4ff",
+                        "inverse-primary": "#c3c0ff",
+                        "secondary-fixed-dim": "#c3c0ff",
+                        "on-secondary-container": "#454386",
+                        "surface-bright": "#f8f9ff",
+                        "tertiary-fixed-dim": "#ffb695",
+                        "outline": "#777587",
+                        "secondary-fixed": "#e2dfff",
+                        "surface": "#f8f9ff",
+                        "on-error-container": "#93000a",
+                        "background": "#f8f9ff",
+                        "primary": "#3525cd",
+                        "on-surface-variant": "#464555",
+                        "inverse-surface": "#273140",
+                        "on-secondary": "#ffffff",
+                        "on-background": "#121c2a",
+                        "on-error": "#ffffff",
+                        "surface-dim": "#d0daee",
+                        "on-secondary-fixed": "#140f54",
+                        "surface-container-low": "#eff3ff",
+                        "error-container": "#ffdad6",
+                        "error": "#ba1a1a",
+                        "on-tertiary-fixed": "#351000",
+                        "primary-fixed-dim": "#c3c0ff",
+                        "primary-container": "#4f46e5",
+                        "tertiary": "#7e3000",
+                        "inverse-on-surface": "#ebf1ff",
+                        "secondary": "#58579b",
+                        "outline-variant": "#c7c4d8",
+                        "on-secondary-fixed-variant": "#413f82",
+                        "on-primary-container": "#dad7ff",
+                        "on-tertiary": "#ffffff",
+                        "on-primary-fixed-variant": "#3323cc",
+                        "surface-tint": "#4d44e3",
+                        "surface-container": "#e6eeff",
+                        "primary-fixed": "#e2dfff",
+                        "on-primary": "#ffffff",
+                        "surface-container-highest": "#d9e3f7",
+                        "surface-variant": "#d9e3f7",
+                        "on-surface": "#121c2a",
+                        "tertiary-fixed": "#ffdbcc",
+                        "on-tertiary-fixed-variant": "#7b2f00",
+                        "surface-container-lowest": "#ffffff",
+                        "on-primary-fixed": "#0f0069",
+                        "surface-container-high": "#dfe9fc",
+                        "on-tertiary-container": "#ffd2be",
+                        "tertiary-container": "#a44100"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    "spacing": {
+                        "lg": "24px",
+                        "base": "4px",
+                        "sm": "12px",
+                        "gutter": "24px",
+                        "xs": "8px",
+                        "xxl": "48px",
+                        "xl": "32px",
+                        "md": "16px",
+                        "margin": "32px"
+                    },
+                    "fontFamily": {
+                        "label-sm": ["Inter", "sans-serif"],
+                        "headline-md": ["Inter", "sans-serif"],
+                        "display": ["Inter", "sans-serif"],
+                        "body-md": ["Inter", "sans-serif"],
+                        "body-lg": ["Inter", "sans-serif"],
+                        "label-md": ["Inter", "sans-serif"],
+                        "headline-lg": ["Inter", "sans-serif"],
+                        "body-sm": ["Inter", "sans-serif"]
+                    },
+                    "fontSize": {
+                        "label-sm": ["12px", { "lineHeight": "16px", "letterSpacing": "0.05em", "fontWeight": "600" }],
+                        "headline-md": ["20px", { "lineHeight": "28px", "fontWeight": "600" }],
+                        "display": ["36px", { "lineHeight": "44px", "letterSpacing": "-0.02em", "fontWeight": "700" }],
+                        "body-md": ["14px", { "lineHeight": "20px", "fontWeight": "400" }],
+                        "body-lg": ["16px", { "lineHeight": "24px", "fontWeight": "400" }],
+                        "label-md": ["14px", { "lineHeight": "20px", "fontWeight": "500" }],
+                        "headline-lg": ["24px", { "lineHeight": "32px", "letterSpacing": "-0.01em", "fontWeight": "600" }],
+                        "body-sm": ["12px", { "lineHeight": "18px", "fontWeight": "400" }]
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-background text-on-background font-body-md text-body-md min-h-screen flex flex-col">
+<!-- TopNavBar Component -->
+<header class="bg-surface-container-lowest fixed top-0 w-full z-50 border-b border-outline-variant flex justify-between items-center px-margin py-md">
+<div class="flex items-center gap-xl">
+<span class="text-headline-md font-headline-md font-bold text-primary">JD Translator</span>
+<nav class="hidden md:flex items-center gap-lg">
+<a class="text-label-md font-label-md text-on-surface-variant hover:text-primary transition-colors py-1" href="#">Dashboard</a>
+<a class="text-label-md font-label-md text-on-surface-variant hover:text-primary transition-colors py-1" href="#">History</a>
+<a class="text-label-md font-label-md text-primary border-b-2 border-primary pb-1 font-bold hover:text-primary transition-colors opacity-80" href="#">Resume</a>
+</nav>
+</div>
+<div class="flex items-center">
+<button class="text-label-md font-label-md text-on-surface-variant hover:text-primary transition-colors">Log out</button>
+</div>
+</header>
+<!-- Main Content -->
+<main class="flex-grow max-w-[800px] w-full mx-auto px-margin pt-[120px] pb-[100px] flex flex-col gap-xl">
+<!-- Header Section -->
+<section class="flex flex-col gap-xs">
+<h1 class="text-display font-display text-on-background">Resume</h1>
+<p class="text-body-md font-body-md text-on-surface-variant">Saved and used to score how well each job matches your skills.</p>
+</section>
+<!-- Cards Column -->
+<section class="flex flex-col gap-lg">
+<!-- Skills Card -->
+<article class="bg-surface-container-lowest border border-outline-variant rounded-lg p-lg flex flex-col gap-md">
+<h2 class="text-headline-md font-headline-md text-on-background">Skills</h2>
+<div class="flex flex-col gap-sm">
+<div class="flex flex-wrap gap-sm items-center min-h-[44px] border border-outline-variant rounded-lg p-sm bg-surface-container-lowest focus-within:border-primary transition-colors">
+<!-- Pills -->
+<div class="bg-surface border border-outline-variant rounded-full px-sm py-base flex items-center gap-xs">
+<span class="text-body-sm font-body-sm text-on-background">JavaScript</span>
+<button aria-label="Remove skill" class="text-on-surface-variant hover:text-error transition-colors flex items-center">
+<span class="material-symbols-outlined text-[16px]" data-icon="close">close</span>
+</button>
+</div>
+<div class="bg-surface border border-outline-variant rounded-full px-sm py-base flex items-center gap-xs">
+<span class="text-body-sm font-body-sm text-on-background">React.js</span>
+<button aria-label="Remove skill" class="text-on-surface-variant hover:text-error transition-colors flex items-center">
+<span class="material-symbols-outlined text-[16px]" data-icon="close">close</span>
+</button>
+</div>
+<div class="bg-surface border border-outline-variant rounded-full px-sm py-base flex items-center gap-xs">
+<span class="text-body-sm font-body-sm text-on-background">UI/UX Design</span>
+<button aria-label="Remove skill" class="text-on-surface-variant hover:text-error transition-colors flex items-center">
+<span class="material-symbols-outlined text-[16px]" data-icon="close">close</span>
+</button>
+</div>
+<input class="flex-grow bg-transparent border-none outline-none text-body-md font-body-md p-0 min-w-[120px] text-on-background placeholder:text-outline" placeholder="Add a skill..." type="text"/>
+</div>
+</div>
+</article>
+<!-- Education Card -->
+<article class="bg-surface-container-lowest border border-outline-variant rounded-lg p-lg flex flex-col gap-md">
+<div class="flex justify-between items-center">
+<h2 class="text-headline-md font-headline-md text-on-background">Education</h2>
+<button class="text-label-md font-label-md text-primary flex items-center gap-xs hover:opacity-80 transition-opacity">
+<span class="material-symbols-outlined text-[18px]" data-icon="add">add</span> Add
+                    </button>
+</div>
+<ul class="flex flex-col">
+<li class="py-md border-b border-outline-variant last:border-b-0 flex flex-col gap-base">
+<h3 class="text-label-md font-label-md text-on-background">University of Technology</h3>
+<p class="text-body-sm font-body-sm text-on-surface-variant">Bachelor of Science in Computer Science • 2016 - 2020</p>
+</li>
+</ul>
+</article>
+<!-- Work Experience Card -->
+<article class="bg-surface-container-lowest border border-outline-variant rounded-lg p-lg flex flex-col gap-md">
+<div class="flex justify-between items-center">
+<h2 class="text-headline-md font-headline-md text-on-background">Work Experience</h2>
+<button class="text-label-md font-label-md text-primary flex items-center gap-xs hover:opacity-80 transition-opacity">
+<span class="material-symbols-outlined text-[18px]" data-icon="add">add</span> Add
+                    </button>
+</div>
+<ul class="flex flex-col">
+<li class="py-md border-b border-outline-variant last:border-b-0 flex flex-col gap-sm">
+<div class="flex flex-col gap-base">
+<h3 class="text-label-md font-label-md text-on-background">Senior Frontend Developer</h3>
+<p class="text-body-sm font-body-sm text-on-surface-variant">Acme Corp • Jan 2021 - Present</p>
+</div>
+<ul class="list-disc pl-lg text-body-md font-body-md text-on-surface-variant flex flex-col gap-base">
+<li>Led the migration of legacy monolith to React micro-frontends, reducing load times by 40%.</li>
+<li>Mentored 3 junior developers and established internal coding standards.</li>
+<li>Collaborated with design team to implement comprehensive design system.</li>
+</ul>
+</li>
+<li class="py-md border-b border-outline-variant last:border-b-0 flex flex-col gap-sm">
+<div class="flex flex-col gap-base">
+<h3 class="text-label-md font-label-md text-on-background">Web Developer</h3>
+<p class="text-body-sm font-body-sm text-on-surface-variant">Tech Solutions Inc. • Jun 2020 - Dec 2020</p>
+</div>
+<ul class="list-disc pl-lg text-body-md font-body-md text-on-surface-variant flex flex-col gap-base">
+<li>Developed responsive landing pages using HTML, CSS, and vanilla JavaScript.</li>
+<li>Integrated RESTful APIs for dynamic content rendering.</li>
+</ul>
+</li>
+</ul>
+</article>
+<!-- Projects Card -->
+<article class="bg-surface-container-lowest border border-outline-variant rounded-lg p-lg flex flex-col gap-md">
+<div class="flex justify-between items-center">
+<h2 class="text-headline-md font-headline-md text-on-background">Projects</h2>
+<button class="text-label-md font-label-md text-primary flex items-center gap-xs hover:opacity-80 transition-opacity">
+<span class="material-symbols-outlined text-[18px]" data-icon="add">add</span> Add
+                    </button>
+</div>
+<ul class="flex flex-col">
+<li class="py-md border-b border-outline-variant last:border-b-0 flex flex-col gap-sm">
+<div class="flex flex-col gap-base">
+<h3 class="text-label-md font-label-md text-on-background">E-commerce Dashboard UI</h3>
+<p class="text-body-sm font-body-sm text-on-surface-variant">github.com/user/dashboard • 2023</p>
+</div>
+<p class="text-body-md font-body-md text-on-surface-variant">A fully functional admin dashboard built with React, Tailwind CSS, and Recharts for data visualization. Features include dark mode, internationalization, and robust state management.</p>
+</li>
+</ul>
+</article>
+<!-- Certificates Card -->
+<article class="bg-surface-container-lowest border border-outline-variant rounded-lg p-lg flex flex-col gap-md">
+<div class="flex justify-between items-center">
+<h2 class="text-headline-md font-headline-md text-on-background">Certificates</h2>
+<button class="text-label-md font-label-md text-primary flex items-center gap-xs hover:opacity-80 transition-opacity">
+<span class="material-symbols-outlined text-[18px]" data-icon="add">add</span> Add
+                    </button>
+</div>
+<ul class="flex flex-col">
+<li class="py-md border-b border-outline-variant last:border-b-0 flex flex-col gap-base">
+<h3 class="text-label-md font-label-md text-on-background">AWS Certified Developer - Associate</h3>
+<p class="text-body-sm font-body-sm text-on-surface-variant">Amazon Web Services (AWS) • Issued Mar 2022</p>
+</li>
+</ul>
+</article>
+</section>
+</main>
+<!-- Sticky Footer -->
+<footer class="fixed bottom-0 w-full bg-surface-container-lowest border-t border-outline-variant py-md px-margin flex justify-end gap-md z-40">
+<button class="px-lg py-sm rounded-lg bg-surface-container-lowest border border-outline-variant text-label-md font-label-md text-on-background hover:bg-surface-container-low transition-colors">
+            Cancel
+        </button>
+<button class="px-lg py-sm rounded-lg bg-primary-container text-label-md font-label-md text-on-primary hover:opacity-90 transition-opacity">
+            Save resume
+        </button>
+</footer>
+</body></html>

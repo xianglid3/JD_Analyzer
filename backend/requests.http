@@ -1,0 +1,33 @@
+@base = http://localhost:5001
+
+# Match-score test flow — run top to bottom (click "Send Request" above each).
+
+### 1. Login (run first — cookie is saved automatically)
+POST {{base}}/api/auth/login
+Content-Type: application/json
+
+{"username": "alice", "password": "secret123"}
+
+### 2. Save resume — partial overlap with the jobs
+PUT {{base}}/api/resume
+Content-Type: application/json
+
+{"skills": ["Python", "Flask", "AWS"]}
+
+### 3. List jobs — match_score should be filled now (Python+Flask of 5 → 40.0)
+GET {{base}}/api/jobs
+
+### 4. Create a new job — should get a match_score immediately (resume exists)
+POST {{base}}/api/jobs
+Content-Type: application/json
+
+{"description": "We are hiring a Senior Backend Engineer at Acme Corp in Austin, TX. Hybrid role. Build Python APIs with PostgreSQL, mentor juniors. 5+ years Django or Flask."}
+
+### 5. Save resume with MORE overlap → scores should rise
+PUT {{base}}/api/resume
+Content-Type: application/json
+
+{"skills": ["Python", "Flask", "PostgreSQL", "Django", "AWS"]}
+
+### 6. List jobs again — scores should be higher now
+GET {{base}}/api/jobs

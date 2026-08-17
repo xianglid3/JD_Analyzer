@@ -1,0 +1,11 @@
+flask
+flask-limiter
+supabase
+python-dotenv
+psycopg2-binary
+bcrypt
+PyJWT
+openai
+pydantic
+
+

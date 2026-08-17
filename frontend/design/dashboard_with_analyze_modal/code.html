@@ -1,0 +1,242 @@
+<!DOCTYPE html><html class="h-full" lang="en"><head>
+<meta charset="utf-8">
+<meta content="width=device-width, initial-scale=1.0" name="viewport">
+<title>JD Translator - Job Tracking Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                            "on-background": "#121c2a",
+                            "inverse-primary": "#c3c0ff",
+                            "secondary-fixed": "#e2dfff",
+                            "primary": "#3525cd",
+                            "inverse-surface": "#273140",
+                            "on-primary-container": "#dad7ff",
+                            "surface-dim": "#d0daee",
+                            "surface-container-high": "#dfe9fc",
+                            "inverse-on-surface": "#ebf1ff",
+                            "tertiary": "#7e3000",
+                            "tertiary-fixed": "#ffdbcc",
+                            "on-tertiary-fixed-variant": "#7b2f00",
+                            "tertiary-container": "#a44100",
+                            "on-secondary-fixed-variant": "#413f82",
+                            "surface-container": "#e6eeff",
+                            "on-tertiary-container": "#ffd2be",
+                            "surface-container-highest": "#d9e3f7",
+                            "primary-fixed-dim": "#c3c0ff",
+                            "on-tertiary-fixed": "#351000",
+                            "on-error": "#ffffff",
+                            "secondary": "#58579b",
+                            "error": "#ba1a1a",
+                            "secondary-fixed-dim": "#c3c0ff",
+                            "tertiary-fixed-dim": "#ffb695",
+                            "surface-container-lowest": "#ffffff",
+                            "primary-fixed": "#e2dfff",
+                            "on-secondary-container": "#454386",
+                            "secondary-container": "#b6b4ff",
+                            "on-error-container": "#93000a",
+                            "on-tertiary": "#ffffff",
+                            "background": "#f8f9ff",
+                            "error-container": "#ffdad6",
+                            "surface-variant": "#d9e3f7",
+                            "surface-container-low": "#eff3ff",
+                            "outline": "#777587",
+                            "on-secondary-fixed": "#140f54",
+                            "on-primary": "#ffffff",
+                            "on-secondary": "#ffffff",
+                            "primary-container": "#4f46e5",
+                            "on-surface": "#121c2a",
+                            "surface-bright": "#f8f9ff",
+                            "surface": "#f8f9ff",
+                            "surface-tint": "#4d44e3",
+                            "on-primary-fixed": "#0f0069",
+                            "on-surface-variant": "#464555",
+                            "outline-variant": "#c7c4d8",
+                            "on-primary-fixed-variant": "#3323cc"
+                    },
+                    "borderRadius": {
+                            "DEFAULT": "0.25rem",
+                            "lg": "0.5rem",
+                            "xl": "0.75rem",
+                            "full": "9999px"
+                    },
+                    "spacing": {
+                            "xxl": "48px",
+                            "xl": "32px",
+                            "md": "16px",
+                            "margin": "32px",
+                            "sm": "12px",
+                            "xs": "8px",
+                            "lg": "24px",
+                            "base": "4px",
+                            "gutter": "24px"
+                    },
+                    "fontFamily": {
+                            "label-md": ["Inter"],
+                            "label-sm": ["Inter"],
+                            "headline-lg": ["Inter"],
+                            "display": ["Inter"],
+                            "body-sm": ["Inter"],
+                            "headline-md": ["Inter"],
+                            "body-md": ["Inter"],
+                            "body-lg": ["Inter"]
+                    },
+                    "fontSize": {
+                            "label-md": ["14px", {"lineHeight": "20px", "fontWeight": "500"}],
+                            "label-sm": ["12px", {"lineHeight": "16px", "letterSpacing": "0.05em", "fontWeight": "600"}],
+                            "headline-lg": ["24px", {"lineHeight": "32px", "letterSpacing": "-0.01em", "fontWeight": "600"}],
+                            "display": ["36px", {"lineHeight": "44px", "letterSpacing": "-0.02em", "fontWeight": "700"}],
+                            "body-sm": ["12px", {"lineHeight": "18px", "fontWeight": "400"}],
+                            "headline-md": ["20px", {"lineHeight": "28px", "fontWeight": "600"}],
+                            "body-md": ["14px", {"lineHeight": "20px", "fontWeight": "400"}],
+                            "body-lg": ["16px", {"lineHeight": "24px", "fontWeight": "400"}]
+                    }
+                },
+            },
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+    </style>
+</head>
+<body class="bg-background text-on-surface h-full flex flex-col font-body-md overflow-hidden">
+<!-- TopNavBar -->
+<nav class="bg-surface-container-lowest dark:bg-inverse-surface border-b border-outline-variant dark:border-outline flex justify-between items-center w-full px-margin py-md shrink-0">
+<div class="flex items-center gap-xl">
+<div class="text-headline-md font-headline-md font-bold text-primary dark:text-inverse-primary">JD Translator</div>
+<div class="hidden md:flex gap-lg">
+<a class="text-primary dark:text-inverse-primary border-b-2 border-primary dark:border-inverse-primary pb-1 font-bold text-label-md font-label-md" href="#">Dashboard</a>
+<a class="text-on-surface-variant dark:text-surface-variant hover:text-primary dark:hover:text-inverse-primary transition-colors text-label-md font-label-md" href="#">History</a>
+<a class="text-on-surface-variant dark:text-surface-variant hover:text-primary dark:hover:text-inverse-primary transition-colors text-label-md font-label-md" href="#">Resume</a>
+</div>
+</div>
+<div class="flex items-center">
+<button class="text-on-surface-variant dark:text-surface-variant hover:text-primary dark:hover:text-inverse-primary transition-colors text-label-md font-label-md">Log out</button>
+</div>
+</nav>
+<!-- Main Content Area -->
+<main class="flex-1 overflow-auto p-margin max-w-7xl mx-auto w-full flex flex-col gap-xl filter blur-[2px]">
+<!-- Header Section -->
+<header class="flex justify-between items-end">
+<div>
+<h1 class="text-headline-lg font-headline-lg text-on-surface mb-xs">Job Tracking Dashboard</h1>
+<p class="text-body-md font-body-md text-on-surface-variant">Manage and analyze your prospective opportunities.</p>
+</div>
+<button class="bg-primary-container text-on-primary font-label-md text-label-md px-md py-sm rounded flex items-center gap-xs">
+<span class="material-symbols-outlined" style="font-size: 16px;">add</span>
+                Analyze new JD
+            </button>
+</header>
+<!-- Stats Bento Grid -->
+<div class="grid grid-cols-1 md:grid-cols-4 gap-md">
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl p-md flex flex-col justify-between">
+<span class="text-label-sm font-label-sm text-on-surface-variant uppercase">Total Analyzed</span>
+<span class="text-display font-display text-on-surface mt-sm">24</span>
+</div>
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl p-md flex flex-col justify-between">
+<span class="text-label-sm font-label-sm text-on-surface-variant uppercase">High Match</span>
+<span class="text-display font-display text-primary mt-sm">8</span>
+</div>
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl p-md flex flex-col justify-between md:col-span-2">
+<span class="text-label-sm font-label-sm text-on-surface-variant uppercase">Recent Activity</span>
+<div class="flex items-center gap-md mt-sm">
+<div class="h-8 w-8 rounded-full bg-surface-container-highest flex items-center justify-center">
+<span class="material-symbols-outlined text-primary" style="font-size: 16px;">work</span>
+</div>
+<div class="flex-1">
+<p class="text-body-sm font-body-sm text-on-surface font-medium">Acme Corp - Senior Designer</p>
+<p class="text-body-sm font-body-sm text-on-surface-variant">Analyzed 2 hours ago</p>
+</div>
+</div>
+</div>
+</div>
+<!-- Data Table Card -->
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl overflow-hidden flex-1 flex flex-col">
+<div class="px-md py-sm border-b border-outline-variant bg-surface-bright flex justify-between items-center">
+<h2 class="text-headline-md font-headline-md text-on-surface">Recent Descriptions</h2>
+<div class="relative">
+<span class="material-symbols-outlined absolute left-sm top-1/2 -translate-y-1/2 text-on-surface-variant" style="font-size: 16px;">search</span>
+<input class="pl-xl pr-sm py-xs border border-outline-variant rounded bg-surface-container-lowest text-body-sm font-body-sm focus:border-primary-container focus:ring-0 outline-none w-64 text-on-surface" placeholder="Search roles..." type="text">
+</div>
+</div>
+<div class="overflow-x-auto">
+<table class="w-full text-left border-collapse">
+<thead>
+<tr class="border-b border-outline-variant bg-surface-container-lowest">
+<th class="px-md py-sm text-label-sm font-label-sm text-on-surface-variant uppercase font-semibold">Company &amp; Role</th>
+<th class="px-md py-sm text-label-sm font-label-sm text-on-surface-variant uppercase font-semibold">Match Score</th>
+<th class="px-md py-sm text-label-sm font-label-sm text-on-surface-variant uppercase font-semibold">Date Analyzed</th>
+<th class="px-md py-sm text-label-sm font-label-sm text-on-surface-variant uppercase font-semibold">Status</th>
+<th class="px-md py-sm text-label-sm font-label-sm text-on-surface-variant uppercase font-semibold text-right">Actions</th>
+</tr>
+</thead>
+<tbody>
+<tr class="border-b border-outline-variant hover:bg-surface-bright transition-colors group">
+<td class="px-md py-md">
+<p class="text-body-md font-body-md font-medium text-on-surface">Acme Corp</p>
+<p class="text-body-sm font-body-sm text-on-surface-variant">Senior Product Designer</p>
+</td>
+<td class="px-md py-md">
+<div class="flex items-center gap-sm">
+<div class="w-16 h-2 bg-surface-container-highest rounded-full overflow-hidden">
+<div class="h-full bg-primary-container w-[92%]"></div>
+</div>
+<span class="text-body-sm font-body-sm text-on-surface">92%</span>
+</div>
+</td>
+<td class="px-md py-md text-body-md font-body-md text-on-surface-variant">Today</td>
+<td class="px-md py-md">
+<span class="inline-flex items-center px-2 py-1 rounded-full text-[10px] font-semibold bg-surface-container text-on-background uppercase tracking-wider">Reviewing</span>
+</td>
+<td class="px-md py-md text-right">
+<button class="text-on-surface-variant hover:text-primary transition-colors opacity-0 group-hover:opacity-100">
+<span class="material-symbols-outlined">more_vert</span>
+</button>
+</td>
+</tr>
+<!-- More rows would go here, kept to one for brevity as focus is modal -->
+</tbody>
+</table>
+</div>
+</div>
+</main>
+<!-- Modal Overlay -->
+<div class="fixed inset-0 z-50 flex items-center justify-center p-4">
+<!-- Backdrop -->
+<div class="absolute inset-0 bg-on-background/20 backdrop-blur-sm transition-opacity"></div>
+<!-- Modal Content -->
+<div class="relative bg-surface-container-lowest rounded-xl border border-outline-variant shadow-[0px_4px_12px_rgba(18,28,42,0.05)] w-full max-w-2xl flex flex-col overflow-hidden">
+<!-- Header -->
+<div class="px-lg py-md border-b border-outline-variant flex justify-between items-center bg-surface-bright">
+<h2 class="text-headline-md font-headline-md text-on-surface">Analyze a job description</h2>
+<button class="text-on-surface-variant hover:text-on-surface transition-colors flex items-center justify-center rounded-full p-1 hover:bg-surface-container-highest">
+<span class="material-symbols-outlined" style="font-size: 20px;">close</span>
+</button>
+</div>
+<!-- Body -->
+<div class="p-lg flex-1">
+<p class="text-body-md font-body-md text-on-surface-variant mb-md">Paste the full text of the job description below to extract key requirements and calculate a match score against your profile.</p>
+<textarea class="w-full h-64 border border-outline-variant rounded-lg p-md text-body-md font-body-md text-on-surface bg-surface-container-lowest focus:border-primary-container focus:ring-0 outline-none resize-none placeholder:text-outline-variant" placeholder="Paste a job description here..."></textarea><p class="text-body-sm font-body-sm text-on-surface-variant mt-sm">50–6000 characters</p>
+</div>
+<!-- Footer -->
+<div class="px-lg py-md border-t border-outline-variant bg-surface-bright flex justify-end gap-md items-center">
+<button class="px-md py-sm rounded border border-outline-variant text-on-surface font-label-md text-label-md hover:bg-surface-container-lowest transition-colors bg-surface-container-lowest">
+                    Cancel
+                </button>
+<button class="bg-primary-container text-on-primary font-label-md text-label-md px-lg py-sm rounded hover:bg-surface-tint transition-colors">
+                    Analyze
+                </button>
+</div>
+</div>
+</div>
+
+
+</body></html>
