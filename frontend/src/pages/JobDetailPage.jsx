@@ -1,15 +1,36 @@
-import { useParams } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useParams, useNavigate } from 'react-router-dom'
+import { useState, useEffect } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
 import NavBar from '../components/NavBar'
 
 export default function JobDetailPage() {
     const { id } = useParams()
+    const [notes, setNotes] = useState('')
     
+    const navigate = useNavigate()
+    const queryClient = useQueryClient()
+    
+    const saveNotes = useMutation({
+        mutationFn: () => apiFetch(`/jobs/${id}`, { method: 'PATCH', body: JSON.stringify({ notes }) }),
+        onSuccess: () => queryClient.invalidateQueries({ queryKey: ['job', id] }),
+    })
+
+    const deleteJob = useMutation({
+        mutationFn: () => apiFetch(`/jobs/${id}`, {method: 'DELETE'}),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['jobs'] })
+            navigate('/dashboard')
+        }
+    })
+
     const { data: job, isLoading, isError } = useQuery({
         queryKey: ['job', id],
         queryFn: () => apiFetch(`/jobs/${id}`),
     })
+
+    useEffect(() => { if (job?.notes) setNotes(job.notes) }, [job])
+
 
     if (isLoading) return <p className="p-8">Loading…</p>
     if (isError) return <p className="p-8">Job not found.</p>
@@ -33,6 +54,14 @@ export default function JobDetailPage() {
                 <span key={s} className="inline-block bg-surface rounded-full px-3 py-1 mr-2">{s}</span>
                 ))}
             </div>
-        </div>
+
+            <h2 className="mt-4 font-semibold">Notes</h2>
+            <textarea value={notes} onChange={(e) => setNotes(e.target.value)}
+                className="w-full border border-border rounded-md p-2" />
+            <button onClick={() => saveNotes.mutate()} className="bg-primary text-white rounded-md px-4 py-2 mt-2">
+                {saveNotes.isPending ? 'Saving…' : 'Save notes'}
+            </button>
+            <button onClick={() => deleteJob.mutate()} className="text-red-600 ml-4">Delete job</button>
+            </div>
     )
 }

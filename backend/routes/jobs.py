@@ -212,3 +212,27 @@ def delete_job(job_id):
         return jsonify({"error": "job not found"}), 404
 
     return jsonify({"deleted": str(row[0])}), 200
+
+
+@jobs_bp.route("/stats", methods = ["GET"])
+@require_auth
+def job_stats():
+    connection = get_connection()
+    cur = connection.cursor()
+
+    cur.execute(
+        "SELECT status, COUNT(*) FROM jobs WHERE user_id = %s GROUP BY status",
+        (g.user_id,),
+    )
+
+    rows = cur.fetchall()
+    cur.close()
+    connection.close()  
+
+    counts = {"saved": 0, "applied": 0, "interview": 0, "offer": 0, "rejected": 0}
+    total = 0
+    for status, count in rows:
+        counts[status] = count
+        total += count
+
+    return jsonify({"total": total, "by_status": counts}), 200
