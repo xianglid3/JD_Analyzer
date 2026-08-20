@@ -171,13 +171,16 @@ export default function DashboardPage() {
         >
           <div className="bg-white rounded-xl p-6 w-full max-w-lg shadow-lg" onClick={(e) => e.stopPropagation()}>
             <h2 className="text-lg font-semibold text-ink mb-1">Analyze a job description</h2>
-            <p className="text-sm text-muted mb-3">Paste the full text below (50–6000 characters).</p>
+            <p className="text-sm text-muted mb-3">Paste the full text below (50–10000 characters).</p>
             <textarea
               value={text}
               onChange={(e) => setText(e.target.value)}
               placeholder="Paste a job description…"
               className="w-full h-48 border border-border rounded-md p-3 text-sm"
             />
+            <p className={`text-xs mt-1 text-right ${text.length > 10000 || (text.length > 0 && text.length < 50) ? 'text-red-600' : 'text-muted'}`}>
+              {text.length} / 10000
+            </p>
             {createJob.error && (
               <p className="text-red-600 text-sm mt-2">{createJob.error.message}</p>
             )}
@@ -190,7 +193,7 @@ export default function DashboardPage() {
               </button>
               <button
                 onClick={() => createJob.mutate(text)}
-                disabled={createJob.isPending}
+                disabled={createJob.isPending || text.length < 50 || text.length > 10000}
                 className="bg-primary text-white rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50"
               >
                 {createJob.isPending ? 'Analyzing…' : 'Analyze'}

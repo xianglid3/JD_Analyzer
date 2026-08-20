@@ -1,18 +1,22 @@
 import { useNavigate, Link } from 'react-router-dom'
 import { useState } from 'react'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
 
 export default function LoginPage() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
 
+  const queryClient = useQueryClient()
   const navigate = useNavigate()
 
   const loginMutation = useMutation({
     mutationFn: (credentials) =>
       apiFetch('/auth/login', { method: 'POST', body: JSON.stringify(credentials) }),
-    onSuccess: () => navigate('/dashboard'),
+    onSuccess: () => {
+      queryClient.clear(),
+      navigate('/dashboard')}
+
   })
 
   function handleSubmit(e) {

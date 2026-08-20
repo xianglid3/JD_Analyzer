@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify, g
 import json
-from db import get_connection
+from db import get_cursor
 from middleware import require_auth
 from extensions import limiter
 from services.jd_preprocess import preprocess_text
@@ -9,6 +9,8 @@ from services.match import compute_match_score
 
 
 jobs_bp = Blueprint("jobs", __name__, url_prefix = "/api/jobs")
+#accetpable status
+VALID_STATUSES = {"saved", "applied", "interview", "offer", "rejected"}
 
 
 @jobs_bp.route("", methods = ["POST"])
@@ -21,42 +23,37 @@ def create_job():
     #validation length
     if len(raw_description) < 50:
         return jsonify({"error": "Description too short"}), 400
-    if len(raw_description) > 6000:
+    if len(raw_description) > 10000:
         return jsonify({"error": "Description too long"}), 400
 
     cleaned_description = preprocess_text(raw_description)
+
+    # AI call stays OUTSIDE the db connection — don't hold a connection open for 3-8s
     try:
         job = analyze_job_description(cleaned_description)
-
     except Exception:
         return jsonify({"error": "analysis failed, please try again"}), 503
-    
-    connection = get_connection()
-    cur = connection.cursor()
-    
-    cur.execute("SELECT skills FROM resumes WHERE user_id = %s", (g.user_id,))
-    resume_row = cur.fetchone()
-    resume_skills = resume_row[0] if resume_row else []
-    match_score = compute_match_score(job.skills, resume_skills)
-    
-    cur.execute( 
-        # triple quote to span across lines
-        """ 
-        INSERT INTO jobs (user_id, raw_description, title, summary, no_bs_translation,
-                          skills, company_name, location, work_type, match_score)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        RETURNING id, created_at
-        """,
-        (
-            g.user_id, raw_description, job.title, job.summary, job.no_bs_translation,
-            json.dumps(job.skills), job.company_name, job.location, job.work_type, match_score
-        ),
-    )
 
-    new_id, created_at = cur.fetchone()
-    connection.commit()
-    cur.close()
-    connection.close()
+    with get_cursor(commit=True) as cur:
+        cur.execute("SELECT skills FROM resumes WHERE user_id = %s", (g.user_id,))
+        resume_row = cur.fetchone()
+        resume_skills = resume_row[0] if resume_row else []
+        match_score = compute_match_score(job.skills, resume_skills)
+
+        cur.execute(
+            # triple quote to span across lines
+            """
+            INSERT INTO jobs (user_id, raw_description, title, summary, no_bs_translation,
+                              skills, company_name, location, work_type, match_score)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id, created_at
+            """,
+            (
+                g.user_id, raw_description, job.title, job.summary, job.no_bs_translation,
+                json.dumps(job.skills), job.company_name, job.location, job.work_type, match_score
+            ),
+        )
+        new_id, created_at = cur.fetchone()
 
     return jsonify({
         "id": str(new_id),
@@ -81,23 +78,18 @@ def list_jobs():
     per_page = 20
     offset = (page - 1) * per_page
 
-    connection = get_connection()
-    cur = connection.cursor()
-
-    cur.execute(
-        """
-        SELECT id, title, company_name, location, work_type, match_score, status, created_at
-        FROM jobs
-        WHERE user_id = %s
-        ORDER BY created_at DESC
-        LIMIT %s OFFSET %s
-        """,
-        (g.user_id, per_page, offset),
-    )
-    
-    rows = cur.fetchall()
-    cur.close()
-    connection.close()
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, title, company_name, location, work_type, match_score, status, created_at
+            FROM jobs
+            WHERE user_id = %s
+            ORDER BY created_at DESC
+            LIMIT %s OFFSET %s
+            """,
+            (g.user_id, per_page, offset),
+        )
+        rows = cur.fetchall()
 
     jobs = []
     for row in rows:
@@ -112,7 +104,7 @@ def list_jobs():
             "status": status,
             "created_at": created_at.isoformat(),
         })
-    
+
     return jsonify({"jobs": jobs, "page": page}), 200
 
 
@@ -121,20 +113,17 @@ def list_jobs():
 @require_auth
 def get_job(job_id):
 
-    connection = get_connection()
-    cur = connection.cursor()
-    cur.execute(
-        """
-        SELECT id, raw_description, title, summary, no_bs_translation, skills,
-               company_name, location, work_type, match_score, status, notes, deadline, created_at
-        FROM jobs
-        WHERE id = %s AND user_id = %s
-        """,
-        (job_id, g.user_id),
-    )
-    row = cur.fetchone()
-    cur.close()
-    connection.close()
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, raw_description, title, summary, no_bs_translation, skills,
+                   company_name, location, work_type, match_score, status, notes, deadline, created_at
+            FROM jobs
+            WHERE id = %s AND user_id = %s
+            """,
+            (job_id, g.user_id),
+        )
+        row = cur.fetchone()
 
     if row is None:
         return jsonify({"error": "job not found"}), 404
@@ -165,27 +154,26 @@ def get_job(job_id):
 @require_auth
 def update_job(job_id):
     data = request.get_json() or {}
-    
+
     # whitelist 'allowed' a user is permitted to change
-    allowed = ["status", "notes", "deadline"] 
+    allowed = ["status", "notes", "deadline"]
     updates = {field: data[field] for field in allowed if field in data}
 
     if not updates:
         return jsonify({"error": "no valid fields to update"}), 400
 
+    if "status" in updates and updates["status"] not in VALID_STATUSES:
+        return jsonify({"error": "invalid status"}), 400
+
     set_clause = ", ".join(f"{field} = %s" for field in updates)
     values = list(updates.values())
 
-    connection = get_connection()
-    cur = connection.cursor()
-    cur.execute(
-        f"UPDATE jobs SET {set_clause}, updated_at = now() WHERE id = %s AND user_id = %s RETURNING id",
-        values + [job_id, g.user_id],
-    )
-    row = cur.fetchone()
-    connection.commit()
-    cur.close()
-    connection.close()
+    with get_cursor(commit=True) as cur:
+        cur.execute(
+            f"UPDATE jobs SET {set_clause}, updated_at = now() WHERE id = %s AND user_id = %s RETURNING id",
+            values + [job_id, g.user_id],
+        )
+        row = cur.fetchone()
 
     if row is None:
         return jsonify({"error": "job not found"}), 404
@@ -196,17 +184,12 @@ def update_job(job_id):
 @jobs_bp.route("/<job_id>", methods=["DELETE"])
 @require_auth
 def delete_job(job_id):
-    connection = get_connection()
-    cur = connection.cursor()
-    cur.execute(
-        "DELETE FROM jobs WHERE id = %s AND user_id = %s RETURNING id", 
-        (job_id, g.user_id),
-    )
-
-    row = cur.fetchone()
-    connection.commit()
-    cur.close()
-    connection.close()
+    with get_cursor(commit=True) as cur:
+        cur.execute(
+            "DELETE FROM jobs WHERE id = %s AND user_id = %s RETURNING id",
+            (job_id, g.user_id),
+        )
+        row = cur.fetchone()
 
     if row is None:
         return jsonify({"error": "job not found"}), 404
@@ -217,22 +200,18 @@ def delete_job(job_id):
 @jobs_bp.route("/stats", methods = ["GET"])
 @require_auth
 def job_stats():
-    connection = get_connection()
-    cur = connection.cursor()
-
-    cur.execute(
-        "SELECT status, COUNT(*) FROM jobs WHERE user_id = %s GROUP BY status",
-        (g.user_id,),
-    )
-
-    rows = cur.fetchall()
-    cur.close()
-    connection.close()  
+    with get_cursor() as cur:
+        cur.execute(
+            "SELECT status, COUNT(*) FROM jobs WHERE user_id = %s GROUP BY status",
+            (g.user_id,),
+        )
+        rows = cur.fetchall()
 
     counts = {"saved": 0, "applied": 0, "interview": 0, "offer": 0, "rejected": 0}
     total = 0
     for status, count in rows:
-        counts[status] = count
+        if status in counts:      # ignore unknown status
+            counts[status] = count
         total += count
 
     return jsonify({"total": total, "by_status": counts}), 200

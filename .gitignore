@@ -42,5 +42,9 @@ dist/
 .DS_Store
 node_modules
 
+#documents
 PLAN.md
 TUTORIAL.md
+BUGS.md
+ASSESSMENT.md
+LEARNING_NOTES.md
