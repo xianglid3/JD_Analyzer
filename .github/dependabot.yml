@@ -5,15 +5,24 @@ updates:
     directory: "/backend"
     schedule:
       interval: "weekly"
+    groups:
+      backend-deps:
+        update-types: ["minor", "patch"]
 
   # React frontend dependencies
   - package-ecosystem: "npm"
     directory: "/frontend"
     schedule:
       interval: "weekly"
+    groups:
+      frontend-deps:
+        update-types: ["minor", "patch"]
 
   # The GitHub Actions used in our workflows
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      actions:
+        update-types: ["minor", "patch"]
