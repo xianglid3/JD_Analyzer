@@ -33,6 +33,7 @@ Rules: max 15 skills, hard skills + explicitly required soft skills only. Use nu
 
 """
 
+
 def analyze_job_description(text):
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -48,6 +49,33 @@ def analyze_job_description(text):
     data = json.loads(content)
 
     job = JobExtraction(**data)
+    job.skills = list(dict.fromkeys(job.skills))
+    return job
+
+
+class ResumeExtraction(BaseModel):
+    skills: list[str]= []
+
+
+RESUME_PROMPT = """You extract skills from a resume. Return ONLY valid JSON with this exact shape:
+{ "skills": ["<skill>", "..."] }
+Rules: hard skills, tools, languages, and frameworks explicitly present in the text. Max 30 skills. No soft-skill fluff. Only skills actually in the text — do not infer."""
+
+def analyze_resume(text):
+    response = client.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=[
+        {"role": "system", "content": RESUME_PROMPT},
+        {"role": "user", "content": text},
+    ],
+    response_format={"type": "json_object"},
+    timeout=30,
+    )
+
+    content = response.choices[0].message.content
+    data = json.loads(content)
+
+    job = ResumeExtraction(**data)
     job.skills = list(dict.fromkeys(job.skills))
     return job
 

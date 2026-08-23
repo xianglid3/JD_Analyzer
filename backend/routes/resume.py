@@ -3,6 +3,10 @@ import json
 from db import get_cursor
 from middleware import require_auth
 from services.match import compute_match_score
+from services.openai_services import analyze_resume
+from services.jd_preprocess import preprocess_text
+from extensions import limiter
+
 
 resume_bp = Blueprint("resume", __name__, url_prefix="/api/resume") #why __name__
 
@@ -75,3 +79,30 @@ def upsert_resume():
             cur.execute("UPDATE jobs SET match_score = %s WHERE id = %s", (score, job_id))
 
     return jsonify({"ok": True}), 200
+
+
+@resume_bp.route("/parse", methods = ["POST"])
+@limiter.limit("5 per minute; 10 per day")
+@require_auth
+def parse_resume():
+    data = request.get_json() or {}
+    text = (data.get("text") or "").strip() #get dat resume text
+
+    #length check
+    if (len(text) < 400):
+        return jsonify({"error": "Resume text too short"}), 400
+    if (len(text) > 20000):
+        return jsonify({"error": "Resume text too long"}), 400
+
+    #clean text
+    cleaned = preprocess_text(text)
+
+    try:
+        resume = analyze_resume(cleaned)
+    except Exception:
+        return jsonify({"error": "Analysis failed, please try again"}), 503
+    
+    return jsonify({"skills": resume.skills}), 200
+
+    
+    

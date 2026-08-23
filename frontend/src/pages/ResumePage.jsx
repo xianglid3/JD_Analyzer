@@ -4,11 +4,22 @@ import { apiFetch } from '../lib/api'
 import NavBar from '../components/NavBar'
 
 export default function ResumePage() {
-  const [skills, setSkills] = useState([])
-  const [newSkill, setNewSkill] = useState('')
 
   const queryClient = useQueryClient()
 
+  const [skills, setSkills] = useState([])
+  const [newSkill, setNewSkill] = useState('')
+  const [resumeText, setResumeText] = useState('')
+
+  //mutation for pasting resume text
+  //call '/parse' to grab skills out of text
+  const parseMutation = useMutation({
+    mutationFn: (text) =>
+      apiFetch('/resume/parse', { method: 'POST', body: JSON.stringify({text}) }),
+    onSuccess: (data) => setSkills([...new Set([...skills, ...data.skills])]),
+  })
+
+  //mutation for resume
   const resumeMutation = useMutation({
     mutationFn: (resume) =>
       apiFetch('/resume', { method: 'PUT', body: JSON.stringify(resume) }),
@@ -45,6 +56,22 @@ export default function ResumePage() {
           Saved and used to score how well each job matches your skills.
         </p>
 
+        <textarea
+          value={resumeText}
+          onChange={(e) => setResumeText(e.target.value)}
+          placeholder='Paste your resume text here'
+          className="w-full h-40 border border-border rounded-md p-3 text-sm mb-3"
+        />
+
+        <button
+          onClick={() => parseMutation.mutate(resumeText)}
+          disabled = {parseMutation.isPending}
+          className="bg-primary text-white rounded-md px-4 py-2 disabled:opacity-50"
+        >
+          {parseMutation.isPending? 'Extracting...' : 'Extract'}
+
+        </button>
+
         <div className="bg-white border border-border rounded-lg p-6">
           <h2 className="font-semibold text-ink mb-3">Skills</h2>
 
@@ -75,7 +102,7 @@ export default function ResumePage() {
                     onClick={() => removeSkill(skill)}
                     className="text-muted hover:text-red-600"
                   >
-                    ×
+                    x
                   </button>
                 </span>
               ))}

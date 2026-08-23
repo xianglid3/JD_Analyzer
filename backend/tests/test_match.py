@@ -18,4 +18,9 @@ def test_perfect_match():
 def test_case_match():
     assert compute_match_score(["Python"], ["python"]) == 100.0
 
+def test_normalized_variants():
+    # React.js / React and js / JavaScript should collapse to the same skill
+    assert compute_match_score(["React"], ["React.js"]) == 100.0
+    assert compute_match_score(["JavaScript"], ["js"]) == 100.0
+
 
