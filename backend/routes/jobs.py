@@ -10,7 +10,7 @@ from services.match import compute_match_score
 
 jobs_bp = Blueprint("jobs", __name__, url_prefix = "/api/jobs")
 #accetpable status
-VALID_STATUSES = {"saved", "applied", "interview", "offer", "rejected"}
+VALID_STATUSES = {"saved", "applied", "interview", "offer", "rejected", "ghosted", "accepted", "decline"}
 
 
 @jobs_bp.route("", methods = ["POST"])
@@ -207,7 +207,8 @@ def job_stats():
         )
         rows = cur.fetchall()
 
-    counts = {"saved": 0, "applied": 0, "interview": 0, "offer": 0, "rejected": 0}
+    counts = {"saved": 0, "applied": 0, "interview": 0, "offer": 0,
+              "rejected": 0, "ghosted": 0, "accepted": 0, "decline": 0}
     total = 0
     for status, count in rows:
         if status in counts:      # ignore unknown status

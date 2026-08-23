@@ -12,9 +12,13 @@ function refreshOnce(){
 
 export async function apiFetch(path, options = {}, retry = true) {
 
+    // FormData (file upload) must NOT get a JSON content-type — the browser sets
+    // multipart with the correct boundary itself.
+    const isFormData = options.body instanceof FormData
+
     const res = await fetch('/api' + path, {
         credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
+        headers: isFormData ? {} : { 'Content-Type': 'application/json' },
         ...options,
     })
         

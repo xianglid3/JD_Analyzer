@@ -19,6 +19,16 @@ export default function ResumePage() {
     onSuccess: (data) => setSkills([...new Set([...skills, ...data.skills])]),
   })
 
+  //mutation for uploading a resume file (PDF/MD/TXT) → extract skills
+  const uploadMutation = useMutation({
+    mutationFn: (file) => {
+      const form = new FormData()
+      form.append('file', file)
+      return apiFetch('/resume/upload', { method: 'POST', body: form })
+    },
+    onSuccess: (data) => setSkills([...new Set([...skills, ...data.skills])]),
+  })
+
   //mutation for resume
   const resumeMutation = useMutation({
     mutationFn: (resume) =>
@@ -71,6 +81,22 @@ export default function ResumePage() {
           {parseMutation.isPending? 'Extracting...' : 'Extract'}
 
         </button>
+
+        <div className="flex items-center gap-3 my-3">
+          <span className="text-xs text-muted">or</span>
+          <label className="border border-border rounded-md px-4 py-2 text-sm cursor-pointer hover:bg-surface">
+            {uploadMutation.isPending ? 'Reading file…' : 'Upload a file (PDF, MD, TXT)'}
+            <input
+              type="file"
+              accept=".pdf,.md,.txt,.html"
+              className="hidden"
+              onChange={(e) => e.target.files[0] && uploadMutation.mutate(e.target.files[0])}
+            />
+          </label>
+          {uploadMutation.error && (
+            <span className="text-red-600 text-sm">{uploadMutation.error.message}</span>
+          )}
+        </div>
 
         <div className="bg-white border border-border rounded-lg p-6">
           <h2 className="font-semibold text-ink mb-3">Skills</h2>

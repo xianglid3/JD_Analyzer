@@ -11,7 +11,21 @@ const statusColors = {
   interview: 'bg-amber-50 text-amber-700',
   offer: 'bg-green-50 text-green-700',
   rejected: 'bg-red-50 text-red-700',
+  ghosted: 'bg-slate-100 text-slate-600',
+  accepted: 'bg-emerald-50 text-emerald-700',
+  decline: 'bg-rose-50 text-rose-700',
 }
+
+// table columns: [header label, job field to sort by]
+const columns = [
+  ['Title', 'title'],
+  ['Company', 'company_name'],
+  ['Location', 'location'],
+  ['Type', 'work_type'],
+  ['Match', 'match_score'],
+  ['Status', 'status'],
+  ['Added', 'created_at'],
+]
 
 export default function DashboardPage() {
   const navigate = useNavigate()
@@ -20,6 +34,19 @@ export default function DashboardPage() {
   const [text, setText] = useState('')          // JD text input
   const [showModal, setShowModal] = useState(false)
   const [search, setSearch] = useState('')      // table search
+  const [statusFilter, setStatusFilter] = useState('all')   // clickable filter chips
+  const [sortKey, setSortKey] = useState('created_at')      // which column to sort by
+  const [sortDir, setSortDir] = useState('desc')            // 'asc' | 'desc'
+
+  // click a header: same column → flip direction; new column → start ascending
+  function toggleSort(key) {
+    if (sortKey === key) {
+      setSortDir(sortDir === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortKey(key)
+      setSortDir('asc')
+    }
+  }
 
   const createJob = useMutation({
     mutationFn: (description) =>
@@ -54,9 +81,21 @@ export default function DashboardPage() {
   if (isLoading) return <p className="p-8">Loading…</p>
   if (isError) return <p className="p-8">Failed to load jobs</p>
 
-  const filtered = data.jobs.filter((job) =>
-    `${job.title || ''} ${job.company_name || ''}`.toLowerCase().includes(search.toLowerCase())
-  )
+  const visible = data.jobs
+    .filter((job) =>
+      `${job.title || ''} ${job.company_name || ''}`.toLowerCase().includes(search.toLowerCase())
+    )
+    .filter((job) => statusFilter === 'all' || job.status === statusFilter)
+    .sort((a, b) => {
+      const dir = sortDir === 'asc' ? 1 : -1
+      const av = a[sortKey]
+      const bv = b[sortKey]
+      if (av == null) return 1          // missing values sink to the bottom
+      if (bv == null) return -1
+      if (av < bv) return -1 * dir
+      if (av > bv) return 1 * dir
+      return 0
+    })
 
   return (
     <div className="min-h-screen bg-surface">
@@ -65,19 +104,28 @@ export default function DashboardPage() {
       <div className="max-w-6xl mx-auto px-8 py-8">
         {/* pipeline summary chips */}
         {stats && (
-          <div className="grid grid-cols-3 lg:grid-cols-6 gap-3 mb-8">
+          <div className="grid grid-cols-3 lg:grid-cols-9 gap-3 mb-8">
             {[
-              ['Total', stats.total],
-              ['Saved', stats.by_status.saved],
-              ['Applied', stats.by_status.applied],
-              ['Interview', stats.by_status.interview],
-              ['Offer', stats.by_status.offer],
-              ['Rejected', stats.by_status.rejected],
-            ].map(([label, value]) => (
-              <div key={label} className="bg-white border border-border rounded-lg px-4 py-3 text-center">
+              ['Total', stats.total, 'all'],
+              ['Saved', stats.by_status.saved, 'saved'],
+              ['Applied', stats.by_status.applied, 'applied'],
+              ['Interview', stats.by_status.interview, 'interview'],
+              ['Offer', stats.by_status.offer, 'offer'],
+              ['Rejected', stats.by_status.rejected, 'rejected'],
+              ['Ghosted', stats.by_status.ghosted, 'ghosted'],
+              ['Accepted', stats.by_status.accepted, 'accepted'],
+              ['Decline', stats.by_status.decline, 'decline'],
+            ].map(([label, value, key]) => (
+              <button
+                key={label}
+                onClick={() => setStatusFilter(key)}
+                className={`rounded-lg px-4 py-3 text-center bg-white border ${
+                  statusFilter === key ? 'border-primary ring-1 ring-primary' : 'border-border'
+                }`}
+              >
                 <div className="text-2xl font-bold text-ink">{value}</div>
                 <div className="text-xs text-muted uppercase tracking-wide mt-1">{label}</div>
-              </div>
+              </button>
             ))}
           </div>
         )}
@@ -106,17 +154,20 @@ export default function DashboardPage() {
           <table className="w-full text-left">
             <thead>
               <tr className="text-xs text-muted uppercase tracking-wide bg-surface border-b border-border">
-                <th className="px-4 py-3 font-medium">Title</th>
-                <th className="px-4 py-3 font-medium">Company</th>
-                <th className="px-4 py-3 font-medium">Location</th>
-                <th className="px-4 py-3 font-medium">Type</th>
-                <th className="px-4 py-3 font-medium">Match</th>
-                <th className="px-4 py-3 font-medium">Status</th>
-                <th className="px-4 py-3 font-medium">Added</th>
+                {columns.map(([label, key]) => (
+                  <th
+                    key={key}
+                    onClick={() => toggleSort(key)}
+                    className="px-4 py-3 font-medium cursor-pointer select-none hover:text-ink"
+                  >
+                    {label}
+                    {sortKey === key && (sortDir === 'asc' ? ' ▲' : ' ▼')}
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
-              {filtered.map((job) => (
+              {visible.map((job) => (
                 <tr
                   key={job.id}
                   onClick={() => navigate(`/jobs/${job.id}`)}
@@ -147,6 +198,9 @@ export default function DashboardPage() {
                       <option value="interview">Interview</option>
                       <option value="offer">Offer</option>
                       <option value="rejected">Rejected</option>
+                      <option value="ghosted">Ghosted</option>
+                      <option value="accepted">Accepted</option>
+                      <option value="decline">Declined</option>
                     </select>
                   </td>
                   <td className="px-4 py-3 text-muted text-sm">
@@ -157,7 +211,7 @@ export default function DashboardPage() {
             </tbody>
           </table>
 
-          {filtered.length === 0 && (
+          {visible.length === 0 && (
             <p className="px-4 py-8 text-center text-muted text-sm">No jobs found.</p>
           )}
         </div>

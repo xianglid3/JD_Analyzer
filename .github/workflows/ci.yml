@@ -10,6 +10,22 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    services:
+      postgres:                              # throwaway DB for this job; conftest applies schema.sql
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: jd_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      SUPABASE_URL: postgresql://postgres:postgres@localhost:5432/jd_test
+      JWT_SECRET: test-secret
     steps:
       - uses: actions/checkout@v7
 

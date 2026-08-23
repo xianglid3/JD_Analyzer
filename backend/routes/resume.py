@@ -1,14 +1,19 @@
 from flask import Blueprint, request, jsonify, g #whats g
 import json
+from os.path import splitext
 from db import get_cursor
 from middleware import require_auth
 from services.match import compute_match_score
 from services.openai_services import analyze_resume
 from services.jd_preprocess import preprocess_text
+from services.file_extract import extract_text_from_file
 from extensions import limiter
 
 
 resume_bp = Blueprint("resume", __name__, url_prefix="/api/resume") #why __name__
+
+ALLOWED_SUFFIXES = {".pdf", ".txt", ".md", ".html"}   # server-side allowlist (not the UI hint)
+MIN_RESUME_CHARS = 100                                 # shared floor for /parse and /upload (BUG-023)
 
 
 @resume_bp.route("", methods = ["GET"])
@@ -89,7 +94,7 @@ def parse_resume():
     text = (data.get("text") or "").strip() #get dat resume text
 
     #length check
-    if (len(text) < 400):
+    if len(text) < MIN_RESUME_CHARS:
         return jsonify({"error": "Resume text too short"}), 400
     if (len(text) > 20000):
         return jsonify({"error": "Resume text too long"}), 400
@@ -102,6 +107,37 @@ def parse_resume():
     except Exception:
         return jsonify({"error": "Analysis failed, please try again"}), 503
     
+    return jsonify({"skills": resume.skills}), 200
+
+
+@resume_bp.route("/upload", methods=["POST"])
+@limiter.limit("5 per minute; 10 per day")
+@require_auth
+def upload_resume():
+    file = request.files.get("file")
+    if file is None or file.filename == "":
+        return jsonify({"error": "no file uploaded"}), 400
+
+    if splitext(file.filename)[1].lower() not in ALLOWED_SUFFIXES:
+        return jsonify({"error": "unsupported file type (pdf, txt, md, html only)"}), 400
+
+    try:
+        text = extract_text_from_file(file.filename, file.read()).strip()
+    except Exception:
+        return jsonify({"error": "could not read that file"}), 400
+
+    text = text[:20000]   # cap very long files instead of rejecting
+
+    if len(text) < MIN_RESUME_CHARS:
+        return jsonify({"error": "couldn't extract text — is it a scanned image?"}), 400
+
+    cleaned = preprocess_text(text)
+
+    try:
+        resume = analyze_resume(cleaned)
+    except Exception:
+        return jsonify({"error": "analysis failed, please try again"}), 503
+
     return jsonify({"skills": resume.skills}), 200
 
     

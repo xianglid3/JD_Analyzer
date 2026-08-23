@@ -29,10 +29,11 @@ def test_malformed_json(monkeypatch):
 
 
 def test_invalid_work_type(monkeypatch):
-    # 'onsite' isn't in the Literal[...] → Pydantic should reject it
+    # unknown work_type coerces to None instead of killing the analysis (BUG-022)
     payload = '{"title": "X", "work_type": "onsite"}'
     monkeypatch.setattr(svc.client.chat.completions, "create",
                         lambda *a, **k: fake_response(payload))
 
-    with pytest.raises(ValidationError):
-        svc.analyze_job_description("any text")
+    job = svc.analyze_job_description("any text")
+    assert job.work_type is None
+    assert job.title == "X"

@@ -1,6 +1,6 @@
 import json
 from openai import OpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import Optional, Literal
 
 client = OpenAI()
@@ -17,6 +17,12 @@ class JobExtraction(BaseModel):
     company_name: Optional[str] = None
     location: Optional[str] = None
     work_type: Optional[Literal["remote", "hybrid", "in_person"]] = None
+
+    @field_validator("work_type", mode="before")
+    @classmethod
+    def coerce_work_type(cls, v):
+        # unknown values (e.g. "onsite") → None instead of failing the whole analysis
+        return v if v in ("remote", "hybrid", "in_person") else None
 
 
 SYSTEM_PROMPT = """You are a job description analyst. Extract key information and return ONLY valid JSON with this exact shape:

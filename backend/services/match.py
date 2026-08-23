@@ -85,13 +85,14 @@ ALIASES = {
 
 
 def normalize_skill(skill):
-    s = skill.strip().lower().replace(".js", "")   # "React.js" -> "react"
+    s = skill.strip().lower().removesuffix(".js")   # "React.js" -> "react" (only a trailing .js)
     return ALIASES.get(s, s)                         # "js" -> "javascript", else unchanged
 
 
 def compute_match_score(job_skills, resume_skills):
     if not job_skills:
         return None
+    job_set = {normalize_skill(s) for s in job_skills}        # distinct normalized skills
     resume_set = {normalize_skill(s) for s in resume_skills}
-    matched = sum(1 for s in job_skills if normalize_skill(s) in resume_set)
-    return round(matched / len(job_skills) * 100, 2)
+    matched = sum(1 for s in job_set if s in resume_set)
+    return round(matched / len(job_set) * 100, 2)
