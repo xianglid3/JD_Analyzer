@@ -43,6 +43,7 @@ export default function ResumePage() {
   })
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (data?.skills) setSkills(data.skills)
   }, [data])
 

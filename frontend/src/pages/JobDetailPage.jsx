@@ -30,6 +30,7 @@ export default function JobDetailPage() {
   })
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (job?.notes) setNotes(job.notes)
   }, [job])
 
