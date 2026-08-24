@@ -5,7 +5,7 @@ import hashlib
 from uuid import UUID
 from db import get_cursor
 from middleware import require_auth
-from extensions import limiter
+from extensions import authenticated_user_key, limiter
 from services.jd_preprocess import preprocess_text
 from services.openai_services import analyze_job_description
 from services.match import compute_match
@@ -56,8 +56,8 @@ def create_job_payload(row, replayed=False):
 
 
 @jobs_bp.route("", methods = ["POST"])
-@limiter.limit("5 per minute; 50 per day")
 @require_auth
+@limiter.limit("5 per minute; 50 per day", key_func=authenticated_user_key)
 def create_job():
     data = request.get_json()
     raw_description = (data.get("description") or "").strip()

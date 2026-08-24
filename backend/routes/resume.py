@@ -8,7 +8,7 @@ from services.match import compute_match
 from services.openai_services import analyze_resume
 from services.jd_preprocess import preprocess_text
 from services.file_extract import extract_text_from_file
-from extensions import limiter
+from extensions import authenticated_user_key, limiter
 from routes.analysis_errors import analysis_error_response
 
 
@@ -103,8 +103,8 @@ def upsert_resume():
 
 
 @resume_bp.route("/parse", methods = ["POST"])
-@limiter.limit("5 per minute; 10 per day")
 @require_auth
+@limiter.limit("5 per minute; 10 per day", key_func=authenticated_user_key)
 def parse_resume():
     data = request.get_json() or {}
     text = (data.get("text") or "").strip() #get dat resume text
@@ -127,8 +127,8 @@ def parse_resume():
 
 
 @resume_bp.route("/upload", methods=["POST"])
-@limiter.limit("5 per minute; 10 per day")
 @require_auth
+@limiter.limit("5 per minute; 10 per day", key_func=authenticated_user_key)
 def upload_resume():
     file = request.files.get("file")
     if file is None or file.filename == "":
