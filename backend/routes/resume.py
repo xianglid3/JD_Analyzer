@@ -10,6 +10,7 @@ from services.jd_preprocess import preprocess_text
 from services.file_extract import extract_text_from_file
 from extensions import authenticated_user_key, limiter
 from routes.analysis_errors import analysis_error_response
+from routes.request_validation import get_json_object
 
 
 resume_bp = Blueprint("resume", __name__, url_prefix="/api/resume") #why __name__
@@ -17,6 +18,9 @@ logger = logging.getLogger(__name__)
 
 ALLOWED_SUFFIXES = {".pdf", ".txt", ".md", ".html"}   # server-side allowlist (not the UI hint)
 MIN_RESUME_CHARS = 100                                 # shared floor for /parse and /upload (BUG-023)
+RESUME_LIST_FIELDS = ("education", "work_experience", "projects", "skills", "certificates")
+MAX_RESUME_SKILLS = 100
+MAX_SKILL_CHARS = 100
 
 
 @resume_bp.route("", methods = ["GET"])
@@ -47,12 +51,36 @@ def get_resume():
 @resume_bp.route("", methods = ["PUT"])
 @require_auth
 def upsert_resume():
-    data = request.get_json() or {} #?
+    data, error = get_json_object()
+    if error:
+        return error
+
+    for field in RESUME_LIST_FIELDS:
+        if not isinstance(data.get(field, []), list):
+            return jsonify({"error": f"{field} must be an array"}), 400
+
     education = data.get("education", []) #why []
     work_experience = data.get("work_experience", [])
     projects = data.get("projects", [])
     skills = data.get("skills", [])
     certificates = data.get("certificates", [])
+
+    if len(skills) > MAX_RESUME_SKILLS:
+        return jsonify({"error": "skills must contain 100 items or fewer"}), 400
+
+    cleaned_skills = []
+    seen_skills = set()
+    for skill in skills:
+        if not isinstance(skill, str) or not skill.strip():
+            return jsonify({"error": "each skill must be non-empty text"}), 400
+        skill = skill.strip()
+        if len(skill) > MAX_SKILL_CHARS:
+            return jsonify({"error": "each skill must be 100 characters or fewer"}), 400
+        dedupe_key = skill.casefold()
+        if dedupe_key not in seen_skills:
+            seen_skills.add(dedupe_key)
+            cleaned_skills.append(skill)
+    skills = cleaned_skills
 
     with get_cursor(commit=True) as cur:
         # insert into the field, with values, and when user_id conflit
@@ -106,8 +134,14 @@ def upsert_resume():
 @require_auth
 @limiter.limit("5 per minute; 10 per day", key_func=authenticated_user_key)
 def parse_resume():
-    data = request.get_json() or {}
-    text = (data.get("text") or "").strip() #get dat resume text
+    data, error = get_json_object()
+    if error:
+        return error
+
+    resume_text = data.get("text")
+    if not isinstance(resume_text, str):
+        return jsonify({"error": "Resume text must be text"}), 400
+    text = resume_text.strip() #get dat resume text
 
     #length check
     if len(text) < MIN_RESUME_CHARS:

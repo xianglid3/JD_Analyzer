@@ -213,6 +213,9 @@ def generate_refresh_token(user_id):
 
     with get_cursor(commit=True) as cur:
         cur.execute(
+            "DELETE FROM refresh_tokens WHERE expires_at < now()"
+        )
+        cur.execute(
             "INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES (%s, %s, %s)",
             (user_id, new_refresh_hash, new_refresh_expires),
         )

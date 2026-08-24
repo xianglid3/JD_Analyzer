@@ -1,22 +1,11 @@
-import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
-import { useDeferredValue, useRef, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useCallback, useDeferredValue, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { apiFetch } from '../lib/api'
+import Dialog from '../components/Dialog'
+import { ButtonLabel, InlineAlert, PageLoader, Spinner } from '../components/Feedback'
 import NavBar from '../components/NavBar'
+import { apiFetch } from '../lib/api'
 
-// status → tag colors (Tailwind default palette)
-const statusColors = {
-  saved: 'bg-gray-100 text-gray-700',
-  applied: 'bg-indigo-50 text-indigo-700',
-  interview: 'bg-amber-50 text-amber-700',
-  offer: 'bg-green-50 text-green-700',
-  rejected: 'bg-red-50 text-red-700',
-  ghosted: 'bg-slate-100 text-slate-600',
-  accepted: 'bg-emerald-50 text-emerald-700',
-  decline: 'bg-rose-50 text-rose-700',
-}
-
-// table columns: [header label, job field to sort by]
 const columns = [
   ['Title', 'title'],
   ['Company', 'company_name'],
@@ -27,26 +16,45 @@ const columns = [
   ['Added', 'created_at'],
 ]
 
+const statusOptions = [
+  ['Saved', 'saved'],
+  ['Applied', 'applied'],
+  ['Interview', 'interview'],
+  ['Offer', 'offer'],
+  ['Rejected', 'rejected'],
+  ['Ghosted', 'ghosted'],
+  ['Accepted', 'accepted'],
+  ['Declined', 'decline'],
+]
+
 export default function DashboardPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-
-  const [text, setText] = useState('')          // JD text input
+  const [text, setText] = useState('')
   const [showModal, setShowModal] = useState(false)
-  const [search, setSearch] = useState('')      // table search
-  const [statusFilter, setStatusFilter] = useState('all')   // clickable filter chips
-  const [sortKey, setSortKey] = useState('created_at')      // which column to sort by
-  const [sortDir, setSortDir] = useState('desc')            // 'asc' | 'desc'
+  const [search, setSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState('all')
+  const [sortKey, setSortKey] = useState('created_at')
+  const [sortDir, setSortDir] = useState('desc')
   const [page, setPage] = useState(1)
+  const [notice, setNotice] = useState(null)
   const deferredSearch = useDeferredValue(search)
   const analyzeRequestKey = useRef(null)
 
-  // click a header: same column → flip direction; new column → start ascending
+  const closeModal = useCallback(() => {
+    setShowModal(false)
+  }, [])
+
+  useEffect(() => {
+    if (!notice) return undefined
+    const timeout = window.setTimeout(() => setNotice(null), 3200)
+    return () => window.clearTimeout(timeout)
+  }, [notice])
+
   function toggleSort(key) {
     setPage(1)
-    if (sortKey === key) {
-      setSortDir(sortDir === 'asc' ? 'desc' : 'asc')
-    } else {
+    if (sortKey === key) setSortDir(sortDir === 'asc' ? 'desc' : 'asc')
+    else {
       setSortKey(key)
       setSortDir('asc')
     }
@@ -66,26 +74,25 @@ export default function DashboardPage() {
       setPage(1)
       setText('')
       setShowModal(false)
+      setNotice({ tone: 'success', message: 'Analysis saved to your dashboard.' })
     },
   })
 
   const updateStatus = useMutation({
     mutationFn: ({ id, status }) =>
       apiFetch(`/jobs/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) }),
-    onSuccess: () => {
+    onSuccess: () => setNotice({ tone: 'success', message: 'Application status updated.' }),
+    onError: (error) => setNotice({ tone: 'error', message: error.message }),
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['jobs'] })
       queryClient.invalidateQueries({ queryKey: ['jobs-stats'] })
     },
   })
 
-  const { data, isLoading, isError, isFetching } = useQuery({
+  const jobsQuery = useQuery({
     queryKey: ['jobs', page, deferredSearch, statusFilter, sortKey, sortDir],
     queryFn: () => {
-      const params = new URLSearchParams({
-        page: String(page),
-        sort: sortKey,
-        direction: sortDir,
-      })
+      const params = new URLSearchParams({ page: String(page), sort: sortKey, direction: sortDir })
       if (deferredSearch.trim()) params.set('search', deferredSearch.trim())
       if (statusFilter !== 'all') params.set('status', statusFilter)
       return apiFetch(`/jobs?${params.toString()}`)
@@ -93,219 +100,244 @@ export default function DashboardPage() {
     placeholderData: (previousData) => previousData,
   })
 
-  const { data: stats } = useQuery({
+  const statsQuery = useQuery({
     queryKey: ['jobs-stats'],
     queryFn: () => apiFetch('/jobs/stats'),
   })
 
-  if (isLoading) return <p className="p-8">Loading…</p>
-  if (isError) return <p className="p-8">Failed to load jobs</p>
+  if (jobsQuery.isLoading) return <PageLoader label="Loading your job tracker…" />
 
+  if (jobsQuery.isError) {
+    return (
+      <div className="app-main bg-surface">
+        <NavBar />
+        <main className="page-container grid min-h-[70vh] place-items-center">
+          <div className="text-center animate-soft-in">
+            <p className="text-base font-medium text-ink">We couldn’t load your jobs.</p>
+            <p className="mt-1 text-sm text-muted">Check your connection and try again.</p>
+            <button className="secondary-button mt-4" onClick={() => jobsQuery.refetch()}>Try again</button>
+          </div>
+        </main>
+      </div>
+    )
+  }
+
+  const data = jobsQuery.data
+  const stats = statsQuery.data
   const firstEntry = data.total === 0 ? 0 : (data.page - 1) * data.per_page + 1
   const lastEntry = Math.min(data.page * data.per_page, data.total)
+  const summaryItems = stats ? [
+    ['Total', stats.total, 'all'],
+    ...statusOptions.map(([label, key]) => [label, stats.by_status[key], key]),
+  ] : []
 
   return (
-    <div className="min-h-screen bg-surface">
+    <div className="app-main min-h-screen bg-surface">
       <NavBar />
+      <main className="page-container animate-page-in">
+        <header className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p className="text-xs text-muted">Job workspace</p>
+            <h1 className="mt-1 text-base font-medium text-ink">Your job descriptions</h1>
+            <p className="mt-1 text-sm text-muted">Analyze roles, compare skills, and track every application.</p>
+          </div>
+          <button
+            className="primary-button shrink-0"
+            onClick={() => {
+              createJob.reset()
+              setShowModal(true)
+            }}
+          >
+            <span className="mr-2 text-base" aria-hidden="true">+</span>
+            Analyze new JD
+          </button>
+        </header>
 
-      <div className="max-w-6xl mx-auto px-8 py-8">
-        {/* pipeline summary chips */}
-        {stats && (
-          <div className="grid grid-cols-3 lg:grid-cols-9 gap-3 mb-8">
-            {[
-              ['Total', stats.total, 'all'],
-              ['Saved', stats.by_status.saved, 'saved'],
-              ['Applied', stats.by_status.applied, 'applied'],
-              ['Interview', stats.by_status.interview, 'interview'],
-              ['Offer', stats.by_status.offer, 'offer'],
-              ['Rejected', stats.by_status.rejected, 'rejected'],
-              ['Ghosted', stats.by_status.ghosted, 'ghosted'],
-              ['Accepted', stats.by_status.accepted, 'accepted'],
-              ['Decline', stats.by_status.decline, 'decline'],
-            ].map(([label, value, key]) => (
-              <button
-                key={label}
-                onClick={() => {
-                  setStatusFilter(key)
+        {notice && <InlineAlert tone={notice.tone} className="mb-4">{notice.message}</InlineAlert>}
+
+        <section aria-label="Application summary" className="mb-8">
+          {statsQuery.isLoading ? (
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {Array.from({ length: 6 }, (_, index) => <div key={index} className="skeleton h-20" />)}
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {summaryItems.map(([label, value, key]) => {
+                const selected = statusFilter === key
+                return (
+                  <button
+                    key={key}
+                    onClick={() => {
+                      setStatusFilter(key)
+                      setPage(1)
+                    }}
+                    aria-pressed={selected}
+                    className={`rounded-2xl px-4 py-3 text-left ${
+                      selected ? 'bg-deep-teal text-white' : 'border border-border bg-soft-paper text-ink hover:border-ash'
+                    }`}
+                  >
+                    <span className={`block text-xs ${selected ? 'text-white/75' : 'text-muted'}`}>{label}</span>
+                    <span className="mt-1 block text-base font-medium">{value ?? 0}</span>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </section>
+
+        <section aria-labelledby="jobs-table-title">
+          <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <h2 id="jobs-table-title" className="text-base font-medium text-ink">Applications</h2>
+            <label className="relative block w-full sm:w-72">
+              <span className="sr-only">Search jobs</span>
+              <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true">⌕</span>
+              <input
+                value={search}
+                onChange={(event) => {
+                  setSearch(event.target.value)
                   setPage(1)
                 }}
-                className={`rounded-lg px-4 py-3 text-center bg-white border ${
-                  statusFilter === key ? 'border-primary ring-1 ring-primary' : 'border-border'
-                }`}
-              >
-                <div className="text-2xl font-bold text-ink">{value}</div>
-                <div className="text-xs text-muted uppercase tracking-wide mt-1">{label}</div>
-              </button>
-            ))}
+                placeholder="Search title or company"
+                className="control py-2.5 pl-9 pr-3 text-sm"
+              />
+            </label>
           </div>
-        )}
 
-        {/* header row: title + search + analyze */}
-        <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-          <h1 className="text-xl font-semibold text-ink">Your Job Descriptions</h1>
-          <div className="flex items-center gap-3">
-            <input
-              value={search}
-              onChange={(e) => {
-                setSearch(e.target.value)
-                setPage(1)
-              }}
-              placeholder="Search title or company…"
-              className="border border-border rounded-md px-3 py-2 text-sm w-64 bg-white"
-            />
-            <button
-              onClick={() => setShowModal(true)}
-              className="bg-primary text-white rounded-md px-4 py-2 text-sm font-medium whitespace-nowrap"
-            >
-              + Analyze new JD
-            </button>
-          </div>
-        </div>
-
-        {/* jobs table */}
-        <div className="bg-white border border-border rounded-lg overflow-hidden">
-          <table className="w-full text-left">
-            <thead>
-              <tr className="text-xs text-muted uppercase tracking-wide bg-surface border-b border-border">
-                {columns.map(([label, key]) => (
-                  <th
-                    key={key}
-                    onClick={() => toggleSort(key)}
-                    className="px-4 py-3 font-medium cursor-pointer select-none hover:text-ink"
-                  >
-                    {label}
-                    {sortKey === key && (sortDir === 'asc' ? ' ▲' : ' ▼')}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {data.jobs.map((job) => (
-                <tr
-                  key={job.id}
-                  onClick={() => navigate(`/jobs/${job.id}`)}
-                  className="border-b border-border last:border-0 hover:bg-surface cursor-pointer"
-                >
-                  <td className="px-4 py-3 font-medium text-ink">{job.title}</td>
-                  <td className="px-4 py-3 text-muted">{job.company_name}</td>
-                  <td className="px-4 py-3 text-muted">{job.location}</td>
-                  <td className="px-4 py-3">
-                    {job.work_type && (
-                      <span className="inline-block rounded-full border border-border px-2 py-0.5 text-xs text-muted">
-                        {job.work_type}
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 font-semibold text-primary">
-                    {job.match_score != null ? `${job.match_score}%` : '—'}
-                  </td>
-                  <td className="px-4 py-3">
-                    <select
-                      value={job.status}
-                      onChange={(e) => updateStatus.mutate({ id: job.id, status: e.target.value })}
-                      onClick={(e) => e.stopPropagation()}
-                      className={`rounded-full px-3 py-1 text-xs font-medium border-0 cursor-pointer ${statusColors[job.status] || ''}`}
+          <div className="surface-card overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[760px] text-left text-sm">
+                <thead>
+                  <tr className="border-b border-border text-xs text-muted">
+                    {columns.map(([label, key]) => (
+                      <th key={key} className="px-4 py-3 font-normal">
+                        <button
+                          onClick={() => toggleSort(key)}
+                          className="inline-flex items-center gap-1 hover:text-ink"
+                          aria-label={`Sort by ${label}`}
+                        >
+                          {label}
+                          {sortKey === key && <span aria-hidden="true">{sortDir === 'asc' ? '↑' : '↓'}</span>}
+                        </button>
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className={jobsQuery.isFetching ? 'opacity-60' : ''}>
+                  {data.jobs.map((job, index) => (
+                    <tr
+                      key={job.id}
+                      onClick={() => navigate(`/jobs/${job.id}`)}
+                      onKeyDown={(event) => event.target === event.currentTarget && event.key === 'Enter' && navigate(`/jobs/${job.id}`)}
+                      tabIndex={0}
+                      aria-label={`Open ${job.title || 'job'} details`}
+                      className="animate-soft-in border-b border-border last:border-0 hover:bg-surface"
+                      style={{ animationDelay: `${Math.min(index * 25, 150)}ms` }}
                     >
-                      <option value="saved">Saved</option>
-                      <option value="applied">Applied</option>
-                      <option value="interview">Interview</option>
-                      <option value="offer">Offer</option>
-                      <option value="rejected">Rejected</option>
-                      <option value="ghosted">Ghosted</option>
-                      <option value="accepted">Accepted</option>
-                      <option value="decline">Declined</option>
-                    </select>
-                  </td>
-                  <td className="px-4 py-3 text-muted text-sm">
-                    {new Date(job.created_at).toLocaleDateString()}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-
-          {data.jobs.length === 0 && (
-            <p className="px-4 py-8 text-center text-muted text-sm">No jobs found.</p>
-          )}
-
-          <div className="border-t border-border bg-surface px-4 py-3 flex items-center justify-between">
-            <span className="text-xs text-muted">
-              Showing {firstEntry} to {lastEntry} of {data.total} entries
-            </span>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                aria-label="Previous page"
-                title="Previous page"
-                onClick={() => setPage((current) => Math.max(1, current - 1))}
-                disabled={page <= 1 || isFetching}
-                className="p-2 text-muted hover:text-ink disabled:opacity-30 disabled:cursor-not-allowed"
-              >
-                ‹
-              </button>
-              <button
-                type="button"
-                aria-label="Next page"
-                title="Next page"
-                onClick={() => setPage((current) => current + 1)}
-                disabled={page >= data.total_pages || isFetching}
-                className="p-2 text-muted hover:text-ink disabled:opacity-30 disabled:cursor-not-allowed"
-              >
-                ›
-              </button>
+                      <td className="px-4 py-3 font-medium text-ink">{job.title || 'Untitled role'}</td>
+                      <td className="px-4 py-3 text-muted">{job.company_name || '—'}</td>
+                      <td className="px-4 py-3 text-muted">{job.location || '—'}</td>
+                      <td className="px-4 py-3">
+                        {job.work_type ? <span className="rounded-full border border-border px-2.5 py-1 text-xs text-muted">{job.work_type.replace('_', ' ')}</span> : '—'}
+                      </td>
+                      <td className="px-4 py-3 font-medium text-ink">{job.match_score != null ? `${job.match_score}%` : '—'}</td>
+                      <td className="px-4 py-3">
+                        <select
+                          value={job.status}
+                          onChange={(event) => updateStatus.mutate({ id: job.id, status: event.target.value })}
+                          onClick={(event) => event.stopPropagation()}
+                          disabled={updateStatus.isPending && updateStatus.variables?.id === job.id}
+                          aria-label={`Status for ${job.title || 'job'}`}
+                          className="rounded-full border border-border bg-surface px-2.5 py-1 text-xs text-ink"
+                        >
+                          {statusOptions.map(([label, value]) => <option key={value} value={value}>{label}</option>)}
+                        </select>
+                      </td>
+                      <td className="px-4 py-3 text-xs text-muted">{new Date(job.created_at).toLocaleDateString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          </div>
-        </div>
-      </div>
 
-      {/* analyze modal */}
-      {showModal && (
-        <div
-          className="fixed inset-0 bg-black/40 flex items-center justify-center px-4"
-          onClick={() => setShowModal(false)}
-        >
-          <div className="bg-white rounded-xl p-6 w-full max-w-lg shadow-lg" onClick={(e) => e.stopPropagation()}>
-            <h2 className="text-lg font-semibold text-ink mb-1">Analyze a job description</h2>
-            <p className="text-sm text-muted mb-3">Paste the full text below (50–10000 characters).</p>
-            <textarea
-              value={text}
-              onChange={(e) => {
-                setText(e.target.value)
-                analyzeRequestKey.current = null
-              }}
-              placeholder="Paste a job description…"
-              className="w-full h-48 border border-border rounded-md p-3 text-sm"
-            />
-            <p className={`text-xs mt-1 text-right ${text.length > 10000 || (text.length > 0 && text.length < 50) ? 'text-red-600' : 'text-muted'}`}>
-              {text.length} / 10000
-            </p>
-            {createJob.error && (
-              <p className="text-red-600 text-sm mt-2">{createJob.error.message}</p>
+            {data.jobs.length === 0 && (
+              <div className="px-4 py-12 text-center animate-soft-in">
+                <p className="text-sm font-medium text-ink">No matching jobs</p>
+                <p className="mt-1 text-xs text-muted">Try another search or analyze a new description.</p>
+              </div>
             )}
-            <div className="flex justify-end gap-2 mt-4">
-              <button
-                onClick={() => setShowModal(false)}
-                className="border border-border rounded-md px-4 py-2 text-sm"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => {
-                  analyzeRequestKey.current ??= crypto.randomUUID()
-                  createJob.mutate({
-                    description: text,
-                    idempotencyKey: analyzeRequestKey.current,
-                  })
-                }}
-                disabled={createJob.isPending || text.length < 50 || text.length > 10000}
-                className="bg-primary text-white rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50"
-              >
-                {createJob.isPending ? 'Analyzing…' : 'Analyze'}
-              </button>
-            </div>
+
+            <footer className="flex items-center justify-between border-t border-border px-4 py-3 text-xs text-muted">
+              <span>Showing {firstEntry}–{lastEntry} of {data.total}</span>
+              <div className="flex items-center gap-1">
+                {jobsQuery.isFetching && <Spinner size="sm" />}
+                <button
+                  className="icon-button"
+                  aria-label="Previous page"
+                  onClick={() => setPage((current) => Math.max(1, current - 1))}
+                  disabled={page <= 1 || jobsQuery.isFetching}
+                >‹</button>
+                <button
+                  className="icon-button"
+                  aria-label="Next page"
+                  onClick={() => setPage((current) => current + 1)}
+                  disabled={page >= data.total_pages || jobsQuery.isFetching}
+                >›</button>
+              </div>
+            </footer>
           </div>
+        </section>
+      </main>
+
+      <Dialog
+        open={showModal}
+        title="Analyze a job description"
+        description="Paste the full posting to extract requirements and compare them with your saved skills."
+        onClose={closeModal}
+        dismissible={!createJob.isPending}
+        footer={(
+          <>
+            <button className="secondary-button" onClick={closeModal} disabled={createJob.isPending}>Cancel</button>
+            <button
+              className="primary-button min-w-28"
+              disabled={createJob.isPending || text.trim().length < 50 || text.trim().length > 10000}
+              onClick={() => {
+                analyzeRequestKey.current ??= crypto.randomUUID()
+                createJob.mutate({ description: text, idempotencyKey: analyzeRequestKey.current })
+              }}
+            >
+              <ButtonLabel pending={createJob.isPending} pendingText="Analyzing…">Analyze</ButtonLabel>
+            </button>
+          </>
+        )}
+      >
+        <label className="block text-sm text-ink" htmlFor="job-description">Job description</label>
+        <textarea
+          id="job-description"
+          autoFocus
+          disabled={createJob.isPending}
+          value={text}
+          onChange={(event) => {
+            setText(event.target.value)
+            analyzeRequestKey.current = null
+            createJob.reset()
+          }}
+          onKeyDown={(event) => {
+            const length = text.trim().length
+            if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !createJob.isPending && length >= 50 && length <= 10000) {
+              event.preventDefault()
+              analyzeRequestKey.current ??= crypto.randomUUID()
+              createJob.mutate({ description: text, idempotencyKey: analyzeRequestKey.current })
+            }
+          }}
+          placeholder="Paste a job description here…"
+          className="control mt-2 h-64 resize-y p-4 text-sm leading-6"
+        />
+        <div className="mt-2 flex items-start justify-between gap-4 text-xs text-muted">
+          <span>Minimum 50 characters · ⌘/Ctrl + Enter to analyze</span>
+          <span className={text.length > 10000 ? 'text-ink' : ''}>{text.length.toLocaleString()} / 10,000</span>
         </div>
-      )}
+        {createJob.error && <InlineAlert className="mt-4">{createJob.error.message}</InlineAlert>}
+      </Dialog>
     </div>
   )
 }

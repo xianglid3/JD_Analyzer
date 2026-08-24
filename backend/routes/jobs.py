@@ -2,6 +2,7 @@ from flask import Blueprint, request, jsonify, g
 import json
 import logging
 import hashlib
+from datetime import date
 from uuid import UUID
 from db import get_cursor
 from middleware import require_auth
@@ -10,12 +11,14 @@ from services.jd_preprocess import preprocess_text
 from services.openai_services import analyze_job_description
 from services.match import compute_match
 from routes.analysis_errors import analysis_error_response
+from routes.request_validation import get_json_object
 
 jobs_bp = Blueprint("jobs", __name__, url_prefix = "/api/jobs")
 logger = logging.getLogger(__name__)
 #accetpable status
 VALID_STATUSES = {"saved", "applied", "interview", "offer", "rejected", "ghosted", "accepted", "decline"}
 IDEMPOTENCY_STALE_AFTER = "10 minutes"
+MAX_NOTES_CHARS = 5000
 
 
 def release_idempotency_key(user_id, idempotency_key, request_hash):
@@ -59,8 +62,14 @@ def create_job_payload(row, replayed=False):
 @require_auth
 @limiter.limit("5 per minute; 50 per day", key_func=authenticated_user_key)
 def create_job():
-    data = request.get_json()
-    raw_description = (data.get("description") or "").strip()
+    data, error = get_json_object()
+    if error:
+        return error
+
+    description = data.get("description")
+    if not isinstance(description, str):
+        return jsonify({"error": "Description must be text"}), 400
+    raw_description = description.strip()
 
     #validation length
     if len(raw_description) < 50:
@@ -334,7 +343,9 @@ def get_job(job_id):
 @jobs_bp.route("/<job_id>", methods=["PATCH"])
 @require_auth
 def update_job(job_id):
-    data = request.get_json() or {}
+    data, error = get_json_object()
+    if error:
+        return error
 
     # whitelist 'allowed' a user is permitted to change
     allowed = ["status", "notes", "deadline"]
@@ -343,8 +354,29 @@ def update_job(job_id):
     if not updates:
         return jsonify({"error": "no valid fields to update"}), 400
 
-    if "status" in updates and updates["status"] not in VALID_STATUSES:
-        return jsonify({"error": "invalid status"}), 400
+    if "status" in updates:
+        status = updates["status"]
+        if not isinstance(status, str) or status not in VALID_STATUSES:
+            return jsonify({"error": "invalid status"}), 400
+
+    if "notes" in updates:
+        notes = updates["notes"]
+        if notes is not None and not isinstance(notes, str):
+            return jsonify({"error": "notes must be text or null"}), 400
+        if isinstance(notes, str) and len(notes) > MAX_NOTES_CHARS:
+            return jsonify({"error": "notes must be 5000 characters or fewer"}), 400
+
+    if "deadline" in updates:
+        deadline = updates["deadline"]
+        if deadline is not None:
+            if not isinstance(deadline, str):
+                return jsonify({"error": "deadline must be YYYY-MM-DD or null"}), 400
+            try:
+                parsed_deadline = date.fromisoformat(deadline)
+            except ValueError:
+                return jsonify({"error": "deadline must be YYYY-MM-DD or null"}), 400
+            if parsed_deadline.isoformat() != deadline:
+                return jsonify({"error": "deadline must be YYYY-MM-DD or null"}), 400
 
     set_clause = ", ".join(f"{field} = %s" for field in updates)
     values = list(updates.values())

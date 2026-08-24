@@ -1,70 +1,85 @@
-import { useNavigate, Link } from 'react-router-dom'
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import AuthShell from '../components/AuthShell'
+import { ButtonLabel, InlineAlert } from '../components/Feedback'
 import { apiFetch } from '../lib/api'
 
 export default function LoginPage() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
-
+  const [showPassword, setShowPassword] = useState(false)
+  const [searchParams] = useSearchParams()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
 
   const loginMutation = useMutation({
-    mutationFn: (credentials) =>
-      apiFetch('/auth/login', { method: 'POST', body: JSON.stringify(credentials) }),
+    mutationFn: (credentials) => apiFetch('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify(credentials),
+    }),
     onSuccess: () => {
-      queryClient.clear(),
-      navigate('/dashboard')}
-
+      queryClient.clear()
+      navigate('/dashboard')
+    },
   })
 
-  function handleSubmit(e) {
-    e.preventDefault()
+  function handleSubmit(event) {
+    event.preventDefault()
     loginMutation.mutate({ username, password })
   }
 
   return (
-    <div className="min-h-screen bg-surface flex items-center justify-center px-4">
-      <form onSubmit={handleSubmit} className="bg-white border border-border rounded-xl p-8 w-full max-w-sm">
-        <h2 className="text-center text-primary font-bold text-lg">JD Translator</h2>
-        <h1 className="text-center text-ink font-semibold text-2xl mt-1 mb-6">Log in</h1>
+    <AuthShell
+      title="Welcome back"
+      description="Log in to continue analyzing and tracking job descriptions."
+      footer={<>New here? <Link to="/signup" className="text-ink underline underline-offset-4">Create an account</Link></>}
+    >
+      {searchParams.get('created') === '1' && !loginMutation.error && (
+        <InlineAlert tone="success" className="mb-4">Account created. You can log in now.</InlineAlert>
+      )}
+      {loginMutation.error && <InlineAlert className="mb-4">{loginMutation.error.message}</InlineAlert>}
 
-        {loginMutation.error && (
-          <p className="text-red-600 text-sm mb-3">{loginMutation.error.message}</p>
-        )}
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <label className="block text-sm text-ink">
+          Username
+          <input
+            required
+            autoFocus
+            autoComplete="username"
+            value={username}
+            onChange={(event) => setUsername(event.target.value)}
+            placeholder="Enter your username"
+            className="control mt-2 px-3 py-3 text-sm"
+          />
+        </label>
 
-        <label className="block text-sm text-ink mb-1">Username</label>
-        <input
-          required
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-          placeholder="Enter your username"
-          className="w-full border border-border rounded-md px-3 py-2 mb-4"
-        />
+        <label className="block text-sm text-ink">
+          Password
+          <span className="relative mt-2 block">
+            <input
+              required
+              type={showPassword ? 'text' : 'password'}
+              autoComplete="current-password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              placeholder="Enter your password"
+              className="control px-3 py-3 pr-16 text-sm"
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword((current) => !current)}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted hover:text-ink"
+            >
+              {showPassword ? 'Hide' : 'Show'}
+            </button>
+          </span>
+        </label>
 
-        <label className="block text-sm text-ink mb-1">Password</label>
-        <input
-          required
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          placeholder="Enter your password"
-          className="w-full border border-border rounded-md px-3 py-2 mb-6"
-        />
-
-        <button
-          type="submit"
-          disabled={loginMutation.isPending}
-          className="w-full bg-primary text-white rounded-md py-2 font-medium disabled:opacity-50"
-        >
-          {loginMutation.isPending ? 'Logging in…' : 'Log in'}
+        <button type="submit" disabled={loginMutation.isPending} className="primary-button mt-2 w-full">
+          <ButtonLabel pending={loginMutation.isPending} pendingText="Logging in…">Log in</ButtonLabel>
         </button>
-
-        <p className="text-center text-sm text-ink mt-4">
-          Don't have an account? <Link to="/signup" className="text-primary">Sign up</Link>
-        </p>
       </form>
-    </div>
+    </AuthShell>
   )
 }

@@ -28,6 +28,7 @@ CREATE TABLE refresh_tokens (
 );
 -- every POST /auth/refresh looks a token up by hash — without this it's a full scan
 CREATE INDEX refresh_tokens_token_hash_idx ON refresh_tokens (token_hash);
+CREATE INDEX refresh_tokens_expires_at_idx ON refresh_tokens (expires_at);
 
 CREATE TABLE resumes (
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),

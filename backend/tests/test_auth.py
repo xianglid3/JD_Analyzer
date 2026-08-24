@@ -89,3 +89,29 @@ def test_expired_refresh_token_is_rejected_and_deleted(client, _db):
     with _db.cursor() as cur:
         cur.execute("SELECT id FROM refresh_tokens WHERE token_hash = %s", (token_hash,))
         assert cur.fetchone() is None
+
+
+def test_login_cleans_all_expired_refresh_tokens(client, _db):
+    user = client.post("/api/auth/signup", json=USER).get_json()
+    expired_hash = hashlib.sha256(b"old-expired-token").hexdigest()
+    expired_at = datetime.datetime.now(
+        datetime.timezone.utc
+    ) - datetime.timedelta(days=1)
+
+    with _db.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
+            VALUES (%s, %s, %s)
+            """,
+            (user["id"], expired_hash, expired_at),
+        )
+
+    assert client.post("/api/auth/login", json=USER).status_code == 200
+
+    with _db.cursor() as cur:
+        cur.execute(
+            "SELECT id FROM refresh_tokens WHERE token_hash = %s",
+            (expired_hash,),
+        )
+        assert cur.fetchone() is None

@@ -1,155 +1,233 @@
-import { useParams, useNavigate } from 'react-router-dom'
-import { useState, useEffect } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { apiFetch } from '../lib/api'
+import { useCallback, useEffect, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useNavigate, useParams } from 'react-router-dom'
+import Dialog from '../components/Dialog'
+import { ButtonLabel, InlineAlert, PageLoader } from '../components/Feedback'
 import NavBar from '../components/NavBar'
+import { apiFetch } from '../lib/api'
+
+const statusOptions = [
+  ['Saved', 'saved'],
+  ['Applied', 'applied'],
+  ['Interview', 'interview'],
+  ['Offer', 'offer'],
+  ['Rejected', 'rejected'],
+  ['Ghosted', 'ghosted'],
+  ['Accepted', 'accepted'],
+  ['Declined', 'decline'],
+]
 
 export default function JobDetailPage() {
   const { id } = useParams()
-  const [notes, setNotes] = useState('')
-
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const [notes, setNotes] = useState('')
+  const [status, setStatus] = useState('saved')
+  const [deadline, setDeadline] = useState('')
+  const [notice, setNotice] = useState(null)
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false)
+  const closeDeleteDialog = useCallback(() => setShowDeleteDialog(false), [])
 
-  const saveNotes = useMutation({
-    mutationFn: () => apiFetch(`/jobs/${id}`, { method: 'PATCH', body: JSON.stringify({ notes }) }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['job', id] }),
+  const jobQuery = useQuery({
+    queryKey: ['job', id],
+    queryFn: () => apiFetch(`/jobs/${id}`),
+  })
+
+  useEffect(() => {
+    if (!jobQuery.data) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setNotes(jobQuery.data.notes || '')
+    setStatus(jobQuery.data.status)
+    setDeadline(jobQuery.data.deadline || '')
+  }, [jobQuery.data])
+
+  const saveTracking = useMutation({
+    mutationFn: () => apiFetch(`/jobs/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ notes, status, deadline: deadline || null }),
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['job', id] })
+      queryClient.invalidateQueries({ queryKey: ['jobs'] })
+      queryClient.invalidateQueries({ queryKey: ['jobs-stats'] })
+      setNotice({ tone: 'success', message: 'Tracking details saved.' })
+    },
   })
 
   const deleteJob = useMutation({
     mutationFn: () => apiFetch(`/jobs/${id}`, { method: 'DELETE' }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['jobs'] })
+      queryClient.invalidateQueries({ queryKey: ['jobs-stats'] })
       navigate('/dashboard')
     },
   })
 
-  const { data: job, isLoading, isError } = useQuery({
-    queryKey: ['job', id],
-    queryFn: () => apiFetch(`/jobs/${id}`),
-  })
+  if (jobQuery.isLoading) return <PageLoader label="Loading job details…" />
 
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (job?.notes) setNotes(job.notes)
-  }, [job])
+  if (jobQuery.isError) {
+    return (
+      <div className="app-main min-h-screen bg-surface">
+        <NavBar />
+        <main className="page-container grid min-h-[70vh] place-items-center text-center">
+          <div className="animate-soft-in">
+            <p className="text-base font-medium text-ink">Job not found</p>
+            <p className="mt-1 text-sm text-muted">It may have been removed or belong to another account.</p>
+            <button className="secondary-button mt-4" onClick={() => navigate('/dashboard')}>Back to dashboard</button>
+          </div>
+        </main>
+      </div>
+    )
+  }
 
-  if (isLoading) return <p className="p-8">Loading…</p>
-  if (isError) return <p className="p-8">Job not found.</p>
+  const job = jobQuery.data
+  const notesTooLong = notes.length > 5000
+  const isDirty = notes !== (job.notes || '') || status !== job.status || deadline !== (job.deadline || '')
+  const metadata = [job.company_name, job.location, job.work_type?.replace('_', ' ')].filter(Boolean)
 
   return (
-    <div className="min-h-screen bg-surface">
+    <div className="app-main min-h-screen bg-surface">
       <NavBar />
+      <main className="page-container animate-page-in">
+        <button onClick={() => navigate('/dashboard')} className="mb-6 text-sm text-muted hover:text-ink">← Back to dashboard</button>
 
-      <div className="max-w-6xl mx-auto px-8 py-8">
-        <button onClick={() => navigate('/dashboard')} className="text-sm text-muted hover:text-ink mb-4">
-          ← Back to Dashboard
-        </button>
+        <header className="mb-8">
+          <p className="text-xs text-muted">Job details</p>
+          <h1 className="mt-1 text-base font-medium text-ink">{job.title || 'Untitled role'}</h1>
+          {metadata.length > 0 && <p className="mt-1 text-sm capitalize text-muted">{metadata.join(' · ')}</p>}
 
-        <h1 className="text-2xl font-bold text-ink">{job.title}</h1>
-        <p className="text-muted mt-1">
-          {job.company_name} • {job.location} • {job.work_type}
-        </p>
-
-        {/* match bar */}
-        <div className="flex items-center gap-3 mt-4 mb-6">
-          <span className="text-primary font-bold text-lg">
-            {job.match_score != null ? `${job.match_score}%` : '—'}
-          </span>
-          <div className="flex-1 h-2 bg-white border border-border rounded-full overflow-hidden">
-            <div className="h-full bg-primary" style={{ width: `${job.match_score || 0}%` }} />
+          <div className="mt-5 flex max-w-lg items-center gap-3" aria-label={`${job.match_score ?? 0}% skill match`}>
+            <span className="shrink-0 text-sm font-medium text-ink">{job.match_score != null ? `${job.match_score}% match` : 'No match score'}</span>
+            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-border">
+              <div className="match-fill h-full rounded-full bg-primary" style={{ width: `${job.match_score || 0}%` }} />
+            </div>
           </div>
-        </div>
+        </header>
 
-        <div className="grid lg:grid-cols-3 gap-6">
-          {/* main column */}
-          <div className="lg:col-span-2 space-y-6">
-            <div className="bg-white border border-border rounded-lg p-6">
-              <h2 className="font-semibold text-ink mb-2">Summary</h2>
-              <p className="text-ink">{job.summary}</p>
-            </div>
+        {notice && <InlineAlert tone={notice.tone} className="mb-4">{notice.message}</InlineAlert>}
+        {saveTracking.error && <InlineAlert className="mb-4">{saveTracking.error.message}</InlineAlert>}
 
-            <div className="bg-white border border-border rounded-lg p-6">
-              <h2 className="font-semibold text-primary mb-2">No-BS Translation</h2>
-              <p className="text-ink bg-surface rounded-md p-3">{job.no_bs_translation}</p>
-            </div>
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_280px]">
+          <div className="space-y-6">
+            <section className="surface-card p-4">
+              <h2 className="text-base font-medium text-ink">Summary</h2>
+              <p className="mt-3 text-sm leading-6 text-ink">{job.summary || 'No summary was extracted.'}</p>
+            </section>
 
-            <div className="bg-white border border-border rounded-lg p-6">
-              <h2 className="font-semibold text-ink mb-3">Skills</h2>
-              <div className="flex flex-wrap gap-2">
-                {job.skills.map((s) => (
-                  <span key={s} className="bg-surface rounded-full px-3 py-1 text-sm">{s}</span>
-                ))}
-              </div>
-            </div>
+            <section className="surface-card border-l-4 border-l-ink p-4">
+              <h2 className="text-base font-medium text-ink">No-BS translation</h2>
+              <p className="mt-3 text-sm leading-6 text-ink">{job.no_bs_translation || 'No translation was extracted.'}</p>
+            </section>
+
+            <section className="surface-card p-4">
+              <h2 className="text-base font-medium text-ink">Key skills</h2>
+              {job.skills.length > 0 ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {job.skills.map((skill) => (
+                    <span key={skill} className="rounded-full border border-border bg-surface px-3 py-2 text-sm text-ink">{skill}</span>
+                  ))}
+                </div>
+              ) : <p className="mt-2 text-sm text-muted">No concrete technical skills were listed.</p>}
+            </section>
 
             {job.match_detail && (
-              <div className="bg-white border border-border rounded-lg p-6">
-                <h2 className="font-semibold text-ink mb-4">Match Breakdown</h2>
-
-                <h3 className="text-sm font-medium text-green-700 mb-2">Matched skills</h3>
-                <div className="flex flex-wrap gap-2 mb-5">
-                  {job.match_detail.matched.length > 0 ? (
-                    job.match_detail.matched.map((skill) => (
-                      <span key={skill} className="bg-green-50 text-green-700 rounded-full px-3 py-1 text-sm">
-                        ✓ {skill}
-                      </span>
-                    ))
-                  ) : (
-                    <span className="text-sm text-muted">No matched skills.</span>
-                  )}
+              <section className="surface-card p-4">
+                <h2 className="text-base font-medium text-ink">Match breakdown</h2>
+                <div className="mt-4 grid gap-5 sm:grid-cols-2">
+                  <div>
+                    <p className="text-xs text-muted">Matched</p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {job.match_detail.matched.length > 0 ? job.match_detail.matched.map((skill) => (
+                        <span key={skill} className="rounded-full border border-border bg-surface px-3 py-1.5 text-xs text-ink">✓ {skill}</span>
+                      )) : <span className="text-xs text-muted">None yet</span>}
+                    </div>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted">Missing</p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {job.match_detail.missing.length > 0 ? job.match_detail.missing.map((skill) => (
+                        <span key={skill} className="rounded-full border border-border bg-surface px-3 py-1.5 text-xs text-muted">○ {skill}</span>
+                      )) : <span className="text-xs text-muted">Nothing missing</span>}
+                    </div>
+                  </div>
                 </div>
-
-                <h3 className="text-sm font-medium text-red-700 mb-2">Missing skills</h3>
-                <div className="flex flex-wrap gap-2">
-                  {job.match_detail.missing.length > 0 ? (
-                    job.match_detail.missing.map((skill) => (
-                      <span key={skill} className="bg-red-50 text-red-700 rounded-full px-3 py-1 text-sm">
-                        {skill}
-                      </span>
-                    ))
-                  ) : (
-                    <span className="text-sm text-muted">No missing skills.</span>
-                  )}
-                </div>
-              </div>
+              </section>
             )}
 
             {job.raw_description && (
-              <details className="bg-white border border-border rounded-lg p-4">
-                <summary className="cursor-pointer text-sm text-muted">View original job description</summary>
-                <p className="mt-3 text-sm text-ink whitespace-pre-wrap">{job.raw_description}</p>
+              <details className="surface-card group p-4">
+                <summary className="flex cursor-pointer list-none items-center justify-between text-sm text-ink">
+                  View original job description
+                  <span className="text-muted transition-transform group-open:rotate-180" aria-hidden="true">⌄</span>
+                </summary>
+                <p className="mt-4 whitespace-pre-wrap border-t border-border pt-4 text-sm leading-6 text-ink">{job.raw_description}</p>
               </details>
             )}
           </div>
 
-          {/* tracking sidebar */}
-          <div className="bg-white border border-border rounded-lg p-6 h-fit">
-            <h2 className="font-semibold text-ink mb-4">Tracking</h2>
+          <aside className="surface-card h-fit p-4 lg:sticky lg:top-6">
+            <h2 className="text-base font-medium text-ink">Tracking</h2>
+            <div className="mt-4 space-y-4">
+              <label className="block text-sm text-ink">
+                Status
+                <select value={status} onChange={(event) => { setStatus(event.target.value); setNotice(null) }} className="control mt-2 px-3 py-2.5 text-sm">
+                  {statusOptions.map(([label, value]) => <option key={value} value={value}>{label}</option>)}
+                </select>
+              </label>
 
-            <label className="block text-sm text-muted mb-1">Notes</label>
-            <textarea
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              placeholder="Interview dates, recruiter contact, thoughts…"
-              className="w-full h-32 border border-border rounded-md p-2 text-sm mb-3"
-            />
-            <button
-              onClick={() => saveNotes.mutate()}
-              disabled={saveNotes.isPending}
-              className="w-full bg-primary text-white rounded-md py-2 text-sm font-medium disabled:opacity-50"
-            >
-              {saveNotes.isPending ? 'Saving…' : 'Save notes'}
-            </button>
+              <label className="block text-sm text-ink">
+                Deadline
+                <input type="date" value={deadline} onChange={(event) => { setDeadline(event.target.value); setNotice(null) }} className="control mt-2 px-3 py-2.5 text-sm" />
+              </label>
 
-            <div className="border-t border-border mt-6 pt-4">
-              <button onClick={() => deleteJob.mutate()} className="w-full text-red-600 text-sm">
-                Delete job
+              <label className="block text-sm text-ink">
+                Notes
+                <textarea
+                  value={notes}
+                  maxLength={5100}
+                  onChange={(event) => { setNotes(event.target.value); setNotice(null) }}
+                  placeholder="Interview dates, recruiter contact, next steps…"
+                  className="control mt-2 h-36 resize-y p-3 text-sm leading-5"
+                />
+                <span className={`mt-1 block text-right text-xs ${notesTooLong ? 'text-ink' : 'text-muted'}`}>{notes.length.toLocaleString()} / 5,000</span>
+              </label>
+
+              <button
+                onClick={() => saveTracking.mutate()}
+                disabled={saveTracking.isPending || notesTooLong || !isDirty}
+                className="primary-button w-full"
+              >
+                <ButtonLabel pending={saveTracking.isPending} pendingText="Saving…">Save changes</ButtonLabel>
               </button>
+              {!isDirty && !saveTracking.isPending && <p className="text-center text-xs text-muted">All changes saved</p>}
+
+              <div className="border-t border-border pt-4 text-center">
+                <button className="text-sm text-muted underline-offset-4 hover:text-ink hover:underline" onClick={() => { deleteJob.reset(); setShowDeleteDialog(true) }}>Delete job</button>
+              </div>
             </div>
-          </div>
+          </aside>
         </div>
-      </div>
+      </main>
+
+      <Dialog
+        open={showDeleteDialog}
+        title="Delete this job?"
+        description="This permanently removes the analysis, notes, and tracking history."
+        onClose={closeDeleteDialog}
+        dismissible={!deleteJob.isPending}
+        width="max-w-md"
+        footer={(
+          <>
+            <button className="secondary-button" onClick={closeDeleteDialog} disabled={deleteJob.isPending}>Cancel</button>
+            <button className="danger-button" onClick={() => deleteJob.mutate()} disabled={deleteJob.isPending}>
+              <ButtonLabel pending={deleteJob.isPending} pendingText="Deleting…">Delete permanently</ButtonLabel>
+            </button>
+          </>
+        )}
+      >
+        {deleteJob.error && <InlineAlert>{deleteJob.error.message}</InlineAlert>}
+        <p className="text-sm leading-6 text-muted">You cannot undo this action.</p>
+      </Dialog>
     </div>
   )
 }

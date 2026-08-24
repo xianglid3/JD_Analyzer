@@ -1,6 +1,7 @@
 import { Navigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
+import { PageLoader } from './Feedback'
 
 export default function ProtectedRoute( {children} ) {
     
@@ -10,7 +11,7 @@ export default function ProtectedRoute( {children} ) {
         retry: false,          
     })
 
-    if (isLoading) return <p className="p-8">Loading…</p>
+    if (isLoading) return <PageLoader label="Loading your workspace…" />
     if (isError) return <Navigate to="/login" replace />
     
     return children

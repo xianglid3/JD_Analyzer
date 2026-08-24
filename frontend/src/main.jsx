@@ -33,7 +33,7 @@ createRoot(document.getElementById('root')).render(
           <Route path="/jobs/:id" element={
             <ProtectedRoute> <JobDetailPage /> </ProtectedRoute>} />
 
-          <Route path="*" element={<Navigate to="/login" replace />} />        
+          <Route path="*" element={<Navigate to="/dashboard" replace />} />
         
         </Routes>
       </BrowserRouter>
