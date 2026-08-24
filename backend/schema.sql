@@ -55,6 +55,7 @@ CREATE TABLE jobs (
   location          text,
   work_type         work_type,
   match_score       numeric,
+  match_detail      jsonb,
   status            status_type NOT NULL DEFAULT 'saved',
   notes             text,
   deadline          date,
@@ -64,3 +65,12 @@ CREATE TABLE jobs (
 );
 -- matches the list query: WHERE user_id = %s ORDER BY created_at DESC
 CREATE INDEX jobs_user_created_idx ON jobs (user_id, created_at DESC);
+
+CREATE TABLE idempotency_requests (
+  user_id         uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  idempotency_key text NOT NULL,
+  request_hash    text NOT NULL,
+  job_id          uuid REFERENCES jobs(id) ON DELETE CASCADE,
+  created_at      timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, idempotency_key)
+);

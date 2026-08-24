@@ -4,11 +4,12 @@ import logging
 from os.path import splitext
 from db import get_cursor
 from middleware import require_auth
-from services.match import compute_match_score
+from services.match import compute_match
 from services.openai_services import analyze_resume
 from services.jd_preprocess import preprocess_text
 from services.file_extract import extract_text_from_file
 from extensions import limiter
+from routes.analysis_errors import analysis_error_response
 
 
 resume_bp = Blueprint("resume", __name__, url_prefix="/api/resume") #why __name__
@@ -82,8 +83,21 @@ def upsert_resume():
         # recompute match scores for this user's jobs against the new resume skills
         cur.execute("SELECT id, skills FROM jobs WHERE user_id = %s", (g.user_id,))
         for job_id, job_skills in cur.fetchall():
-            score = compute_match_score(job_skills, skills)
-            cur.execute("UPDATE jobs SET match_score = %s WHERE id = %s", (score, job_id))
+            match = compute_match(job_skills, skills)
+            score = match["score"] if match else None
+            detail = {
+                "matched": match["matched"],
+                "missing": match["missing"],
+            } if match else None
+
+            cur.execute(
+                """
+                UPDATE jobs
+                SET match_score = %s, match_detail = %s
+                WHERE id = %s
+                """,
+                (score, json.dumps(detail) if detail else None, job_id),
+            )
 
     return jsonify({"ok": True}), 200
 
@@ -106,9 +120,8 @@ def parse_resume():
 
     try:
         resume = analyze_resume(cleaned)
-    except Exception:
-        logger.exception("analyze_resume failed (parse)")
-        return jsonify({"error": "Analysis failed, please try again"}), 503
+    except Exception as exc:
+        return analysis_error_response(exc, logger)
     
     return jsonify({"skills": resume.skills}), 200
 
@@ -139,9 +152,8 @@ def upload_resume():
 
     try:
         resume = analyze_resume(cleaned)
-    except Exception:
-        logger.exception("analyze_resume failed (upload)")
-        return jsonify({"error": "analysis failed, please try again"}), 503
+    except Exception as exc:
+        return analysis_error_response(exc, logger)
 
     return jsonify({"skills": resume.skills}), 200
 

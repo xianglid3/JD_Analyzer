@@ -8,10 +8,45 @@ import hashlib
 import jwt
 import datetime
 import os
+import re
 
 auth_bp = Blueprint("auth", __name__, url_prefix="/api/auth")
 JWT_SECRET = os.environ["JWT_SECRET"]
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").lower() == "true"
+
+#validation limits
+MIN_USERNAME_CHARS = 3
+MAX_USERNAME_CHARS = 50
+MIN_PASSWORD_BYTES = 8
+MAX_PASSWORD_BYTES = 72
+USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9]+$")
+
+def validate_credentials(data):
+    if not isinstance(data, dict):
+        return None, None, "JSON body required"
+
+    username = data.get("username")
+    password = data.get("password")
+
+    if not isinstance(username, str) or not isinstance(password, str):
+        return None, None, "username and password required"
+
+    username = username.strip()
+    password_bytes = password.encode("utf-8")
+
+    if not MIN_USERNAME_CHARS <= len(username) <= MAX_USERNAME_CHARS:
+        return None, None, "username must be 3–50 characters"
+
+    if not USERNAME_PATTERN.fullmatch(username):
+        return None, None, "username can only contain letters and numbers"
+
+    if any(char.isspace() for char in password):
+        return None, None, "password cannot contain whitespace"
+
+    if not MIN_PASSWORD_BYTES <= len(password_bytes) <= MAX_PASSWORD_BYTES:
+        return None, None, "password must be 8–72 bytes"
+
+    return username, password, None
 
 
 @auth_bp.route("/me", methods = ["GET"])
@@ -30,12 +65,14 @@ def me():
 
 @auth_bp.route("/signup", methods=["POST"])
 def signup():
-    data = request.get_json()
-    username = data.get("username")
-    password = data.get("password")
 
-    if not username or not password:
-        return jsonify({"error": "username or password required"}), 400
+    # silent=true prevents bad JSON causing flask error before validation run
+    data = request.get_json(silent=True)
+    username, password, error = validate_credentials(data)
+
+    if error:
+        return jsonify({"error": error}), 400
+
 
     password_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
@@ -54,12 +91,11 @@ def signup():
 
 @auth_bp.route("/login", methods =["POST"])
 def login():
-    data = request.get_json()
-    username = data.get("username")
-    password = data.get("password")
+    data = request.get_json(silent=True)
+    username, password, error = validate_credentials(data)
 
-    if not username or not password:
-        return jsonify({"error": "username or password required"}), 400
+    if error:
+        return jsonify({"error": error}), 400
 
     with get_cursor() as cur:
         cur.execute(
@@ -73,7 +109,7 @@ def login():
     user_id, password_hash = row
 
     if not bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8")):
-        return jsonify({"error": "invalid credentails"}), 401
+        return jsonify({"error": "invalid credentials"}), 401
 
     #JWT access token
     payload = {

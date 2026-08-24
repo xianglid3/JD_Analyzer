@@ -81,18 +81,40 @@ ALIASES = {
     "adobe photoshop": "photoshop",
     "adobe illustrator": "illustrator",
     "adobe xd": "xd",
+
+    # common multi-word equivalents (surfaced by the eval)
+    "systems design": "system design",
+    "large language models": "llm",
+    "large language model": "llm",
+    "apis": "api",
+    "restful apis": "api",
+    "restful api": "api",
+    "rest api": "api",
 }
 
 
 def normalize_skill(skill):
-    s = skill.strip().lower().removesuffix(".js")   # "React.js" -> "react" (only a trailing .js)
-    return ALIASES.get(s, s)                         # "js" -> "javascript", else unchanged
+    s = skill.strip().lower().replace("_", " ").removesuffix(".js")   # model_distillation -> model distillation; React.js -> react
+    return ALIASES.get(s, s)                                           # "js" -> "javascript", else unchanged
 
 
-def compute_match_score(job_skills, resume_skills):
+def compute_match(job_skills, resume_skills):
     if not job_skills:
         return None
-    job_set = {normalize_skill(s) for s in job_skills}        # distinct normalized skills
+
+    job_set = {normalize_skill(s) for s in job_skills}
     resume_set = {normalize_skill(s) for s in resume_skills}
-    matched = sum(1 for s in job_set if s in resume_set)
-    return round(matched / len(job_set) * 100, 2)
+
+    matched = sorted(job_set & resume_set)
+    missing = sorted(job_set - resume_set)
+    score = round(len(matched) / len(job_set) * 100, 2)
+
+    return {
+        "score": score,
+        "matched": matched,
+        "missing": missing,
+    }
+
+def compute_match_score(job_skills, resume_skills):
+    result = compute_match(job_skills, resume_skills)
+    return result["score"] if result else None

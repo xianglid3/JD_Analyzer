@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useDeferredValue, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { apiFetch } from '../lib/api'
 import NavBar from '../components/NavBar'
@@ -37,9 +37,13 @@ export default function DashboardPage() {
   const [statusFilter, setStatusFilter] = useState('all')   // clickable filter chips
   const [sortKey, setSortKey] = useState('created_at')      // which column to sort by
   const [sortDir, setSortDir] = useState('desc')            // 'asc' | 'desc'
+  const [page, setPage] = useState(1)
+  const deferredSearch = useDeferredValue(search)
+  const analyzeRequestKey = useRef(null)
 
   // click a header: same column → flip direction; new column → start ascending
   function toggleSort(key) {
+    setPage(1)
     if (sortKey === key) {
       setSortDir(sortDir === 'asc' ? 'desc' : 'asc')
     } else {
@@ -49,11 +53,17 @@ export default function DashboardPage() {
   }
 
   const createJob = useMutation({
-    mutationFn: (description) =>
-      apiFetch('/jobs', { method: 'POST', body: JSON.stringify({ description }) }),
+    mutationFn: ({ description, idempotencyKey }) =>
+      apiFetch('/jobs', {
+        method: 'POST',
+        headers: { 'Idempotency-Key': idempotencyKey },
+        body: JSON.stringify({ description }),
+      }),
     onSuccess: () => {
+      analyzeRequestKey.current = null
       queryClient.invalidateQueries({ queryKey: ['jobs'] })
       queryClient.invalidateQueries({ queryKey: ['jobs-stats'] })
+      setPage(1)
       setText('')
       setShowModal(false)
     },
@@ -68,9 +78,19 @@ export default function DashboardPage() {
     },
   })
 
-  const { data, isLoading, isError } = useQuery({
-    queryKey: ['jobs'],
-    queryFn: () => apiFetch('/jobs'),
+  const { data, isLoading, isError, isFetching } = useQuery({
+    queryKey: ['jobs', page, deferredSearch, statusFilter, sortKey, sortDir],
+    queryFn: () => {
+      const params = new URLSearchParams({
+        page: String(page),
+        sort: sortKey,
+        direction: sortDir,
+      })
+      if (deferredSearch.trim()) params.set('search', deferredSearch.trim())
+      if (statusFilter !== 'all') params.set('status', statusFilter)
+      return apiFetch(`/jobs?${params.toString()}`)
+    },
+    placeholderData: (previousData) => previousData,
   })
 
   const { data: stats } = useQuery({
@@ -81,21 +101,8 @@ export default function DashboardPage() {
   if (isLoading) return <p className="p-8">Loading…</p>
   if (isError) return <p className="p-8">Failed to load jobs</p>
 
-  const visible = data.jobs
-    .filter((job) =>
-      `${job.title || ''} ${job.company_name || ''}`.toLowerCase().includes(search.toLowerCase())
-    )
-    .filter((job) => statusFilter === 'all' || job.status === statusFilter)
-    .sort((a, b) => {
-      const dir = sortDir === 'asc' ? 1 : -1
-      const av = a[sortKey]
-      const bv = b[sortKey]
-      if (av == null) return 1          // missing values sink to the bottom
-      if (bv == null) return -1
-      if (av < bv) return -1 * dir
-      if (av > bv) return 1 * dir
-      return 0
-    })
+  const firstEntry = data.total === 0 ? 0 : (data.page - 1) * data.per_page + 1
+  const lastEntry = Math.min(data.page * data.per_page, data.total)
 
   return (
     <div className="min-h-screen bg-surface">
@@ -118,7 +125,10 @@ export default function DashboardPage() {
             ].map(([label, value, key]) => (
               <button
                 key={label}
-                onClick={() => setStatusFilter(key)}
+                onClick={() => {
+                  setStatusFilter(key)
+                  setPage(1)
+                }}
                 className={`rounded-lg px-4 py-3 text-center bg-white border ${
                   statusFilter === key ? 'border-primary ring-1 ring-primary' : 'border-border'
                 }`}
@@ -136,7 +146,10 @@ export default function DashboardPage() {
           <div className="flex items-center gap-3">
             <input
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(e) => {
+                setSearch(e.target.value)
+                setPage(1)
+              }}
               placeholder="Search title or company…"
               className="border border-border rounded-md px-3 py-2 text-sm w-64 bg-white"
             />
@@ -167,7 +180,7 @@ export default function DashboardPage() {
               </tr>
             </thead>
             <tbody>
-              {visible.map((job) => (
+              {data.jobs.map((job) => (
                 <tr
                   key={job.id}
                   onClick={() => navigate(`/jobs/${job.id}`)}
@@ -211,9 +224,37 @@ export default function DashboardPage() {
             </tbody>
           </table>
 
-          {visible.length === 0 && (
+          {data.jobs.length === 0 && (
             <p className="px-4 py-8 text-center text-muted text-sm">No jobs found.</p>
           )}
+
+          <div className="border-t border-border bg-surface px-4 py-3 flex items-center justify-between">
+            <span className="text-xs text-muted">
+              Showing {firstEntry} to {lastEntry} of {data.total} entries
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                aria-label="Previous page"
+                title="Previous page"
+                onClick={() => setPage((current) => Math.max(1, current - 1))}
+                disabled={page <= 1 || isFetching}
+                className="p-2 text-muted hover:text-ink disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                ‹
+              </button>
+              <button
+                type="button"
+                aria-label="Next page"
+                title="Next page"
+                onClick={() => setPage((current) => current + 1)}
+                disabled={page >= data.total_pages || isFetching}
+                className="p-2 text-muted hover:text-ink disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                ›
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -228,7 +269,10 @@ export default function DashboardPage() {
             <p className="text-sm text-muted mb-3">Paste the full text below (50–10000 characters).</p>
             <textarea
               value={text}
-              onChange={(e) => setText(e.target.value)}
+              onChange={(e) => {
+                setText(e.target.value)
+                analyzeRequestKey.current = null
+              }}
               placeholder="Paste a job description…"
               className="w-full h-48 border border-border rounded-md p-3 text-sm"
             />
@@ -246,7 +290,13 @@ export default function DashboardPage() {
                 Cancel
               </button>
               <button
-                onClick={() => createJob.mutate(text)}
+                onClick={() => {
+                  analyzeRequestKey.current ??= crypto.randomUUID()
+                  createJob.mutate({
+                    description: text,
+                    idempotencyKey: analyzeRequestKey.current,
+                  })
+                }}
                 disabled={createJob.isPending || text.length < 50 || text.length > 10000}
                 className="bg-primary text-white rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50"
               >

@@ -1,4 +1,4 @@
-from services.match import compute_match_score, normalize_skill
+from services.match import compute_match, compute_match_score, normalize_skill
 
 def test_empty_job_skill_match():
     assert compute_match_score([], ["python"]) is None
@@ -31,4 +31,16 @@ def test_removesuffix_not_substring():
     assert normalize_skill("React.js") == "react"        # trailing .js stripped
     assert normalize_skill("react.jsx") == "react.jsx"   # NOT mangled to "reactx"
 
+
+def test_match_breakdown():
+    result = compute_match(
+        ["Python", "React.js", "Docker"],
+        ["python", "React"],
+    )
+
+    assert result == {
+        "score": 66.67,
+        "matched": ["python", "react"],
+        "missing": ["docker"],
+    }
 

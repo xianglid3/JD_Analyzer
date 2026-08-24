@@ -1,18 +1,58 @@
 from flask import Blueprint, request, jsonify, g
 import json
 import logging
+import hashlib
+from uuid import UUID
 from db import get_cursor
 from middleware import require_auth
 from extensions import limiter
 from services.jd_preprocess import preprocess_text
 from services.openai_services import analyze_job_description
-from services.match import compute_match_score
-
+from services.match import compute_match
+from routes.analysis_errors import analysis_error_response
 
 jobs_bp = Blueprint("jobs", __name__, url_prefix = "/api/jobs")
 logger = logging.getLogger(__name__)
 #accetpable status
 VALID_STATUSES = {"saved", "applied", "interview", "offer", "rejected", "ghosted", "accepted", "decline"}
+IDEMPOTENCY_STALE_AFTER = "10 minutes"
+
+
+def release_idempotency_key(user_id, idempotency_key, request_hash):
+    """Allow a safe retry when analysis or persistence fails."""
+    try:
+        with get_cursor(commit=True) as cur:
+            cur.execute(
+                """
+                DELETE FROM idempotency_requests
+                WHERE user_id = %s
+                  AND idempotency_key = %s
+                  AND request_hash = %s
+                  AND job_id IS NULL
+                """,
+                (user_id, idempotency_key, request_hash),
+            )
+    except Exception:
+        logger.exception("failed to release idempotency key")
+
+
+def create_job_payload(row, replayed=False):
+    (job_id, title, summary, no_bs_translation, skills,
+     company_name, location, work_type, created_at) = row
+    payload = {
+        "id": str(job_id),
+        "title": title,
+        "summary": summary,
+        "no_bs_translation": no_bs_translation,
+        "skills": skills,
+        "company_name": company_name,
+        "location": location,
+        "work_type": work_type,
+        "created_at": created_at.isoformat(),
+    }
+    if replayed:
+        payload["replayed"] = True
+    return payload
 
 
 @jobs_bp.route("", methods = ["POST"])
@@ -28,69 +68,197 @@ def create_job():
     if len(raw_description) > 10000:
         return jsonify({"error": "Description too long"}), 400
 
+    #job idempotency stuff
+    idempotency_key = request.headers.get("Idempotency-Key", "")
+    try:
+        UUID(idempotency_key)
+    except ValueError:
+        return jsonify({"error": "Valid Idempotency-Key required"}), 400
+
+    request_hash = hashlib.sha256(
+        raw_description.encode("utf-8")
+    ).hexdigest()
+
+    # Delete abandoned reservations after a server crash, then atomically claim
+    # this key before spending money on an OpenAI call.
+    with get_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            DELETE FROM idempotency_requests
+            WHERE user_id = %s
+              AND idempotency_key = %s
+              AND job_id IS NULL
+              AND created_at < now() - %s::interval
+            """,
+            (g.user_id, idempotency_key, IDEMPOTENCY_STALE_AFTER),
+        )
+        cur.execute(
+            """
+            INSERT INTO idempotency_requests
+                (user_id, idempotency_key, request_hash)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (user_id, idempotency_key) DO NOTHING
+            RETURNING idempotency_key
+            """,
+            (g.user_id, idempotency_key, request_hash),
+        )
+        reserved = cur.fetchone()
+
+        existing = None
+        if reserved is None:
+            cur.execute(
+                """
+                SELECT r.request_hash, j.id, j.title, j.summary,
+                       j.no_bs_translation, j.skills, j.company_name,
+                       j.location, j.work_type, j.created_at
+                FROM idempotency_requests AS r
+                LEFT JOIN jobs AS j ON j.id = r.job_id
+                WHERE r.user_id = %s AND r.idempotency_key = %s
+                """,
+                (g.user_id, idempotency_key),
+            )
+            existing = cur.fetchone()
+
+    if reserved is None:
+        if existing is None:
+            response = jsonify({"error": "Analysis already in progress, please retry shortly"})
+            response.headers["Retry-After"] = "3"
+            return response, 409
+        if existing[0] != request_hash:
+            return jsonify({
+                "error": "Idempotency-Key was already used with a different description"
+            }), 409
+        if existing[1] is None:
+            response = jsonify({"error": "Analysis already in progress, please retry shortly"})
+            response.headers["Retry-After"] = "3"
+            return response, 409
+        return jsonify(create_job_payload(existing[1:], replayed=True)), 200
+
     cleaned_description = preprocess_text(raw_description)
 
     # AI call stays OUTSIDE the db connection — don't hold a connection open for 3-8s
     try:
         job = analyze_job_description(cleaned_description)
+    except Exception as exc:
+        release_idempotency_key(g.user_id, idempotency_key, request_hash)
+        return analysis_error_response(exc, logger)
+
+    try:
+        with get_cursor(commit=True) as cur:
+            cur.execute("SELECT skills FROM resumes WHERE user_id = %s", (g.user_id,))
+            resume_row = cur.fetchone()
+            resume_skills = resume_row[0] if resume_row else []
+            match = compute_match(job.skills, resume_skills)
+            match_score = match["score"] if match else None
+            match_detail = {
+                "matched": match["matched"],
+                "missing": match["missing"],
+            } if match else None
+
+            cur.execute(
+                """
+                INSERT INTO jobs (user_id, raw_description, title, summary, no_bs_translation,
+                                  skills, company_name, location, work_type, match_score, match_detail)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, created_at
+                """,
+                (
+                    g.user_id, raw_description, job.title, job.summary, job.no_bs_translation,
+                    json.dumps(job.skills), job.company_name, job.location, job.work_type,
+                    match_score, json.dumps(match_detail) if match_detail else None,
+                ),
+            )
+            new_id, created_at = cur.fetchone()
+
+            cur.execute(
+                """
+                UPDATE idempotency_requests
+                SET job_id = %s
+                WHERE user_id = %s
+                  AND idempotency_key = %s
+                  AND request_hash = %s
+                  AND job_id IS NULL
+                """,
+                (new_id, g.user_id, idempotency_key, request_hash),
+            )
+            if cur.rowcount != 1:
+                raise RuntimeError("idempotency reservation disappeared")
     except Exception:
-        logger.exception("analyze_job_description failed")
-        return jsonify({"error": "analysis failed, please try again"}), 503
+        release_idempotency_key(g.user_id, idempotency_key, request_hash)
+        raise
 
-    with get_cursor(commit=True) as cur:
-        cur.execute("SELECT skills FROM resumes WHERE user_id = %s", (g.user_id,))
-        resume_row = cur.fetchone()
-        resume_skills = resume_row[0] if resume_row else []
-        match_score = compute_match_score(job.skills, resume_skills)
-
-        cur.execute(
-            # triple quote to span across lines
-            """
-            INSERT INTO jobs (user_id, raw_description, title, summary, no_bs_translation,
-                              skills, company_name, location, work_type, match_score)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING id, created_at
-            """,
-            (
-                g.user_id, raw_description, job.title, job.summary, job.no_bs_translation,
-                json.dumps(job.skills), job.company_name, job.location, job.work_type, match_score
-            ),
-        )
-        new_id, created_at = cur.fetchone()
-
-    return jsonify({
-        "id": str(new_id),
-        "title": job.title,
-        "summary": job.summary,
-        "no_bs_translation": job.no_bs_translation,
-        "skills": job.skills,
-        "company_name": job.company_name,
-        "location": job.location,
-        "work_type": job.work_type,
-        "created_at": created_at.isoformat(),
-    }), 201
+    return jsonify(create_job_payload((
+        new_id, job.title, job.summary, job.no_bs_translation, job.skills,
+        job.company_name, job.location, job.work_type, created_at,
+    ))), 201
 
 
 #list all of the saved jobs from a user
 @jobs_bp.route("", methods = ["GET"])
 @require_auth
 def list_jobs():
+    try:
+        page = int(request.args.get("page", 1))
+    except (TypeError, ValueError):
+        return jsonify({"error": "page must be a positive integer"}), 400
 
-    #pagination, so we don't get 5000 items all at once
-    page = int(request.args.get("page", 1))
+    if page < 1:
+        return jsonify({"error": "page must be a positive integer"}), 400
+
     per_page = 20
     offset = (page - 1) * per_page
 
+    search = request.args.get("search", "").strip()
+    status = request.args.get("status", "").strip()
+    sort_key = request.args.get("sort", "created_at")
+    direction = request.args.get("direction", "desc").lower()
+
+    if status and status not in VALID_STATUSES:
+        return jsonify({"error": "invalid status"}), 400
+
+    sort_columns = {
+        "title": "title",
+        "company_name": "company_name",
+        "location": "location",
+        "work_type": "work_type",
+        "match_score": "match_score",
+        "status": "status",
+        "created_at": "created_at",
+    }
+    if sort_key not in sort_columns or direction not in {"asc", "desc"}:
+        return jsonify({"error": "invalid sort"}), 400
+
+    where_parts = ["user_id = %s"]
+    params = [g.user_id]
+
+    if search:
+        where_parts.append("(title ILIKE %s OR company_name ILIKE %s)")
+        pattern = f"%{search}%"
+        params.extend([pattern, pattern])
+    if status:
+        where_parts.append("status = %s")
+        params.append(status)
+
+    where_clause = " AND ".join(where_parts)
+    # The interpolated SQL fragments come only from fixed allowlists above.
+    order_clause = f"{sort_columns[sort_key]} {direction.upper()} NULLS LAST, id DESC"
+
     with get_cursor() as cur:
         cur.execute(
-            """
+            f"SELECT COUNT(*) FROM jobs WHERE {where_clause}",
+            params,
+        )
+        total = cur.fetchone()[0]
+
+        cur.execute(
+            f"""
             SELECT id, title, company_name, location, work_type, match_score, status, created_at
             FROM jobs
-            WHERE user_id = %s
-            ORDER BY created_at DESC
+            WHERE {where_clause}
+            ORDER BY {order_clause}
             LIMIT %s OFFSET %s
             """,
-            (g.user_id, per_page, offset),
+            params + [per_page, offset],
         )
         rows = cur.fetchall()
 
@@ -108,7 +276,14 @@ def list_jobs():
             "created_at": created_at.isoformat(),
         })
 
-    return jsonify({"jobs": jobs, "page": page}), 200
+    total_pages = (total + per_page - 1) // per_page
+    return jsonify({
+        "jobs": jobs,
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "total_pages": total_pages,
+    }), 200
 
 
 #get job details
@@ -120,7 +295,8 @@ def get_job(job_id):
         cur.execute(
             """
             SELECT id, raw_description, title, summary, no_bs_translation, skills,
-                   company_name, location, work_type, match_score, status, notes, deadline, created_at
+                   company_name, location, work_type, match_score, match_detail,
+                   status, notes, deadline, created_at
             FROM jobs
             WHERE id = %s AND user_id = %s
             """,
@@ -132,7 +308,8 @@ def get_job(job_id):
         return jsonify({"error": "job not found"}), 404
 
     (job_id, raw_description, title, summary, no_bs_translation, skills,
-     company_name, location, work_type, match_score, status, notes, deadline, created_at) = row
+     company_name, location, work_type, match_score, match_detail,
+     status, notes, deadline, created_at) = row
 
     return jsonify({
         "id": str(job_id),
@@ -145,6 +322,7 @@ def get_job(job_id):
         "location": location,
         "work_type": work_type,
         "match_score": float(match_score) if match_score is not None else None,
+        "match_detail": match_detail,
         "status": status,
         "notes": notes,
         "deadline": deadline.isoformat() if deadline else None,

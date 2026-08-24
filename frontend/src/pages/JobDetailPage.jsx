@@ -83,6 +83,38 @@ export default function JobDetailPage() {
               </div>
             </div>
 
+            {job.match_detail && (
+              <div className="bg-white border border-border rounded-lg p-6">
+                <h2 className="font-semibold text-ink mb-4">Match Breakdown</h2>
+
+                <h3 className="text-sm font-medium text-green-700 mb-2">Matched skills</h3>
+                <div className="flex flex-wrap gap-2 mb-5">
+                  {job.match_detail.matched.length > 0 ? (
+                    job.match_detail.matched.map((skill) => (
+                      <span key={skill} className="bg-green-50 text-green-700 rounded-full px-3 py-1 text-sm">
+                        ✓ {skill}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="text-sm text-muted">No matched skills.</span>
+                  )}
+                </div>
+
+                <h3 className="text-sm font-medium text-red-700 mb-2">Missing skills</h3>
+                <div className="flex flex-wrap gap-2">
+                  {job.match_detail.missing.length > 0 ? (
+                    job.match_detail.missing.map((skill) => (
+                      <span key={skill} className="bg-red-50 text-red-700 rounded-full px-3 py-1 text-sm">
+                        {skill}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="text-sm text-muted">No missing skills.</span>
+                  )}
+                </div>
+              </div>
+            )}
+
             {job.raw_description && (
               <details className="bg-white border border-border rounded-lg p-4">
                 <summary className="cursor-pointer text-sm text-muted">View original job description</summary>

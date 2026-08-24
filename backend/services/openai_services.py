@@ -39,7 +39,8 @@ SYSTEM_PROMPT = """You are a job description analyst. Extract key information an
   "location": "<city/region or null>",
   "work_type": "<'remote' | 'hybrid' | 'in_person' | null>",
 }
-Rules: max 15 skills, hard skills + explicitly required soft skills only. Use null (not empty string) when a field is unknown. Only use facts explicitly in the text. Do not guess. Use null for unknown scalar fields and [] for unknown lists.
+Rules for "skills": concrete technical skills only — named programming languages, tools, frameworks, libraries, platforms, AND technical concepts/engineering practices (e.g. data structures, algorithms, system design, distributed systems, unit testing, integration testing, ci/cd). Output each as its short canonical name ("aws" not "AWS cloud services", "c" not "C programming", "api" not "API development"). EXCLUDE soft skills and generic traits entirely (communication, teamwork, problem-solving, adaptability, leadership, collaboration, organization, etc.). Max 15. Only skills explicitly named in the text — do not infer or generalize. Use [] when the posting names no concrete hard skills.
+For all other fields: use null (not empty string) when unknown; only use facts explicitly in the text; do not guess.
 
 """
 
@@ -55,6 +56,7 @@ def analyze_job_description(text):
             {"role": "user", "content": text},
         ],
         response_format={"type": "json_object"},
+        temperature=0,          # deterministic extraction → reproducible + factual
         timeout=30,
     )
 
@@ -91,6 +93,7 @@ def analyze_resume(text):
             {"role": "user", "content": text},
         ],
         response_format={"type": "json_object"},
+        temperature=0,          # deterministic extraction → reproducible + factual
         timeout=30,
     )
 

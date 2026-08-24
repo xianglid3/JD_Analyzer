@@ -11,7 +11,7 @@ import pytest
 
 SCHEMA_SQL = (pathlib.Path(__file__).resolve().parent.parent / "schema.sql").read_text()
 DSN = os.environ["SUPABASE_URL"]
-TABLES = "users, jobs, resumes, refresh_tokens"
+TABLES = "idempotency_requests, refresh_tokens, jobs, resumes, users"
 
 
 def _looks_like_test_db(dsn):
@@ -47,7 +47,9 @@ def client(_db):
         cur.execute(f"TRUNCATE {TABLES} RESTART IDENTITY CASCADE;")
 
     from app import app
+    from extensions import limiter
     app.config["TESTING"] = True
+    limiter.reset()
     with app.test_client() as c:
         yield c
 
@@ -55,11 +57,24 @@ def client(_db):
 @pytest.fixture
 def insert_job(_db):
     """Insert a job row directly (bypasses the OpenAI-backed create endpoint)."""
-    def _insert(user_id, description="x" * 60):
+    def _insert(
+        user_id,
+        description="x" * 60,
+        title=None,
+        company_name=None,
+        status="saved",
+        match_score=None,
+    ):
         with _db.cursor() as cur:
             cur.execute(
-                "INSERT INTO jobs (user_id, raw_description) VALUES (%s, %s) RETURNING id",
-                (user_id, description),
+                """
+                INSERT INTO jobs (
+                    user_id, raw_description, title, company_name, status, match_score
+                )
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (user_id, description, title, company_name, status, match_score),
             )
             return str(cur.fetchone()[0])
     return _insert
