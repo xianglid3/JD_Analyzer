@@ -1,5 +1,6 @@
 from flask import Blueprint, request, jsonify, g
 import json
+import logging
 from db import get_cursor
 from middleware import require_auth
 from extensions import limiter
@@ -9,6 +10,7 @@ from services.match import compute_match_score
 
 
 jobs_bp = Blueprint("jobs", __name__, url_prefix = "/api/jobs")
+logger = logging.getLogger(__name__)
 #accetpable status
 VALID_STATUSES = {"saved", "applied", "interview", "offer", "rejected", "ghosted", "accepted", "decline"}
 
@@ -32,6 +34,7 @@ def create_job():
     try:
         job = analyze_job_description(cleaned_description)
     except Exception:
+        logger.exception("analyze_job_description failed")
         return jsonify({"error": "analysis failed, please try again"}), 503
 
     with get_cursor(commit=True) as cur:

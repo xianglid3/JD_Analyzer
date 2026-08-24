@@ -1,5 +1,6 @@
 from flask import Blueprint, request, jsonify, g #whats g
 import json
+import logging
 from os.path import splitext
 from db import get_cursor
 from middleware import require_auth
@@ -11,6 +12,7 @@ from extensions import limiter
 
 
 resume_bp = Blueprint("resume", __name__, url_prefix="/api/resume") #why __name__
+logger = logging.getLogger(__name__)
 
 ALLOWED_SUFFIXES = {".pdf", ".txt", ".md", ".html"}   # server-side allowlist (not the UI hint)
 MIN_RESUME_CHARS = 100                                 # shared floor for /parse and /upload (BUG-023)
@@ -105,6 +107,7 @@ def parse_resume():
     try:
         resume = analyze_resume(cleaned)
     except Exception:
+        logger.exception("analyze_resume failed (parse)")
         return jsonify({"error": "Analysis failed, please try again"}), 503
     
     return jsonify({"skills": resume.skills}), 200
@@ -124,6 +127,7 @@ def upload_resume():
     try:
         text = extract_text_from_file(file.filename, file.read()).strip()
     except Exception:
+        logger.exception("file extraction failed")
         return jsonify({"error": "could not read that file"}), 400
 
     text = text[:20000]   # cap very long files instead of rejecting
@@ -136,6 +140,7 @@ def upload_resume():
     try:
         resume = analyze_resume(cleaned)
     except Exception:
+        logger.exception("analyze_resume failed (upload)")
         return jsonify({"error": "analysis failed, please try again"}), 503
 
     return jsonify({"skills": resume.skills}), 200

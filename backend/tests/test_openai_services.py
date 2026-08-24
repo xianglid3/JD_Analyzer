@@ -4,9 +4,13 @@ from types import SimpleNamespace
 from pydantic import ValidationError
 import services.openai_services as svc
 
-# fake OpenAI response so response.choices[0].message.content == json string
+# fake OpenAI response: response.choices[0].message.content + response.usage.*
 def fake_response(content):
-    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+    usage = SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
+        usage=usage,
+    )
 
 def test_valid_extraction(monkeypatch):
     payload = '{"title": "Backend Engineer", "skills": ["Python", "Python", "SQL"]}'

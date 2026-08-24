@@ -1,7 +1,11 @@
 import json
+import logging
+import time
 from openai import OpenAI
 from pydantic import BaseModel, field_validator
 from typing import Optional, Literal
+
+logger = logging.getLogger(__name__)
 
 client = OpenAI()
 
@@ -41,6 +45,9 @@ Rules: max 15 skills, hard skills + explicitly required soft skills only. Use nu
 
 
 def analyze_job_description(text):
+    
+    t0 = time.perf_counter() #get the time
+
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
@@ -50,6 +57,13 @@ def analyze_job_description(text):
         response_format={"type": "json_object"},
         timeout=30,
     )
+
+    latency_ms = (time.perf_counter() - t0) * 1000 #calculate latency
+    logger.info("llm model=%s latency_ms=%.0f prompt=%d completion=%d",
+                "gpt-4o-mini", latency_ms,
+                response.usage.prompt_tokens, response.usage.completion_tokens)
+
+
 
     content = response.choices[0].message.content
     data = json.loads(content)
@@ -68,21 +82,28 @@ RESUME_PROMPT = """You extract skills from a resume. Return ONLY valid JSON with
 Rules: hard skills, tools, languages, and frameworks explicitly present in the text. Max 30 skills. No soft-skill fluff. Only skills actually in the text — do not infer."""
 
 def analyze_resume(text):
+    t0 = time.perf_counter()
+
     response = client.chat.completions.create(
-    model="gpt-4o-mini",
-    messages=[
-        {"role": "system", "content": RESUME_PROMPT},
-        {"role": "user", "content": text},
-    ],
-    response_format={"type": "json_object"},
-    timeout=30,
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": RESUME_PROMPT},
+            {"role": "user", "content": text},
+        ],
+        response_format={"type": "json_object"},
+        timeout=30,
     )
+
+    latency_ms = (time.perf_counter() - t0) * 1000
+    logger.info("llm model=%s latency_ms=%.0f prompt=%d completion=%d",
+                "gpt-4o-mini", latency_ms,
+                response.usage.prompt_tokens, response.usage.completion_tokens)
 
     content = response.choices[0].message.content
     data = json.loads(content)
 
-    job = ResumeExtraction(**data)
-    job.skills = list(dict.fromkeys(job.skills))
-    return job
+    resume = ResumeExtraction(**data)
+    resume.skills = list(dict.fromkeys(resume.skills))
+    return resume
 
 

@@ -2,8 +2,10 @@ from flask import Flask, jsonify
 from routes.auth import auth_bp
 from routes.jobs import jobs_bp
 from routes.resume import resume_bp
-
 from extensions import limiter
+import logging
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 app = Flask(__name__)
 
 # cap request bodies at 2 MB — Flask returns 413 before any handler runs
