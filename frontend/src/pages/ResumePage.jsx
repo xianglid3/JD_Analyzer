@@ -115,7 +115,6 @@ export default function ResumePage() {
             <p className="mt-1 text-sm text-muted">Paste text or upload a supported file. Nothing is saved until you confirm below.</p>
           </div>
 
-          <label htmlFor="resume-text" className="text-sm text-ink">Resume text</label>
           <textarea
             id="resume-text"
             value={resumeText}

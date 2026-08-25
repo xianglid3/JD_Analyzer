@@ -1,11 +1,12 @@
 import { Link } from 'react-router-dom'
+import TranslateMark from './TranslateMark'
 
 export default function AuthShell({ title, description, children, footer }) {
   return (
     <main className="grid min-h-screen place-items-center bg-surface px-4 py-10">
       <section className="surface-card w-full max-w-md p-6 animate-page-in sm:p-8">
         <Link to="/dashboard" className="inline-flex items-center gap-2 text-sm font-medium text-ink">
-          <span className="text-carbon" aria-hidden="true">▲</span>
+          <TranslateMark className="h-[18px] w-[18px] text-carbon" />
           JD Translator
         </Link>
         <p className="eyebrow mt-8">Account access</p>

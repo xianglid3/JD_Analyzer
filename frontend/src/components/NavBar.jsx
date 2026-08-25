@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, NavLink, useNavigate } from 'react-router-dom'
 import { apiFetch } from '../lib/api'
 import { Spinner } from './Feedback'
+import TranslateMark from './TranslateMark'
 
 export default function NavBar() {
   const navigate = useNavigate()
@@ -25,7 +26,7 @@ export default function NavBar() {
     <header className="sticky top-0 z-40 h-16 bg-surface/90 backdrop-blur-xl">
       <div className="mx-auto flex h-full max-w-7xl items-center gap-4 px-4 sm:px-6 lg:px-12">
         <Link to="/dashboard" className="flex shrink-0 items-center gap-2 text-sm font-medium text-ink">
-          <span className="text-carbon" aria-hidden="true">▲</span>
+          <TranslateMark className="h-[18px] w-[18px] text-carbon" />
           <span className="hidden sm:inline">JD Translator</span>
           <span className="sm:hidden">JD</span>
         </Link>
@@ -50,7 +51,7 @@ export default function NavBar() {
             type="button"
             onClick={() => logout.mutate()}
             disabled={logout.isPending}
-            className="inline-flex min-h-8 items-center gap-2 rounded-full border border-border bg-white px-3 text-sm text-charcoal hover:text-ink"
+            className="inline-flex items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-normal leading-5 text-charcoal hover:text-ink"
           >
             {logout.isPending && <Spinner size="sm" />}
             <span className="hidden sm:inline">{logout.isPending ? 'Logging out…' : 'Log out'}</span>
