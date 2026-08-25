@@ -96,9 +96,9 @@ export default function ResumePage() {
       <NavBar />
       <main className="page-container animate-page-in">
         <header className="mb-8">
-          <p className="text-xs text-muted">Profile</p>
-          <h1 className="mt-1 text-base font-medium text-ink">Resume skills</h1>
-          <p className="mt-1 text-sm text-muted">Your saved skills power every job match score.</p>
+          <p className="eyebrow">Profile</p>
+          <h1 className="page-heading mt-2">Resume skills</h1>
+          <p className="mt-2 text-sm text-muted">Your saved skills power every job match score.</p>
         </header>
 
         {resumeLoadError && (
@@ -190,7 +190,7 @@ export default function ResumePage() {
           </form>
 
           {skills.length === 0 ? (
-            <div className="mt-4 rounded-xl border border-dashed border-border p-8 text-center">
+            <div className="mt-4 rounded-md border border-dashed border-border p-8 text-center">
               <p className="text-sm text-ink">No skills saved yet</p>
               <p className="mt-1 text-xs text-muted">Extract a resume or add your first skill above.</p>
             </div>

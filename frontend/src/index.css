@@ -1,21 +1,27 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500&family=JetBrains+Mono:wght@400;500;600&display=swap');
 @import "tailwindcss";
 
 @theme {
-  --color-primary: #27251e;
-  --color-ink: #27251e;
-  --color-muted: #72706b;
-  --color-surface: #faf8f5;
-  --color-border: #d1d1cd;
-  --color-soft-paper: #fdfbfa;
-  --color-ash: #92918b;
-  --color-deep-teal: #016a71;
+  --color-primary: #171717;
+  --color-ink: #171717;
+  --color-muted: #666666;
+  --color-surface: #fafafa;
+  --color-border: #ebebeb;
+  --color-soft-paper: #ffffff;
+  --color-ash: #c9c9c9;
+  --color-smoke: #a8a8a8;
+  --color-graphite: #8f8f8f;
+  --color-charcoal: #4d4d4d;
+  --color-obsidian: #171717;
+  --color-carbon: #000000;
+  --color-terminal-green: #297a3a;
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 :root {
-  color: #27251e;
-  background: #faf8f5;
+  color: #171717;
+  background: #fafafa;
   font-family: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -29,7 +35,7 @@ body,
   min-width: 320px;
   min-height: 100%;
   margin: 0;
-  background: #faf8f5;
+  background: #fafafa;
 }
 
 button,
@@ -42,52 +48,70 @@ a,
 input,
 select,
 textarea {
-  transition: border-color 160ms ease, background-color 160ms ease, color 160ms ease,
-    opacity 160ms ease, transform 160ms ease;
+  transition: border-color 150ms ease, background-color 150ms ease, color 150ms ease,
+    opacity 150ms ease, transform 150ms ease;
 }
 
 button:not(:disabled) { cursor: pointer; }
 button:disabled { cursor: not-allowed; }
 
 :focus-visible {
-  outline: 2px solid #016a71;
+  outline: 2px solid #171717;
   outline-offset: 2px;
 }
 
 ::selection {
-  color: #faf8f5;
-  background: #016a71;
+  color: #ffffff;
+  background: #171717;
 }
 
 .app-main { min-height: 100vh; }
 
 .page-container {
   width: 100%;
-  max-width: 56.25rem;
+  max-width: 80rem;
   margin-inline: auto;
-  padding: 2rem;
+  padding: 3rem;
+}
+
+.eyebrow {
+  color: #171717;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.6875rem;
+  font-weight: 400;
+  letter-spacing: 0.071em;
+  line-height: 1.5;
+  text-transform: uppercase;
+}
+
+.page-heading {
+  color: #171717;
+  font-size: 1.875rem;
+  font-weight: 400;
+  letter-spacing: -0.05em;
+  line-height: 1.1;
 }
 
 .surface-card {
-  border: 1px solid #d1d1cd;
-  border-radius: 1rem;
-  background: #fdfbfa;
+  border-radius: 0.375rem;
+  background: #ffffff;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 8%), 0 0 0 2px #fafafa;
 }
 
 .control {
   width: 100%;
-  border: 1px solid #d1d1cd;
-  border-radius: 0.75rem;
-  background: #faf8f5;
-  color: #27251e;
+  border: 1px solid #ebebeb;
+  border-radius: 0.375rem;
+  background: #ffffff;
+  color: #171717;
 }
 
-.control:hover { border-color: #92918b; }
+.control:hover { border-color: #c9c9c9; }
 
 .control:focus {
-  border-color: #016a71;
-  outline: 2px solid rgb(1 106 113 / 16%);
-  outline-offset: 0;
+  border-color: #171717;
+  outline: 0;
+  box-shadow: 0 0 0 1px #171717;
 }
 
 .primary-button,
@@ -100,37 +124,37 @@ button:disabled { cursor: not-allowed; }
   border-radius: 0.375rem;
   padding: 0.625rem 1rem;
   font-size: 0.875rem;
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .primary-button,
 .danger-button {
-  border: 1px solid #27251e;
-  background: #27251e;
-  color: #faf8f5;
+  border: 1px solid #171717;
+  background: #171717;
+  color: #ffffff;
 }
 
 .primary-button:not(:disabled):hover,
 .danger-button:not(:disabled):hover {
-  border-color: #000000;
   background: #000000;
   transform: translateY(-1px);
 }
 
 .secondary-button {
-  border: 1px solid #d1d1cd;
+  border: 1px solid #ebebeb;
   background: transparent;
-  color: #72706b;
+  color: #4d4d4d;
+  box-shadow: 0 0 0 1px #ebebeb;
 }
 
 .secondary-button:not(:disabled):hover {
-  border-color: #92918b;
-  color: #27251e;
+  color: #171717;
+  background: #ffffff;
 }
 
 .primary-button:disabled,
 .secondary-button:disabled,
-.danger-button:disabled { opacity: 0.5; }
+.danger-button:disabled { opacity: 0.45; }
 
 .icon-button {
   display: inline-grid;
@@ -138,56 +162,54 @@ button:disabled { cursor: not-allowed; }
   height: 2.5rem;
   place-items: center;
   border-radius: 0.375rem;
-  color: #72706b;
-  font-size: 1.5rem;
+  color: #666666;
+  font-size: 1.25rem;
   line-height: 1;
 }
 
 .icon-button:hover {
-  background: #faf8f5;
-  color: #27251e;
+  background: #ffffff;
+  color: #171717;
+  box-shadow: 0 0 0 1px #ebebeb;
 }
 
 .skeleton {
-  border-radius: 0.75rem;
-  background: #d1d1cd;
+  border-radius: 0.375rem;
+  background: #ebebeb;
   animation: skeleton-pulse 1.2s ease-in-out infinite alternate;
 }
 
-.animate-page-in { animation: page-in 260ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
-.animate-soft-in { animation: soft-in 180ms ease-out both; }
-.dialog-backdrop { animation: backdrop-in 160ms ease-out both; }
+.animate-page-in { animation: page-in 240ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.animate-soft-in { animation: soft-in 170ms ease-out both; }
+.dialog-backdrop { animation: backdrop-in 150ms ease-out both; }
 .dialog-panel {
-  box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
-  animation: dialog-in 200ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 8%), 0 0 0 2px #fafafa;
+  animation: dialog-in 190ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 .match-fill {
   transform-origin: left;
-  animation: grow-x 600ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  animation: grow-x 550ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 
 @keyframes page-in {
-  from { opacity: 0; transform: translateY(5px); }
+  from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
 }
 @keyframes soft-in {
-  from { opacity: 0; transform: translateY(3px); }
+  from { opacity: 0; transform: translateY(2px); }
   to { opacity: 1; transform: translateY(0); }
 }
 @keyframes backdrop-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes dialog-in {
-  from { opacity: 0; transform: translateY(6px) scale(0.99); }
+  from { opacity: 0; transform: translateY(5px) scale(0.995); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 @keyframes grow-x { from { transform: scaleX(0); } to { transform: scaleX(1); } }
-@keyframes skeleton-pulse { from { opacity: 0.55; } to { opacity: 1; } }
-
-@media (min-width: 1024px) {
-  .app-main { padding-left: 16rem; }
-}
+@keyframes skeleton-pulse { from { opacity: 0.5; } to { opacity: 1; } }
 
 @media (max-width: 640px) {
-  .page-container { padding: 1.25rem 1rem 2rem; }
+  .page-container { padding: 2rem 1rem; }
+  .page-heading { font-size: 1.5rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {

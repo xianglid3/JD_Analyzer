@@ -60,7 +60,7 @@ export default function Dialog({
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={description ? descriptionId : undefined}
-        className={`dialog-panel flex max-h-full w-full ${width} flex-col overflow-hidden rounded-2xl border border-border bg-soft-paper`}
+        className={`dialog-panel flex max-h-full w-full ${width} flex-col overflow-hidden rounded-md border border-border bg-soft-paper`}
       >
         <header className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
           <div>

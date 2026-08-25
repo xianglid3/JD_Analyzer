@@ -1,85 +1,64 @@
-import { Link, NavLink, useNavigate } from 'react-router-dom'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { Link, NavLink, useNavigate } from 'react-router-dom'
 import { apiFetch } from '../lib/api'
 import { Spinner } from './Feedback'
 
 export default function NavBar() {
-    const navigate = useNavigate()
-    const queryClient = useQueryClient()
-    const currentUser = queryClient.getQueryData(['me'])
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const currentUser = queryClient.getQueryData(['me'])
 
-    const logout = useMutation({
-        mutationFn: () => apiFetch('/auth/logout', { method: 'POST' }),
-        onSuccess: () => {
-        queryClient.clear() // wipe cached jobs/resume/me
-        navigate('/login')
-        },
-    })
+  const logout = useMutation({
+    mutationFn: () => apiFetch('/auth/logout', { method: 'POST' }),
+    onSuccess: () => {
+      queryClient.clear()
+      navigate('/login')
+    },
+  })
 
-    const navItems = [
-        ['/dashboard', 'Dashboard'],
-        ['/resume', 'Resume'],
-    ]
+  const navItems = [
+    ['/dashboard', 'Dashboard'],
+    ['/resume', 'Resume'],
+  ]
 
-    const navLinkClass = ({ isActive }) => `flex items-center rounded-xl px-3 py-3 text-base ${
-        isActive ? 'bg-deep-teal text-white' : 'text-muted hover:bg-soft-paper hover:text-ink'
-    }`
+  return (
+    <header className="sticky top-0 z-40 h-16 bg-surface/90 backdrop-blur-xl">
+      <div className="mx-auto flex h-full max-w-7xl items-center gap-4 px-4 sm:px-6 lg:px-12">
+        <Link to="/dashboard" className="flex shrink-0 items-center gap-2 text-sm font-medium text-ink">
+          <span className="text-carbon" aria-hidden="true">▲</span>
+          <span className="hidden sm:inline">JD Translator</span>
+          <span className="sm:hidden">JD</span>
+        </Link>
 
-    return (
-      <>
-        <header className="sticky top-0 z-40 flex items-center justify-between border-b border-border bg-surface px-3 py-3 lg:hidden">
-          <Link to="/dashboard" className="text-base font-medium text-ink">
-            <span className="sm:hidden">JD</span><span className="hidden sm:inline">JD Translator</span>
-          </Link>
-          <nav className="flex items-center gap-1" aria-label="Mobile navigation">
-            {navItems.map(([to, label]) => (
-              <NavLink key={to} to={to} className={({ isActive }) => `rounded-md px-2.5 py-2 text-sm ${
-                isActive ? 'bg-deep-teal text-white' : 'text-muted'
-              }`}>
-                {label}
-              </NavLink>
-            ))}
-            <button
-              type="button"
-              onClick={() => logout.mutate()}
-              disabled={logout.isPending}
-              className="rounded-md px-2.5 py-2 text-sm text-muted"
-              aria-label="Log out"
+        <nav className="ml-2 flex items-center gap-1" aria-label="Main navigation">
+          {navItems.map(([to, label]) => (
+            <NavLink
+              key={to}
+              to={to}
+              className={({ isActive }) => `rounded-md px-3 py-2 text-sm ${
+                isActive ? 'bg-white text-ink shadow-[0_0_0_1px_#ebebeb]' : 'text-charcoal hover:text-ink'
+              }`}
             >
-              {logout.isPending ? <Spinner size="sm" /> : 'Out'}
-            </button>
-          </nav>
-        </header>
+              {label}
+            </NavLink>
+          ))}
+        </nav>
 
-        <aside className="fixed inset-y-0 left-0 z-40 hidden w-64 flex-col border-r border-border bg-surface p-4 lg:flex">
-          <Link to="/dashboard" className="mb-8 flex items-center gap-2 px-3 py-2 text-base font-medium text-ink">
-            <span className="grid h-7 w-7 place-items-center rounded-md border border-border" aria-hidden="true">JD</span>
-            JD Translator
-          </Link>
-
-          <p className="mb-2 px-3 text-xs text-muted">Workspace</p>
-          <nav className="space-y-1" aria-label="Main navigation">
-            {navItems.map(([to, label]) => (
-              <NavLink key={to} to={to} className={navLinkClass}>{label}</NavLink>
-            ))}
-          </nav>
-
-          <div className="mt-auto border-t border-border pt-4">
-            {currentUser?.username && (
-              <p className="mb-2 truncate px-3 text-xs text-muted">Signed in as {currentUser.username}</p>
-            )}
-            <button
-              type="button"
-              onClick={() => logout.mutate()}
-              disabled={logout.isPending}
-              className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-muted hover:bg-soft-paper hover:text-ink"
-            >
-              {logout.isPending && <Spinner size="sm" />}
-              {logout.isPending ? 'Logging out…' : 'Log out'}
-            </button>
-            {logout.error && <p role="alert" className="mt-2 px-3 text-xs text-ink">Could not log out.</p>}
-          </div>
-        </aside>
-      </>
-    )
+        <div className="ml-auto flex items-center gap-2">
+          {currentUser?.username && <span className="hidden font-mono text-[11px] uppercase tracking-wider text-muted md:inline">{currentUser.username}</span>}
+          <button
+            type="button"
+            onClick={() => logout.mutate()}
+            disabled={logout.isPending}
+            className="inline-flex min-h-8 items-center gap-2 rounded-full border border-border bg-white px-3 text-sm text-charcoal hover:text-ink"
+          >
+            {logout.isPending && <Spinner size="sm" />}
+            <span className="hidden sm:inline">{logout.isPending ? 'Logging out…' : 'Log out'}</span>
+            <span className="sm:hidden">Out</span>
+          </button>
+        </div>
+      </div>
+      {logout.error && <p role="alert" className="absolute right-4 top-14 text-xs text-ink">Could not log out.</p>}
+    </header>
+  )
 }

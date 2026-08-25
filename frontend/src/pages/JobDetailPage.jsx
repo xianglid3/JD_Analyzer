@@ -92,9 +92,9 @@ export default function JobDetailPage() {
         <button onClick={() => navigate('/dashboard')} className="mb-6 text-sm text-muted hover:text-ink">← Back to dashboard</button>
 
         <header className="mb-8">
-          <p className="text-xs text-muted">Job details</p>
-          <h1 className="mt-1 text-base font-medium text-ink">{job.title || 'Untitled role'}</h1>
-          {metadata.length > 0 && <p className="mt-1 text-sm capitalize text-muted">{metadata.join(' · ')}</p>}
+          <p className="eyebrow">Job details</p>
+          <h1 className="page-heading mt-2">{job.title || 'Untitled role'}</h1>
+          {metadata.length > 0 && <p className="mt-2 font-mono text-[11px] uppercase tracking-[0.06em] text-muted">{metadata.join(' · ')}</p>}
 
           <div className="mt-5 flex max-w-lg items-center gap-3" aria-label={`${job.match_score ?? 0}% skill match`}>
             <span className="shrink-0 text-sm font-medium text-ink">{job.match_score != null ? `${job.match_score}% match` : 'No match score'}</span>
@@ -114,9 +114,10 @@ export default function JobDetailPage() {
               <p className="mt-3 text-sm leading-6 text-ink">{job.summary || 'No summary was extracted.'}</p>
             </section>
 
-            <section className="surface-card border-l-4 border-l-ink p-4">
-              <h2 className="text-base font-medium text-ink">No-BS translation</h2>
-              <p className="mt-3 text-sm leading-6 text-ink">{job.no_bs_translation || 'No translation was extracted.'}</p>
+            <section className="surface-card bg-obsidian p-4 text-white">
+              <p className="font-mono text-[11px] uppercase tracking-[0.08em] text-white/60">Plain-language read</p>
+              <h2 className="mt-2 text-base font-medium text-white">No-BS translation</h2>
+              <p className="mt-3 text-sm leading-6 text-white/85">{job.no_bs_translation || 'No translation was extracted.'}</p>
             </section>
 
             <section className="surface-card p-4">
@@ -135,15 +136,15 @@ export default function JobDetailPage() {
                 <h2 className="text-base font-medium text-ink">Match breakdown</h2>
                 <div className="mt-4 grid gap-5 sm:grid-cols-2">
                   <div>
-                    <p className="text-xs text-muted">Matched</p>
+                    <p className="eyebrow">Matched</p>
                     <div className="mt-2 flex flex-wrap gap-2">
                       {job.match_detail.matched.length > 0 ? job.match_detail.matched.map((skill) => (
-                        <span key={skill} className="rounded-full border border-border bg-surface px-3 py-1.5 text-xs text-ink">✓ {skill}</span>
+                        <span key={skill} className="rounded-full border border-border bg-surface px-3 py-1.5 text-xs text-ink"><span className="text-terminal-green">✓</span> {skill}</span>
                       )) : <span className="text-xs text-muted">None yet</span>}
                     </div>
                   </div>
                   <div>
-                    <p className="text-xs text-muted">Missing</p>
+                    <p className="eyebrow">Missing</p>
                     <div className="mt-2 flex flex-wrap gap-2">
                       {job.match_detail.missing.length > 0 ? job.match_detail.missing.map((skill) => (
                         <span key={skill} className="rounded-full border border-border bg-surface px-3 py-1.5 text-xs text-muted">○ {skill}</span>

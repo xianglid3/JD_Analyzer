@@ -23,9 +23,9 @@ export function InlineAlert({ tone = 'error', children, className = '' }) {
   return (
     <div
       role={tone === 'error' ? 'alert' : 'status'}
-      className={`rounded-xl border border-border bg-soft-paper px-3 py-2.5 text-sm text-ink animate-soft-in ${className}`}
+      className={`rounded-md border border-border bg-soft-paper px-3 py-2.5 text-sm text-ink animate-soft-in ${className}`}
     >
-      <span className="mr-2 text-muted" aria-hidden="true">{tone === 'success' ? '✓' : '!'}</span>
+      <span className={`mr-2 ${tone === 'success' ? 'text-terminal-green' : 'text-muted'}`} aria-hidden="true">{tone === 'success' ? '✓' : '!'}</span>
       {children}
     </div>
   )

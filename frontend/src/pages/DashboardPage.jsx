@@ -137,9 +137,9 @@ export default function DashboardPage() {
       <main className="page-container animate-page-in">
         <header className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <p className="text-xs text-muted">Job workspace</p>
-            <h1 className="mt-1 text-base font-medium text-ink">Your job descriptions</h1>
-            <p className="mt-1 text-sm text-muted">Analyze roles, compare skills, and track every application.</p>
+            <p className="eyebrow">Job workspace</p>
+            <h1 className="page-heading mt-2">Your job descriptions</h1>
+            <p className="mt-2 text-sm text-muted">Analyze roles, compare skills, and track every application.</p>
           </div>
           <button
             className="primary-button shrink-0"
@@ -172,11 +172,11 @@ export default function DashboardPage() {
                       setPage(1)
                     }}
                     aria-pressed={selected}
-                    className={`rounded-2xl px-4 py-3 text-left ${
-                      selected ? 'bg-deep-teal text-white' : 'border border-border bg-soft-paper text-ink hover:border-ash'
+                    className={`rounded-md px-4 py-3 text-left transition-colors ${
+                      selected ? 'bg-obsidian text-white' : 'border border-border bg-soft-paper text-ink hover:border-ash'
                     }`}
                   >
-                    <span className={`block text-xs ${selected ? 'text-white/75' : 'text-muted'}`}>{label}</span>
+                    <span className={`block font-mono text-[11px] uppercase tracking-[0.08em] ${selected ? 'text-white/70' : 'text-muted'}`}>{label}</span>
                     <span className="mt-1 block text-base font-medium">{value ?? 0}</span>
                   </button>
                 )
@@ -207,7 +207,7 @@ export default function DashboardPage() {
             <div className="overflow-x-auto">
               <table className="w-full min-w-[760px] text-left text-sm">
                 <thead>
-                  <tr className="border-b border-border text-xs text-muted">
+                  <tr className="border-b border-border font-mono text-[11px] uppercase tracking-[0.06em] text-muted">
                     {columns.map(([label, key]) => (
                       <th key={key} className="px-4 py-3 font-normal">
                         <button
@@ -266,7 +266,7 @@ export default function DashboardPage() {
               </div>
             )}
 
-            <footer className="flex items-center justify-between border-t border-border px-4 py-3 text-xs text-muted">
+            <footer className="flex items-center justify-between border-t border-border px-4 py-3 font-mono text-[11px] uppercase tracking-[0.04em] text-muted">
               <span>Showing {firstEntry}–{lastEntry} of {data.total}</span>
               <div className="flex items-center gap-1">
                 {jobsQuery.isFetching && <Spinner size="sm" />}
