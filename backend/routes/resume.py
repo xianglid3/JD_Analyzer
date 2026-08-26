@@ -110,6 +110,7 @@ def upsert_resume():
 
         # recompute match scores for this user's jobs against the new resume skills
         cur.execute("SELECT id, skills FROM jobs WHERE user_id = %s", (g.user_id,))
+        match_updates = []
         for job_id, job_skills in cur.fetchall():
             match = compute_match(job_skills, skills)
             score = match["score"] if match else None
@@ -117,14 +118,26 @@ def upsert_resume():
                 "matched": match["matched"],
                 "missing": match["missing"],
             } if match else None
+            match_updates.append({
+                "id": str(job_id),
+                "match_score": score,
+                "match_detail": detail,
+            })
 
+        if match_updates:
             cur.execute(
                 """
-                UPDATE jobs
-                SET match_score = %s, match_detail = %s
-                WHERE id = %s
+                UPDATE jobs AS job
+                SET match_score = match.match_score,
+                    match_detail = match.match_detail
+                FROM jsonb_to_recordset(%s::jsonb) AS match(
+                    id uuid,
+                    match_score numeric,
+                    match_detail jsonb
+                )
+                WHERE job.id = match.id AND job.user_id = %s
                 """,
-                (score, json.dumps(detail) if detail else None, job_id),
+                (json.dumps(match_updates), g.user_id),
             )
 
     return jsonify({"ok": True}), 200

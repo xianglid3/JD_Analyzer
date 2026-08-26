@@ -3,7 +3,7 @@ import os
 # Env the app needs at import time. setdefault → CI or a real shell can override.
 os.environ.setdefault("OPENAI_API_KEY", "test-dummy-key")
 os.environ.setdefault("SUPABASE_URL", "postgresql://postgres:postgres@localhost:5432/jd_test")
-os.environ.setdefault("JWT_SECRET", "test-secret")
+os.environ.setdefault("JWT_SECRET", "test-jwt-secret-for-pytest-only-not-a-real-key")  # ≥32 bytes → no InsecureKeyLength warning
 
 import pathlib
 import psycopg2

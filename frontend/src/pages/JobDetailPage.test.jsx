@@ -49,6 +49,7 @@ describe('JobDetailPage', () => {
     renderPage()
 
     expect(await screen.findByText('Platform Engineer')).toBeInTheDocument()
+    expect(screen.getByText('No-BS translation').closest('section')).toHaveClass('inverted-card')
     await user.selectOptions(screen.getByLabelText('Status'), 'interview')
     await user.type(screen.getByLabelText(/^Notes/), 'Recruiter call Friday')
     await user.click(screen.getByRole('button', { name: 'Save changes' }))

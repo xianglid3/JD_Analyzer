@@ -102,11 +102,17 @@ def compute_match(job_skills, resume_skills):
     if not job_skills:
         return None
 
-    job_set = {normalize_skill(s) for s in job_skills}
+    # Match on canonical keys, but keep the JD's first spelling for user-facing chips.
+    job_display = {}
+    for skill in job_skills:
+        normalized = normalize_skill(skill)
+        job_display.setdefault(normalized, skill.strip())
+
+    job_set = set(job_display)
     resume_set = {normalize_skill(s) for s in resume_skills}
 
-    matched = sorted(job_set & resume_set)
-    missing = sorted(job_set - resume_set)
+    matched = sorted((job_display[key] for key in job_set & resume_set), key=str.casefold)
+    missing = sorted((job_display[key] for key in job_set - resume_set), key=str.casefold)
     score = round(len(matched) / len(job_set) * 100, 2)
 
     return {

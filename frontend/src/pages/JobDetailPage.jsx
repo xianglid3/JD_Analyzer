@@ -114,7 +114,7 @@ export default function JobDetailPage() {
               <p className="mt-3 text-sm leading-6 text-ink">{job.summary || 'No summary was extracted.'}</p>
             </section>
 
-            <section className="surface-card bg-obsidian p-4 text-white">
+            <section className="surface-card inverted-card p-4 text-white">
               <p className="font-mono text-[11px] uppercase tracking-[0.08em] text-white/60">Plain-language read</p>
               <h2 className="mt-2 text-base font-medium text-white">No-BS translation</h2>
               <p className="mt-3 text-sm leading-6 text-white/85">{job.no_bs_translation || 'No translation was extracted.'}</p>

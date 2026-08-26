@@ -40,7 +40,16 @@ def test_match_breakdown():
 
     assert result == {
         "score": 66.67,
-        "matched": ["python", "react"],
-        "missing": ["docker"],
+        "matched": ["Python", "React.js"],
+        "missing": ["Docker"],
     }
 
+
+def test_match_breakdown_preserves_jd_display_names():
+    result = compute_match(
+        ["JavaScript", "REST API", "System Design"],
+        ["js", "api"],
+    )
+
+    assert result["matched"] == ["JavaScript", "REST API"]
+    assert result["missing"] == ["System Design"]

@@ -107,3 +107,41 @@ def test_create_job_requires_a_uuid_idempotency_key(client, monkeypatch):
     assert response.status_code == 400
     assert response.get_json() == {"error": "Valid Idempotency-Key required"}
     assert analyze_called is False
+
+
+def test_new_analysis_sweeps_expired_completed_keys(client, monkeypatch, _db):
+    login(client)
+    monkeypatch.setattr("routes.jobs.analyze_job_description", lambda _description: extracted_job())
+    expired_key = str(uuid4())
+    current_key = str(uuid4())
+
+    assert client.post(
+        "/api/jobs",
+        json={"description": DESCRIPTION},
+        headers={"Idempotency-Key": expired_key},
+    ).status_code == 201
+
+    with _db.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE idempotency_requests
+            SET created_at = now() - interval '8 days'
+            WHERE idempotency_key = %s
+            """,
+            (expired_key,),
+        )
+
+    assert client.post(
+        "/api/jobs",
+        json={"description": DESCRIPTION},
+        headers={"Idempotency-Key": current_key},
+    ).status_code == 201
+
+    with _db.cursor() as cur:
+        cur.execute(
+            "SELECT idempotency_key FROM idempotency_requests ORDER BY created_at"
+        )
+        keys = [row[0] for row in cur.fetchall()]
+
+    assert expired_key not in keys
+    assert current_key in keys

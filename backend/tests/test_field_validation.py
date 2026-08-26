@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 
@@ -87,3 +89,35 @@ def test_resume_trims_and_deduplicates_skills(client):
 
     assert response.status_code == 200
     assert client.get("/api/resume").get_json()["skills"] == ["Python", "SQL"]
+
+
+def test_resume_save_recomputes_multiple_jobs_with_display_names(client, _db):
+    user = login(client)
+    with _db.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO jobs (user_id, raw_description, title, skills)
+            VALUES
+                (%s, %s, 'Frontend role', %s),
+                (%s, %s, 'Backend role', %s)
+            """,
+            (
+                user["id"], "x" * 60, json.dumps(["JavaScript", "REST API"]),
+                user["id"], "x" * 60, json.dumps(["Python", "Docker"]),
+            ),
+        )
+
+    response = client.put("/api/resume", json={"skills": ["js", "python"]})
+
+    assert response.status_code == 200
+    with _db.cursor() as cur:
+        cur.execute(
+            "SELECT title, match_score, match_detail FROM jobs WHERE user_id = %s ORDER BY title",
+            (user["id"],),
+        )
+        rows = cur.fetchall()
+
+    assert rows == [
+        ("Backend role", 50, {"matched": ["Python"], "missing": ["Docker"]}),
+        ("Frontend role", 50, {"matched": ["JavaScript"], "missing": ["REST API"]}),
+    ]

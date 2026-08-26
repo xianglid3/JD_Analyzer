@@ -98,6 +98,10 @@ button:disabled { cursor: not-allowed; }
   box-shadow: 0 0 0 1px rgb(0 0 0 / 8%), 0 0 0 2px #fafafa;
 }
 
+.surface-card.inverted-card {
+  background: #171717;
+}
+
 .control {
   width: 100%;
   border: 1px solid #ebebeb;

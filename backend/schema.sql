@@ -60,7 +60,6 @@ CREATE TABLE jobs (
   status            status_type NOT NULL DEFAULT 'saved',
   notes             text,
   deadline          date,
-  applied_at        date,
   created_at        timestamptz NOT NULL DEFAULT now(),
   updated_at        timestamptz NOT NULL DEFAULT now()
 );
@@ -75,3 +74,5 @@ CREATE TABLE idempotency_requests (
   created_at      timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (user_id, idempotency_key)
 );
+CREATE INDEX idempotency_requests_user_created_idx
+  ON idempotency_requests (user_id, created_at);

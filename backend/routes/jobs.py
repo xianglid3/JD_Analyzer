@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 #accetpable status
 VALID_STATUSES = {"saved", "applied", "interview", "offer", "rejected", "ghosted", "accepted", "decline"}
 IDEMPOTENCY_STALE_AFTER = "10 minutes"
+IDEMPOTENCY_COMPLETED_TTL = "7 days"
 MAX_NOTES_CHARS = 5000
 
 
@@ -88,18 +89,20 @@ def create_job():
         raw_description.encode("utf-8")
     ).hexdigest()
 
-    # Delete abandoned reservations after a server crash, then atomically claim
-    # this key before spending money on an OpenAI call.
+    # Opportunistically bound this user's reservation history, then atomically
+    # claim the new key before spending money on an OpenAI call.
     with get_cursor(commit=True) as cur:
         cur.execute(
             """
             DELETE FROM idempotency_requests
             WHERE user_id = %s
-              AND idempotency_key = %s
-              AND job_id IS NULL
-              AND created_at < now() - %s::interval
+              AND (
+                  (job_id IS NULL AND created_at < now() - %s::interval)
+                  OR
+                  (job_id IS NOT NULL AND created_at < now() - %s::interval)
+              )
             """,
-            (g.user_id, idempotency_key, IDEMPOTENCY_STALE_AFTER),
+            (g.user_id, IDEMPOTENCY_STALE_AFTER, IDEMPOTENCY_COMPLETED_TTL),
         )
         cur.execute(
             """
