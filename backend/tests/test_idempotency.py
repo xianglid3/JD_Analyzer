@@ -35,13 +35,19 @@ def test_same_key_replays_original_job_without_second_analysis(client, monkeypat
     monkeypatch.setattr("routes.jobs.analyze_job_description", analyze)
     headers = {"Idempotency-Key": str(uuid4())}
 
-    first = client.post("/api/jobs", json={"description": DESCRIPTION}, headers=headers)
-    replay = client.post("/api/jobs", json={"description": DESCRIPTION}, headers=headers)
+    payload = {
+        "description": DESCRIPTION,
+        "source_url": "HTTPS://Example.COM:443/jobs/42#apply",
+    }
+    first = client.post("/api/jobs", json=payload, headers=headers)
+    replay = client.post("/api/jobs", json=payload, headers=headers)
 
     assert first.status_code == 201
     assert replay.status_code == 200
     assert replay.get_json()["id"] == first.get_json()["id"]
     assert replay.get_json()["replayed"] is True
+    assert first.get_json()["source_url"] == "https://example.com/jobs/42"
+    assert replay.get_json()["source_url"] == "https://example.com/jobs/42"
     assert len(calls) == 1
 
 
@@ -65,7 +71,35 @@ def test_same_key_rejects_a_different_description(client, monkeypatch):
 
     assert first.status_code == 201
     assert conflict.status_code == 409
-    assert "different description" in conflict.get_json()["error"]
+    assert "different request" in conflict.get_json()["error"]
+    assert len(calls) == 1
+
+
+def test_same_key_rejects_a_different_source_url(client, monkeypatch):
+    login(client)
+    calls = []
+
+    def analyze(description):
+        calls.append(description)
+        return extracted_job()
+
+    monkeypatch.setattr("routes.jobs.analyze_job_description", analyze)
+    headers = {"Idempotency-Key": str(uuid4())}
+
+    first = client.post(
+        "/api/jobs",
+        json={"description": DESCRIPTION, "source_url": "https://example.com/jobs/one"},
+        headers=headers,
+    )
+    conflict = client.post(
+        "/api/jobs",
+        json={"description": DESCRIPTION, "source_url": "https://example.com/jobs/two"},
+        headers=headers,
+    )
+
+    assert first.status_code == 201
+    assert conflict.status_code == 409
+    assert "different request" in conflict.get_json()["error"]
     assert len(calls) == 1
 
 

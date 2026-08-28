@@ -11,7 +11,8 @@ from services.jd_preprocess import preprocess_text
 from services.openai_services import analyze_job_description
 from services.match import compute_match
 from routes.analysis_errors import analysis_error_response
-from routes.request_validation import get_json_object
+from routes.request_validation import get_json_object, normalize_optional_http_url
+
 
 jobs_bp = Blueprint("jobs", __name__, url_prefix = "/api/jobs")
 logger = logging.getLogger(__name__)
@@ -42,7 +43,7 @@ def release_idempotency_key(user_id, idempotency_key, request_hash):
 
 def create_job_payload(row, replayed=False):
     (job_id, title, summary, no_bs_translation, skills,
-     company_name, location, work_type, created_at) = row
+     company_name, location, work_type, source_url, created_at) = row
     payload = {
         "id": str(job_id),
         "title": title,
@@ -52,6 +53,7 @@ def create_job_payload(row, replayed=False):
         "company_name": company_name,
         "location": location,
         "work_type": work_type,
+        "source_url": source_url,
         "created_at": created_at.isoformat(),
     }
     if replayed:
@@ -78,6 +80,11 @@ def create_job():
     if len(raw_description) > 10000:
         return jsonify({"error": "Description too long"}), 400
 
+    # Validate the optional original job-posting URL.
+    source_url, url_error = normalize_optional_http_url(data.get("source_url"))
+    if url_error:
+        return jsonify({"error": url_error}), 400
+
     #job idempotency stuff
     idempotency_key = request.headers.get("Idempotency-Key", "")
     try:
@@ -86,7 +93,11 @@ def create_job():
         return jsonify({"error": "Valid Idempotency-Key required"}), 400
 
     request_hash = hashlib.sha256(
-        raw_description.encode("utf-8")
+        json.dumps(
+            {"description": raw_description, "source_url": source_url},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
     ).hexdigest()
 
     # Opportunistically bound this user's reservation history, then atomically
@@ -122,7 +133,7 @@ def create_job():
                 """
                 SELECT r.request_hash, j.id, j.title, j.summary,
                        j.no_bs_translation, j.skills, j.company_name,
-                       j.location, j.work_type, j.created_at
+                       j.location, j.work_type, j.source_url, j.created_at
                 FROM idempotency_requests AS r
                 LEFT JOIN jobs AS j ON j.id = r.job_id
                 WHERE r.user_id = %s AND r.idempotency_key = %s
@@ -138,7 +149,7 @@ def create_job():
             return response, 409
         if existing[0] != request_hash:
             return jsonify({
-                "error": "Idempotency-Key was already used with a different description"
+                "error": "Idempotency-Key was already used with a different request"
             }), 409
         if existing[1] is None:
             response = jsonify({"error": "Analysis already in progress, please retry shortly"})
@@ -170,14 +181,15 @@ def create_job():
             cur.execute(
                 """
                 INSERT INTO jobs (user_id, raw_description, title, summary, no_bs_translation,
-                                  skills, company_name, location, work_type, match_score, match_detail)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                  skills, company_name, location, work_type, source_url,
+                                  match_score, match_detail)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id, created_at
                 """,
                 (
                     g.user_id, raw_description, job.title, job.summary, job.no_bs_translation,
                     json.dumps(job.skills), job.company_name, job.location, job.work_type,
-                    match_score, json.dumps(match_detail) if match_detail else None,
+                    source_url, match_score, json.dumps(match_detail) if match_detail else None,
                 ),
             )
             new_id, created_at = cur.fetchone()
@@ -201,7 +213,7 @@ def create_job():
 
     return jsonify(create_job_payload((
         new_id, job.title, job.summary, job.no_bs_translation, job.skills,
-        job.company_name, job.location, job.work_type, created_at,
+        job.company_name, job.location, job.work_type, source_url, created_at,
     ))), 201
 
 
@@ -308,7 +320,7 @@ def get_job(job_id):
             """
             SELECT id, raw_description, title, summary, no_bs_translation, skills,
                    company_name, location, work_type, match_score, match_detail,
-                   status, notes, deadline, created_at
+                   status, notes, deadline, source_url, created_at
             FROM jobs
             WHERE id = %s AND user_id = %s
             """,
@@ -321,7 +333,7 @@ def get_job(job_id):
 
     (job_id, raw_description, title, summary, no_bs_translation, skills,
      company_name, location, work_type, match_score, match_detail,
-     status, notes, deadline, created_at) = row
+     status, notes, deadline, source_url, created_at) = row
 
     return jsonify({
         "id": str(job_id),
@@ -338,6 +350,7 @@ def get_job(job_id):
         "status": status,
         "notes": notes,
         "deadline": deadline.isoformat() if deadline else None,
+        "source_url": source_url,
         "created_at": created_at.isoformat(),
     }), 200
 
@@ -351,7 +364,7 @@ def update_job(job_id):
         return error
 
     # whitelist 'allowed' a user is permitted to change
-    allowed = ["status", "notes", "deadline"]
+    allowed = ["status", "notes", "deadline", "source_url"]
     updates = {field: data[field] for field in allowed if field in data}
 
     if not updates:
@@ -380,6 +393,12 @@ def update_job(job_id):
                 return jsonify({"error": "deadline must be YYYY-MM-DD or null"}), 400
             if parsed_deadline.isoformat() != deadline:
                 return jsonify({"error": "deadline must be YYYY-MM-DD or null"}), 400
+
+    if "source_url" in updates:
+        source_url, url_error = normalize_optional_http_url(updates["source_url"])
+        if url_error:
+            return jsonify({"error": url_error}), 400
+        updates["source_url"] = source_url
 
     set_clause = ", ".join(f"{field} = %s" for field in updates)
     values = list(updates.values())

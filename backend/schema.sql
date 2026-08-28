@@ -38,16 +38,27 @@ CREATE TABLE resumes (
   projects        jsonb NOT NULL DEFAULT '[]'::jsonb,
   skills          jsonb NOT NULL DEFAULT '[]'::jsonb,
   certificates    jsonb NOT NULL DEFAULT '[]'::jsonb,
+  resume_text       text,
+  storage_path      text,
+  original_filename text,
+  file_mime_type    text,
+  file_size_bytes   bigint,
+  file_sha256       text,
+  file_uploaded_at  timestamptz,
   created_at      timestamptz NOT NULL DEFAULT now(),
   updated_at      timestamptz NOT NULL DEFAULT now()
 );
 -- one resume per user — this is what `ON CONFLICT (user_id)` in upsert_resume needs
 CREATE UNIQUE INDEX resumes_user_id_key ON resumes (user_id);
+CREATE UNIQUE INDEX resumes_storage_path_key
+  ON resumes (storage_path)
+  WHERE storage_path IS NOT NULL;
 
 CREATE TABLE jobs (
   id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id           uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   raw_description   text NOT NULL,
+  source_url        text,
   title             text,
   summary           text,
   no_bs_translation text,

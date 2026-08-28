@@ -21,6 +21,7 @@ def login(client):
         ({"deadline": 123}, "deadline must be YYYY-MM-DD or null"),
         ({"deadline": "2026-02-30"}, "deadline must be YYYY-MM-DD or null"),
         ({"deadline": "20260824"}, "deadline must be YYYY-MM-DD or null"),
+        ({"source_url": "javascript:alert(1)"}, "source_url must be a valid HTTP or HTTPS URL"),
     ],
 )
 def test_job_update_rejects_invalid_field_values(client, insert_job, payload, message):
@@ -46,6 +47,22 @@ def test_job_update_accepts_valid_notes_and_deadline(client, insert_job):
     job = client.get(f"/api/jobs/{job_id}").get_json()
     assert job["notes"] == "Prepare portfolio"
     assert job["deadline"] == "2026-08-24"
+
+
+def test_job_update_normalizes_and_removes_source_url(client, insert_job):
+    user = login(client)
+    job_id = insert_job(user["id"])
+
+    response = client.patch(
+        f"/api/jobs/{job_id}",
+        json={"source_url": " HTTPS://Example.COM:443/jobs/42#apply "},
+    )
+
+    assert response.status_code == 200
+    assert client.get(f"/api/jobs/{job_id}").get_json()["source_url"] == "https://example.com/jobs/42"
+
+    assert client.patch(f"/api/jobs/{job_id}", json={"source_url": None}).status_code == 200
+    assert client.get(f"/api/jobs/{job_id}").get_json()["source_url"] is None
 
 
 @pytest.mark.parametrize(
@@ -89,6 +106,22 @@ def test_resume_trims_and_deduplicates_skills(client):
 
     assert response.status_code == 200
     assert client.get("/api/resume").get_json()["skills"] == ["Python", "SQL"]
+
+
+@pytest.mark.parametrize(
+    ("resume_text", "message"),
+    [
+        ([], "resume_text must be text or null"),
+        ("x" * 20001, "resume_text must be 20000 characters or fewer"),
+    ],
+)
+def test_resume_rejects_invalid_saved_text(client, resume_text, message):
+    login(client)
+
+    response = client.put("/api/resume", json={"resume_text": resume_text})
+
+    assert response.status_code == 400
+    assert response.get_json() == {"error": message}
 
 
 def test_resume_save_recomputes_multiple_jobs_with_display_names(client, _db):

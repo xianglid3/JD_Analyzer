@@ -1,5 +1,37 @@
 import io
+from os.path import splitext
+
 from pypdf import PdfReader
+
+
+RESUME_MIME_TYPES = {
+    ".pdf": "application/pdf",
+    ".txt": "text/plain",
+    ".md": "text/markdown",
+    ".html": "text/html",
+}
+
+
+def validate_resume_file(filename, file_bytes):
+    suffix = splitext(filename or "")[1].lower()
+
+    if suffix not in RESUME_MIME_TYPES:
+        raise ValueError("unsupported file type")
+    if not file_bytes:
+        raise ValueError("file is empty")
+
+    if suffix == ".pdf":
+        if b"%PDF-" not in file_bytes[:1024]:
+            raise ValueError("invalid PDF file")
+    else:
+        try:
+            text = file_bytes.decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            raise ValueError("text file must use UTF-8") from exc
+        if "\x00" in text:
+            raise ValueError("invalid text file")
+
+    return RESUME_MIME_TYPES[suffix]
 
 
 def extract_text_from_file(filename, file_bytes):

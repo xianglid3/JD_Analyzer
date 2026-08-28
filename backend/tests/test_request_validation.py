@@ -1,7 +1,35 @@
 import pytest
 
+from routes.request_validation import normalize_optional_http_url
+
 
 USER = {"username": "jsonvalidationuser", "password": "pw123456"}
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, None),
+        ("", None),
+        (" HTTPS://Example.COM:443/jobs/42#apply ", "https://example.com/jobs/42"),
+    ],
+)
+def test_source_url_normalization(value, expected):
+    normalized, error = normalize_optional_http_url(value)
+
+    assert error is None
+    assert normalized == expected
+
+
+@pytest.mark.parametrize(
+    "value",
+    [123, "javascript:alert(1)", "ftp://example.com/job", "https://user:pass@example.com/job", "https://example.com:invalid/job"],
+)
+def test_source_url_rejects_invalid_values(value):
+    normalized, error = normalize_optional_http_url(value)
+
+    assert normalized is None
+    assert error == "source_url must be a valid HTTP or HTTPS URL"
 
 
 @pytest.mark.parametrize(
