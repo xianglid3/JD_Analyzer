@@ -57,13 +57,14 @@ describe('DashboardPage', () => {
 
     await screen.findByText('Frontend Engineer')
     await user.click(screen.getByRole('button', { name: /Analyze new JD/ }))
+    await user.type(screen.getByLabelText(/Job posting URL/), 'https://example.com/jobs/42')
     await user.type(screen.getByLabelText('Job description'), 'A'.repeat(60))
     await user.click(screen.getByRole('button', { name: 'Analyze' }))
 
     await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/jobs', {
       method: 'POST',
       headers: { 'Idempotency-Key': '123e4567-e89b-12d3-a456-426614174000' },
-      body: JSON.stringify({ description: 'A'.repeat(60) }),
+      body: JSON.stringify({ description: 'A'.repeat(60), source_url: 'https://example.com/jobs/42' }),
     }))
     expect(await screen.findByText('Analysis saved to your dashboard.')).toBeInTheDocument()
   })

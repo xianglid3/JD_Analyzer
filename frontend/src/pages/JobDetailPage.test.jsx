@@ -23,6 +23,7 @@ const job = {
   notes: '',
   status: 'saved',
   deadline: null,
+  source_url: 'https://example.com/jobs/42',
 }
 
 describe('JobDetailPage', () => {
@@ -50,13 +51,19 @@ describe('JobDetailPage', () => {
 
     expect(await screen.findByText('Platform Engineer')).toBeInTheDocument()
     expect(screen.getByText('No-BS translation').closest('section')).toHaveClass('inverted-card')
+    expect(screen.getByRole('link', { name: 'Open posting ↗' })).toHaveAttribute('href', job.source_url)
     await user.selectOptions(screen.getByLabelText('Status'), 'interview')
     await user.type(screen.getByLabelText(/^Notes/), 'Recruiter call Friday')
     await user.click(screen.getByRole('button', { name: 'Save changes' }))
 
     await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/jobs/42', {
       method: 'PATCH',
-      body: JSON.stringify({ notes: 'Recruiter call Friday', status: 'interview', deadline: null }),
+      body: JSON.stringify({
+        notes: 'Recruiter call Friday',
+        status: 'interview',
+        deadline: null,
+        source_url: job.source_url,
+      }),
     }))
   })
 

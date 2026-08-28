@@ -31,6 +31,7 @@ export default function DashboardPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [text, setText] = useState('')
+  const [sourceUrl, setSourceUrl] = useState('')
   const [showModal, setShowModal] = useState(false)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
@@ -61,11 +62,11 @@ export default function DashboardPage() {
   }
 
   const createJob = useMutation({
-    mutationFn: ({ description, idempotencyKey }) =>
+    mutationFn: ({ description, sourceUrl: requestSourceUrl, idempotencyKey }) =>
       apiFetch('/jobs', {
         method: 'POST',
         headers: { 'Idempotency-Key': idempotencyKey },
-        body: JSON.stringify({ description }),
+        body: JSON.stringify({ description, source_url: requestSourceUrl.trim() || null }),
       }),
     onSuccess: () => {
       analyzeRequestKey.current = null
@@ -73,6 +74,7 @@ export default function DashboardPage() {
       queryClient.invalidateQueries({ queryKey: ['jobs-stats'] })
       setPage(1)
       setText('')
+      setSourceUrl('')
       setShowModal(false)
       setNotice({ tone: 'success', message: 'Analysis saved to your dashboard.' })
     },
@@ -302,7 +304,7 @@ export default function DashboardPage() {
               disabled={createJob.isPending || text.trim().length < 50 || text.trim().length > 10000}
               onClick={() => {
                 analyzeRequestKey.current ??= crypto.randomUUID()
-                createJob.mutate({ description: text, idempotencyKey: analyzeRequestKey.current })
+                createJob.mutate({ description: text, sourceUrl, idempotencyKey: analyzeRequestKey.current })
               }}
             >
               <ButtonLabel pending={createJob.isPending} pendingText="Analyzing…">Analyze</ButtonLabel>
@@ -310,7 +312,24 @@ export default function DashboardPage() {
           </>
         )}
       >
-        <label className="block text-sm text-ink" htmlFor="job-description">Job description</label>
+        <label className="block text-sm text-ink" htmlFor="job-source-url">
+          Job posting URL <span className="text-muted">(optional)</span>
+        </label>
+        <input
+          id="job-source-url"
+          type="url"
+          maxLength={2048}
+          disabled={createJob.isPending}
+          value={sourceUrl}
+          onChange={(event) => {
+            setSourceUrl(event.target.value)
+            analyzeRequestKey.current = null
+            createJob.reset()
+          }}
+          placeholder="https://company.com/jobs/role"
+          className="control mt-2 px-3 py-2.5 text-sm"
+        />
+        <label className="mt-4 block text-sm text-ink" htmlFor="job-description">Job description</label>
         <textarea
           id="job-description"
           autoFocus
@@ -326,7 +345,7 @@ export default function DashboardPage() {
             if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !createJob.isPending && length >= 50 && length <= 10000) {
               event.preventDefault()
               analyzeRequestKey.current ??= crypto.randomUUID()
-              createJob.mutate({ description: text, idempotencyKey: analyzeRequestKey.current })
+              createJob.mutate({ description: text, sourceUrl, idempotencyKey: analyzeRequestKey.current })
             }
           }}
           placeholder="Paste a job description here…"

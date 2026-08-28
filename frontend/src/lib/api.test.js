@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { apiFetch } from './api'
+import { apiFetch, apiUpload } from './api'
 
 function response(status, data = {}) {
   return {
@@ -45,5 +45,47 @@ describe('apiFetch', () => {
         'Idempotency-Key': 'request-key',
       },
     }))
+  })
+})
+
+describe('apiUpload', () => {
+  it('reports upload progress and returns the parsed response', async () => {
+    let request
+
+    class MockXMLHttpRequest {
+      constructor() {
+        request = this
+        this.listeners = {}
+        this.uploadListeners = {}
+        this.upload = {
+          addEventListener: (name, callback) => {
+            this.uploadListeners[name] = callback
+          },
+        }
+        this.open = vi.fn()
+        this.send = vi.fn()
+      }
+
+      addEventListener(name, callback) {
+        this.listeners[name] = callback
+      }
+    }
+
+    vi.stubGlobal('XMLHttpRequest', MockXMLHttpRequest)
+    const onProgress = vi.fn()
+    const form = new FormData()
+    form.append('file', new File(['resume'], 'resume.txt', { type: 'text/plain' }))
+
+    const result = apiUpload('/resume/upload', form, onProgress)
+    request.uploadListeners.progress({ lengthComputable: true, loaded: 3, total: 4 })
+    request.status = 200
+    request.responseText = JSON.stringify({ skills: ['Python'] })
+    request.listeners.load()
+
+    await expect(result).resolves.toEqual({ skills: ['Python'] })
+    expect(request.open).toHaveBeenCalledWith('POST', '/api/resume/upload')
+    expect(request.withCredentials).toBe(true)
+    expect(request.send).toHaveBeenCalledWith(form)
+    expect(onProgress).toHaveBeenCalledWith(75)
   })
 })

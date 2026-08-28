@@ -1,8 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ButtonLabel, InlineAlert, PageLoader } from '../components/Feedback'
 import NavBar from '../components/NavBar'
-import { apiFetch } from '../lib/api'
+import { apiFetch, apiUpload } from '../lib/api'
+
+const MAX_FILE_SIZE = 5 * 1024 * 1024
+const SUPPORTED_EXTENSIONS = ['pdf', 'md', 'txt', 'html']
 
 function mergeSkills(current, incoming) {
   const merged = []
@@ -18,12 +21,24 @@ function mergeSkills(current, incoming) {
   return merged
 }
 
+function formatFileSize(bytes) {
+  if (bytes == null) return ''
+  if (bytes < 1024) return `${bytes} B`
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`
+}
+
 export default function ResumePage() {
   const queryClient = useQueryClient()
   const [skills, setSkills] = useState([])
   const [newSkill, setNewSkill] = useState('')
   const [resumeText, setResumeText] = useState('')
+  const [pendingFile, setPendingFile] = useState(null)
+  const [pendingFileText, setPendingFileText] = useState('')
+  const [uploadProgress, setUploadProgress] = useState(0)
+  const [uploadPhase, setUploadPhase] = useState('idle')
+  const [isDragging, setIsDragging] = useState(false)
   const [notice, setNotice] = useState(null)
+  const fileInputRef = useRef(null)
 
   const resumeQuery = useQuery({
     queryKey: ['resume'],
@@ -32,8 +47,9 @@ export default function ResumePage() {
   })
 
   useEffect(() => {
+    if (!resumeQuery.data) return
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (resumeQuery.data?.skills) setSkills(resumeQuery.data.skills)
+    setSkills(resumeQuery.data.skills || [])
   }, [resumeQuery.data])
 
   const parseMutation = useMutation({
@@ -43,6 +59,7 @@ export default function ResumePage() {
     }),
     onSuccess: (data) => {
       setSkills((current) => mergeSkills(current, data.skills))
+      setResumeText(data.resume_text)
       setNotice({ tone: 'success', message: `${data.skills.length} skills extracted. Review them before saving.` })
     },
   })
@@ -51,23 +68,60 @@ export default function ResumePage() {
     mutationFn: (file) => {
       const form = new FormData()
       form.append('file', file)
-      return apiFetch('/resume/upload', { method: 'POST', body: form })
+      return apiUpload('/resume/upload', form, (progress) => {
+        setUploadProgress(progress)
+        if (progress >= 100) setUploadPhase('analyzing')
+      })
     },
-    onSuccess: (data) => {
+    onSuccess: (data, file) => {
       setSkills((current) => mergeSkills(current, data.skills))
-      setNotice({ tone: 'success', message: `${data.skills.length} skills extracted from the file.` })
+      setResumeText('')
+      setPendingFileText(data.resume_text.trim())
+      setPendingFile(file)
+      setUploadProgress(100)
+      setUploadPhase('complete')
+      setNotice({ tone: 'success', message: `${data.skills.length} skills extracted. Save to store ${file.name}.` })
+    },
+    onError: () => {
+      setPendingFile(null)
+      setUploadProgress(0)
+      setUploadPhase('idle')
     },
   })
 
   const resumeMutation = useMutation({
-    mutationFn: (resume) => apiFetch('/resume', {
-      method: 'PUT',
-      body: JSON.stringify(resume),
-    }),
+    mutationFn: ({ resume, file }) => {
+      if (file) {
+        const form = new FormData()
+        form.append('resume', JSON.stringify(resume))
+        form.append('file', file)
+        return apiFetch('/resume', { method: 'PUT', body: form })
+      }
+      return apiFetch('/resume', {
+        method: 'PUT',
+        body: JSON.stringify(resume),
+      })
+    },
     onSuccess: () => {
+      setPendingFile(null)
+      setPendingFileText('')
+      setResumeText('')
       queryClient.invalidateQueries({ queryKey: ['jobs'] })
       queryClient.invalidateQueries({ queryKey: ['resume'] })
-      setNotice({ tone: 'success', message: 'Resume skills saved and match scores refreshed.' })
+      setNotice({ tone: 'success', message: 'Resume saved and match scores refreshed.' })
+    },
+  })
+
+  const downloadMutation = useMutation({
+    mutationFn: () => apiFetch('/resume/file'),
+    onSuccess: (data) => {
+      const link = document.createElement('a')
+      link.href = data.url
+      link.download = data.filename || 'resume'
+      link.rel = 'noopener noreferrer'
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
     },
   })
 
@@ -86,10 +140,44 @@ export default function ResumePage() {
     resumeMutation.reset()
   }
 
+  function analyzeFile(file) {
+    if (!file) return
+
+    const extension = file.name.split('.').pop()?.toLocaleLowerCase()
+    if (!SUPPORTED_EXTENSIONS.includes(extension)) {
+      setNotice({ tone: 'error', message: 'Choose a PDF, MD, TXT, or HTML file.' })
+      return
+    }
+    if (file.size > MAX_FILE_SIZE) {
+      setNotice({ tone: 'error', message: 'File must be 5 MB or smaller.' })
+      return
+    }
+
+    parseMutation.reset()
+    resumeMutation.reset()
+    uploadMutation.reset()
+    setNotice(null)
+    setPendingFile(file)
+    setPendingFileText('')
+    setUploadProgress(0)
+    setUploadPhase('uploading')
+    uploadMutation.mutate(file)
+  }
+
+  function removePendingFile() {
+    setPendingFile(null)
+    setPendingFileText('')
+    setUploadProgress(0)
+    setUploadPhase('idle')
+    uploadMutation.reset()
+    setNotice(null)
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
   if (resumeQuery.isLoading) return <PageLoader label="Loading your resume…" />
 
   const resumeLoadError = resumeQuery.isError && resumeQuery.error?.status !== 404
-  const activeError = parseMutation.error || uploadMutation.error || resumeMutation.error
+  const activeError = parseMutation.error || uploadMutation.error || resumeMutation.error || downloadMutation.error
 
   return (
     <div className="app-main min-h-screen bg-surface">
@@ -121,6 +209,7 @@ export default function ResumePage() {
             disabled={parseMutation.isPending}
             onChange={(event) => {
               setResumeText(event.target.value)
+              if (pendingFile) removePendingFile()
               parseMutation.reset()
               setNotice(null)
             }}
@@ -132,38 +221,138 @@ export default function ResumePage() {
             <span>{resumeText.length.toLocaleString()} / 20,000</span>
           </div>
 
-          <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center">
+          <div className="mt-4">
             <button
               className="primary-button"
               disabled={parseMutation.isPending || resumeText.trim().length < 100 || resumeText.trim().length > 20000}
               onClick={() => {
                 uploadMutation.reset()
                 resumeMutation.reset()
+                setPendingFile(null)
+                setPendingFileText('')
                 parseMutation.mutate(resumeText)
               }}
             >
               <ButtonLabel pending={parseMutation.isPending} pendingText="Extracting…">Extract skills</ButtonLabel>
             </button>
-            <span className="text-center text-xs text-muted">or</span>
-            <label className={`secondary-button ${uploadMutation.isPending ? 'pointer-events-none opacity-50' : ''}`}>
-              <ButtonLabel pending={uploadMutation.isPending} pendingText="Reading file…">Upload PDF, MD, TXT, or HTML</ButtonLabel>
-              <input
-                type="file"
-                accept=".pdf,.md,.txt,.html"
-                className="sr-only"
-                disabled={uploadMutation.isPending}
-                onChange={(event) => {
-                  const file = event.target.files?.[0]
-                  if (file) {
-                    parseMutation.reset()
-                    resumeMutation.reset()
-                    uploadMutation.mutate(file)
-                  }
-                  event.target.value = ''
-                }}
-              />
-            </label>
           </div>
+
+          <div className="my-5 flex items-center gap-3" aria-hidden="true">
+            <span className="h-px flex-1 bg-border" />
+            <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">or upload a file</span>
+            <span className="h-px flex-1 bg-border" />
+          </div>
+
+          <div
+            role="button"
+            tabIndex={uploadMutation.isPending ? -1 : 0}
+            aria-label="Upload resume file"
+            aria-disabled={uploadMutation.isPending}
+            className={`rounded-md border border-dashed p-7 text-center transition-colors ${
+              isDragging
+                ? 'border-ink bg-surface'
+                : 'border-border bg-soft-paper hover:border-ash hover:bg-surface'
+            } ${uploadMutation.isPending ? 'cursor-wait opacity-70' : 'cursor-pointer'}`}
+            onClick={() => !uploadMutation.isPending && fileInputRef.current?.click()}
+            onKeyDown={(event) => {
+              if (!uploadMutation.isPending && (event.key === 'Enter' || event.key === ' ')) {
+                event.preventDefault()
+                fileInputRef.current?.click()
+              }
+            }}
+            onDragEnter={(event) => {
+              event.preventDefault()
+              if (!uploadMutation.isPending) setIsDragging(true)
+            }}
+            onDragOver={(event) => {
+              event.preventDefault()
+              if (!uploadMutation.isPending) event.dataTransfer.dropEffect = 'copy'
+            }}
+            onDragLeave={(event) => {
+              event.preventDefault()
+              setIsDragging(false)
+            }}
+            onDrop={(event) => {
+              event.preventDefault()
+              setIsDragging(false)
+              if (!uploadMutation.isPending) analyzeFile(event.dataTransfer.files?.[0])
+            }}
+          >
+            <div className="mx-auto grid size-9 place-items-center rounded-md border border-border bg-surface font-mono text-lg text-ink" aria-hidden="true">↑</div>
+            <p className="mt-3 text-sm text-ink">Drop your resume here</p>
+            <p className="mt-1 text-xs text-muted">or click to browse · PDF, MD, TXT, HTML · 5 MB max</p>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".pdf,.md,.txt,.html"
+              className="sr-only"
+              disabled={uploadMutation.isPending}
+              aria-label="Choose resume file"
+              onChange={(event) => {
+                analyzeFile(event.target.files?.[0])
+                event.target.value = ''
+              }}
+            />
+          </div>
+
+          {(pendingFile || resumeQuery.data?.source_file) && (
+            <div className="mt-4 overflow-hidden rounded-md border border-border bg-surface">
+              <div className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0">
+                  <p className="truncate text-sm text-ink">
+                    {pendingFile?.name || resumeQuery.data.source_file.filename}
+                  </p>
+                  <p className="mt-1 font-mono text-[11px] uppercase tracking-[0.06em] text-muted">
+                    {pendingFile
+                      ? `${formatFileSize(pendingFile.size)} · ${uploadMutation.isPending ? 'processing' : 'pending save'}`
+                      : `${formatFileSize(resumeQuery.data.source_file.size_bytes)} · saved source`}
+                  </p>
+                </div>
+                {pendingFile ? (
+                  <button
+                    type="button"
+                    className="text-sm text-muted hover:text-ink disabled:opacity-40"
+                    disabled={uploadMutation.isPending}
+                    onClick={removePendingFile}
+                  >
+                    Remove
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="secondary-button shrink-0"
+                    disabled={downloadMutation.isPending}
+                    onClick={() => downloadMutation.mutate()}
+                  >
+                    <ButtonLabel pending={downloadMutation.isPending} pendingText="Preparing…">Download original</ButtonLabel>
+                  </button>
+                )}
+              </div>
+
+              {uploadMutation.isPending && (
+                <div className="border-t border-border px-3 py-3" aria-live="polite">
+                  <div className="flex items-center justify-between text-xs text-muted">
+                    <span>{uploadPhase === 'analyzing' ? 'Analyzing resume…' : 'Uploading resume…'}</span>
+                    <span className="font-mono">{uploadProgress}%</span>
+                  </div>
+                  <div
+                    className="mt-2 h-1.5 overflow-hidden rounded-full bg-border"
+                    role="progressbar"
+                    aria-label="Resume upload progress"
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                    aria-valuenow={uploadProgress}
+                  >
+                    <div
+                      className="h-full rounded-full bg-ink transition-[width] duration-200"
+                      style={{ width: `${uploadProgress}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
+            </div>
+          )}
         </section>
 
         <section className="surface-card p-4" aria-labelledby="skills-heading">
@@ -217,9 +406,17 @@ export default function ResumePage() {
             onClick={() => {
               parseMutation.reset()
               uploadMutation.reset()
-              resumeMutation.mutate({ skills })
+              resumeMutation.mutate({
+                resume: {
+                  skills,
+                  resume_text: pendingFile
+                    ? pendingFileText
+                    : (resumeText.trim() || resumeQuery.data?.resume_text || null),
+                },
+                file: pendingFile,
+              })
             }}
-            disabled={resumeMutation.isPending}
+            disabled={resumeMutation.isPending || uploadMutation.isPending}
           >
             <ButtonLabel pending={resumeMutation.isPending} pendingText="Saving…">Save resume</ButtonLabel>
           </button>

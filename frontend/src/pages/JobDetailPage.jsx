@@ -24,6 +24,7 @@ export default function JobDetailPage() {
   const [notes, setNotes] = useState('')
   const [status, setStatus] = useState('saved')
   const [deadline, setDeadline] = useState('')
+  const [sourceUrl, setSourceUrl] = useState('')
   const [notice, setNotice] = useState(null)
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const closeDeleteDialog = useCallback(() => setShowDeleteDialog(false), [])
@@ -39,12 +40,18 @@ export default function JobDetailPage() {
     setNotes(jobQuery.data.notes || '')
     setStatus(jobQuery.data.status)
     setDeadline(jobQuery.data.deadline || '')
+    setSourceUrl(jobQuery.data.source_url || '')
   }, [jobQuery.data])
 
   const saveTracking = useMutation({
     mutationFn: () => apiFetch(`/jobs/${id}`, {
       method: 'PATCH',
-      body: JSON.stringify({ notes, status, deadline: deadline || null }),
+      body: JSON.stringify({
+        notes,
+        status,
+        deadline: deadline || null,
+        source_url: sourceUrl.trim() || null,
+      }),
     }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['job', id] })
@@ -82,7 +89,10 @@ export default function JobDetailPage() {
 
   const job = jobQuery.data
   const notesTooLong = notes.length > 5000
-  const isDirty = notes !== (job.notes || '') || status !== job.status || deadline !== (job.deadline || '')
+  const isDirty = notes !== (job.notes || '')
+    || status !== job.status
+    || deadline !== (job.deadline || '')
+    || sourceUrl !== (job.source_url || '')
   const metadata = [job.company_name, job.location, job.work_type?.replace('_', ' ')].filter(Boolean)
 
   return (
@@ -95,6 +105,16 @@ export default function JobDetailPage() {
           <p className="eyebrow">Job details</p>
           <h1 className="page-heading mt-2">{job.title || 'Untitled role'}</h1>
           {metadata.length > 0 && <p className="mt-2 font-mono text-[11px] uppercase tracking-[0.06em] text-muted">{metadata.join(' · ')}</p>}
+          {job.source_url && (
+            <a
+              href={job.source_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-3 inline-flex text-sm text-ink underline decoration-border underline-offset-4 transition-colors hover:text-muted"
+            >
+              Open posting ↗
+            </a>
+          )}
 
           <div className="mt-5 flex max-w-lg items-center gap-3" aria-label={`${job.match_score ?? 0}% skill match`}>
             <span className="shrink-0 text-sm font-medium text-ink">{job.match_score != null ? `${job.match_score}% match` : 'No match score'}</span>
@@ -179,6 +199,18 @@ export default function JobDetailPage() {
               <label className="block text-sm text-ink">
                 Deadline
                 <input type="date" value={deadline} onChange={(event) => { setDeadline(event.target.value); setNotice(null) }} className="control mt-2 px-3 py-2.5 text-sm" />
+              </label>
+
+              <label className="block text-sm text-ink">
+                Job posting URL
+                <input
+                  type="url"
+                  maxLength={2048}
+                  value={sourceUrl}
+                  onChange={(event) => { setSourceUrl(event.target.value); setNotice(null) }}
+                  placeholder="https://company.com/jobs/role"
+                  className="control mt-2 px-3 py-2.5 text-sm"
+                />
               </label>
 
               <label className="block text-sm text-ink">
