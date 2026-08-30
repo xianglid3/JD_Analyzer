@@ -24,7 +24,7 @@ def extracted_job():
     )
 
 
-def test_same_key_replays_original_job_without_second_analysis(client, monkeypatch):
+def test_same_key_replays_original_draft_without_second_analysis(client, monkeypatch):
     login(client)
     calls = []
 
@@ -39,8 +39,8 @@ def test_same_key_replays_original_job_without_second_analysis(client, monkeypat
         "description": DESCRIPTION,
         "source_url": "HTTPS://Example.COM:443/jobs/42#apply",
     }
-    first = client.post("/api/jobs", json=payload, headers=headers)
-    replay = client.post("/api/jobs", json=payload, headers=headers)
+    first = client.post("/api/jobs/drafts", json=payload, headers=headers)
+    replay = client.post("/api/jobs/drafts", json=payload, headers=headers)
 
     assert first.status_code == 201
     assert replay.status_code == 200
@@ -62,9 +62,9 @@ def test_same_key_rejects_a_different_description(client, monkeypatch):
     monkeypatch.setattr("routes.jobs.analyze_job_description", analyze)
     headers = {"Idempotency-Key": str(uuid4())}
 
-    first = client.post("/api/jobs", json={"description": DESCRIPTION}, headers=headers)
+    first = client.post("/api/jobs/drafts", json={"description": DESCRIPTION}, headers=headers)
     conflict = client.post(
-        "/api/jobs",
+        "/api/jobs/drafts",
         json={"description": DESCRIPTION + " Different payload."},
         headers=headers,
     )
@@ -87,12 +87,12 @@ def test_same_key_rejects_a_different_source_url(client, monkeypatch):
     headers = {"Idempotency-Key": str(uuid4())}
 
     first = client.post(
-        "/api/jobs",
+        "/api/jobs/drafts",
         json={"description": DESCRIPTION, "source_url": "https://example.com/jobs/one"},
         headers=headers,
     )
     conflict = client.post(
-        "/api/jobs",
+        "/api/jobs/drafts",
         json={"description": DESCRIPTION, "source_url": "https://example.com/jobs/two"},
         headers=headers,
     )
@@ -117,8 +117,8 @@ def test_failed_analysis_releases_key_for_retry(client, monkeypatch):
     monkeypatch.setattr("routes.jobs.analyze_job_description", analyze)
     headers = {"Idempotency-Key": str(uuid4())}
 
-    failed = client.post("/api/jobs", json={"description": DESCRIPTION}, headers=headers)
-    retried = client.post("/api/jobs", json={"description": DESCRIPTION}, headers=headers)
+    failed = client.post("/api/jobs/drafts", json={"description": DESCRIPTION}, headers=headers)
+    retried = client.post("/api/jobs/drafts", json={"description": DESCRIPTION}, headers=headers)
 
     assert failed.status_code == 500
     assert retried.status_code == 201
@@ -136,7 +136,7 @@ def test_create_job_requires_a_uuid_idempotency_key(client, monkeypatch):
 
     monkeypatch.setattr("routes.jobs.analyze_job_description", analyze)
 
-    response = client.post("/api/jobs", json={"description": DESCRIPTION})
+    response = client.post("/api/jobs/drafts", json={"description": DESCRIPTION})
 
     assert response.status_code == 400
     assert response.get_json() == {"error": "Valid Idempotency-Key required"}
@@ -149,10 +149,15 @@ def test_new_analysis_sweeps_expired_completed_keys(client, monkeypatch, _db):
     expired_key = str(uuid4())
     current_key = str(uuid4())
 
-    assert client.post(
-        "/api/jobs",
+    first = client.post(
+        "/api/jobs/drafts",
         json={"description": DESCRIPTION},
         headers={"Idempotency-Key": expired_key},
+    )
+    assert first.status_code == 201
+    assert client.post(
+        f"/api/jobs/drafts/{first.get_json()['id']}/confirm",
+        json={},
     ).status_code == 201
 
     with _db.cursor() as cur:
@@ -166,7 +171,7 @@ def test_new_analysis_sweeps_expired_completed_keys(client, monkeypatch, _db):
         )
 
     assert client.post(
-        "/api/jobs",
+        "/api/jobs/drafts",
         json={"description": DESCRIPTION},
         headers={"Idempotency-Key": current_key},
     ).status_code == 201

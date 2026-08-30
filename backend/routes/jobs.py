@@ -18,9 +18,11 @@ jobs_bp = Blueprint("jobs", __name__, url_prefix = "/api/jobs")
 logger = logging.getLogger(__name__)
 #accetpable status
 VALID_STATUSES = {"saved", "applied", "interview", "offer", "rejected", "ghosted", "accepted", "decline"}
+VALID_WORK_TYPES = {"remote", "hybrid", "in_person"}
 IDEMPOTENCY_STALE_AFTER = "10 minutes"
 IDEMPOTENCY_COMPLETED_TTL = "7 days"
 MAX_NOTES_CHARS = 5000
+MAX_REVIEW_TEXT_CHARS = 300
 
 
 def release_idempotency_key(user_id, idempotency_key, request_hash):
@@ -34,6 +36,7 @@ def release_idempotency_key(user_id, idempotency_key, request_hash):
                   AND idempotency_key = %s
                   AND request_hash = %s
                   AND job_id IS NULL
+                  AND draft_id IS NULL
                 """,
                 (user_id, idempotency_key, request_hash),
             )
@@ -41,11 +44,12 @@ def release_idempotency_key(user_id, idempotency_key, request_hash):
         logger.exception("failed to release idempotency key")
 
 
-def create_job_payload(row, replayed=False):
-    (job_id, title, summary, no_bs_translation, skills,
-     company_name, location, work_type, source_url, created_at) = row
+def create_draft_payload(row, replayed=False):
+    (draft_id, raw_description, title, summary, no_bs_translation, skills,
+     company_name, location, work_type, source_url, expires_at, confirmed_job_id) = row
     payload = {
-        "id": str(job_id),
+        "id": str(draft_id),
+        "raw_description": raw_description,
         "title": title,
         "summary": summary,
         "no_bs_translation": no_bs_translation,
@@ -54,17 +58,31 @@ def create_job_payload(row, replayed=False):
         "location": location,
         "work_type": work_type,
         "source_url": source_url,
-        "created_at": created_at.isoformat(),
+        "expires_at": expires_at.isoformat(),
+        "confirmed_job_id": str(confirmed_job_id) if confirmed_job_id else None,
     }
     if replayed:
         payload["replayed"] = True
     return payload
 
 
-@jobs_bp.route("", methods = ["POST"])
+def normalize_review_text(value, field, required=False):
+    if value is None and not required:
+        return None, None
+    if not isinstance(value, str):
+        return None, f"{field} must be text"
+    value = value.strip()
+    if required and not value:
+        return None, f"{field} is required"
+    if len(value) > MAX_REVIEW_TEXT_CHARS:
+        return None, f"{field} must be {MAX_REVIEW_TEXT_CHARS} characters or fewer"
+    return value or None, None
+
+
+@jobs_bp.route("/drafts", methods=["POST"])
 @require_auth
 @limiter.limit("5 per minute; 50 per day", key_func=authenticated_user_key)
-def create_job():
+def create_job_draft():
     data, error = get_json_object()
     if error:
         return error
@@ -100,15 +118,27 @@ def create_job():
         ).encode("utf-8")
     ).hexdigest()
 
-    # Opportunistically bound this user's reservation history, then atomically
-    # claim the new key before spending money on an OpenAI call.
+    # Drafts expire after 30 minutes. Confirmed responses replay for 7 days;
+    # deleting their reservation after that intentionally ends the replay guarantee.
     with get_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            DELETE FROM job_analysis_drafts
+            WHERE user_id = %s
+              AND (
+                  (confirmed_job_id IS NULL AND expires_at <= now())
+                  OR
+                  (confirmed_job_id IS NOT NULL AND created_at < now() - %s::interval)
+              )
+            """,
+            (g.user_id, IDEMPOTENCY_COMPLETED_TTL),
+        )
         cur.execute(
             """
             DELETE FROM idempotency_requests
             WHERE user_id = %s
               AND (
-                  (job_id IS NULL AND created_at < now() - %s::interval)
+                  (job_id IS NULL AND draft_id IS NULL AND created_at < now() - %s::interval)
                   OR
                   (job_id IS NOT NULL AND created_at < now() - %s::interval)
               )
@@ -131,11 +161,13 @@ def create_job():
         if reserved is None:
             cur.execute(
                 """
-                SELECT r.request_hash, j.id, j.title, j.summary,
-                       j.no_bs_translation, j.skills, j.company_name,
-                       j.location, j.work_type, j.source_url, j.created_at
+                SELECT r.request_hash, r.job_id, r.draft_id,
+                       d.id, d.raw_description, d.title, d.summary,
+                       d.no_bs_translation, d.skills, d.company_name,
+                       d.location, d.work_type, d.source_url, d.expires_at,
+                       d.confirmed_job_id
                 FROM idempotency_requests AS r
-                LEFT JOIN jobs AS j ON j.id = r.job_id
+                LEFT JOIN job_analysis_drafts AS d ON d.id = r.draft_id
                 WHERE r.user_id = %s AND r.idempotency_key = %s
                 """,
                 (g.user_id, idempotency_key),
@@ -151,11 +183,17 @@ def create_job():
             return jsonify({
                 "error": "Idempotency-Key was already used with a different request"
             }), 409
-        if existing[1] is None:
+        if existing[1] is not None:
+            return jsonify({
+                "id": str(existing[1]),
+                "confirmed": True,
+                "replayed": True,
+            }), 200
+        if existing[2] is None or existing[3] is None:
             response = jsonify({"error": "Analysis already in progress, please retry shortly"})
             response.headers["Retry-After"] = "3"
             return response, 409
-        return jsonify(create_job_payload(existing[1:], replayed=True)), 200
+        return jsonify(create_draft_payload(existing[3:], replayed=True)), 200
 
     cleaned_description = preprocess_text(raw_description)
 
@@ -168,42 +206,36 @@ def create_job():
 
     try:
         with get_cursor(commit=True) as cur:
-            cur.execute("SELECT skills FROM resumes WHERE user_id = %s", (g.user_id,))
-            resume_row = cur.fetchone()
-            resume_skills = resume_row[0] if resume_row else []
-            match = compute_match(job.skills, resume_skills)
-            match_score = match["score"] if match else None
-            match_detail = {
-                "matched": match["matched"],
-                "missing": match["missing"],
-            } if match else None
-
             cur.execute(
                 """
-                INSERT INTO jobs (user_id, raw_description, title, summary, no_bs_translation,
-                                  skills, company_name, location, work_type, source_url,
-                                  match_score, match_detail)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING id, created_at
+                INSERT INTO job_analysis_drafts (
+                    user_id, raw_description, title, summary, no_bs_translation,
+                    skills, company_name, location, work_type, source_url
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, raw_description, title, summary, no_bs_translation, skills,
+                          company_name, location, work_type, source_url, expires_at,
+                          confirmed_job_id
                 """,
                 (
                     g.user_id, raw_description, job.title, job.summary, job.no_bs_translation,
                     json.dumps(job.skills), job.company_name, job.location, job.work_type,
-                    source_url, match_score, json.dumps(match_detail) if match_detail else None,
+                    source_url,
                 ),
             )
-            new_id, created_at = cur.fetchone()
+            draft_row = cur.fetchone()
 
             cur.execute(
                 """
                 UPDATE idempotency_requests
-                SET job_id = %s
+                SET draft_id = %s
                 WHERE user_id = %s
                   AND idempotency_key = %s
                   AND request_hash = %s
                   AND job_id IS NULL
+                  AND draft_id IS NULL
                 """,
-                (new_id, g.user_id, idempotency_key, request_hash),
+                (draft_row[0], g.user_id, idempotency_key, request_hash),
             )
             if cur.rowcount != 1:
                 raise RuntimeError("idempotency reservation disappeared")
@@ -211,10 +243,177 @@ def create_job():
         release_idempotency_key(g.user_id, idempotency_key, request_hash)
         raise
 
-    return jsonify(create_job_payload((
-        new_id, job.title, job.summary, job.no_bs_translation, job.skills,
-        job.company_name, job.location, job.work_type, source_url, created_at,
-    ))), 201
+    return jsonify(create_draft_payload(draft_row)), 201
+
+
+@jobs_bp.route("/drafts/<draft_id>", methods=["GET"])
+@require_auth
+def get_job_draft(draft_id):
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, raw_description, title, summary, no_bs_translation, skills,
+                   company_name, location, work_type, source_url, expires_at,
+                   confirmed_job_id, expires_at <= now()
+            FROM job_analysis_drafts
+            WHERE id = %s AND user_id = %s
+            """,
+            (draft_id, g.user_id),
+        )
+        row = cur.fetchone()
+
+    if row is None:
+        return jsonify({"error": "job draft not found"}), 404
+    if row[-1] and row[-2] is None:
+        return jsonify({"error": "job draft expired"}), 410
+    return jsonify(create_draft_payload(row[:-1])), 200
+
+
+@jobs_bp.route("/drafts/<draft_id>", methods=["DELETE"])
+@require_auth
+def delete_job_draft(draft_id):
+    with get_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            SELECT confirmed_job_id
+            FROM job_analysis_drafts
+            WHERE id = %s AND user_id = %s
+            FOR UPDATE
+            """,
+            (draft_id, g.user_id),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return jsonify({"error": "job draft not found"}), 404
+        if row[0] is not None:
+            return jsonify({"error": "confirmed job drafts cannot be cancelled"}), 409
+
+        cur.execute(
+            "DELETE FROM idempotency_requests WHERE user_id = %s AND draft_id = %s AND job_id IS NULL",
+            (g.user_id, draft_id),
+        )
+        cur.execute(
+            "DELETE FROM job_analysis_drafts WHERE id = %s AND user_id = %s",
+            (draft_id, g.user_id),
+        )
+
+    return jsonify({"deleted": draft_id}), 200
+
+
+@jobs_bp.route("/drafts/<draft_id>/confirm", methods=["POST"])
+@require_auth
+def confirm_job_draft(draft_id):
+    data, error = get_json_object()
+    if error:
+        return error
+
+    with get_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            SELECT raw_description, title, summary, no_bs_translation, skills,
+                   company_name, location, work_type, source_url,
+                   confirmed_job_id, expires_at <= now()
+            FROM job_analysis_drafts
+            WHERE id = %s AND user_id = %s
+            FOR UPDATE
+            """,
+            (draft_id, g.user_id),
+        )
+        draft = cur.fetchone()
+
+        if draft is None:
+            return jsonify({"error": "job draft not found"}), 404
+        if draft[9] is not None:
+            return jsonify({"id": str(draft[9]), "replayed": True}), 200
+        if draft[10]:
+            return jsonify({"error": "job draft expired"}), 410
+
+        (raw_description, default_title, summary, no_bs_translation, skills,
+         default_company, default_location, default_work_type, default_source_url,
+         _confirmed_job_id, _expired) = draft
+
+        title, validation_error = normalize_review_text(data.get("title", default_title), "title", required=True)
+        if validation_error:
+            return jsonify({"error": validation_error}), 400
+        company_name, validation_error = normalize_review_text(
+            data.get("company_name", default_company), "company_name"
+        )
+        if validation_error:
+            return jsonify({"error": validation_error}), 400
+        location, validation_error = normalize_review_text(data.get("location", default_location), "location")
+        if validation_error:
+            return jsonify({"error": validation_error}), 400
+
+        work_type = data.get("work_type", default_work_type)
+        if work_type is not None and work_type not in VALID_WORK_TYPES:
+            return jsonify({"error": "invalid work_type"}), 400
+
+        source_url, url_error = normalize_optional_http_url(data.get("source_url", default_source_url))
+        if url_error:
+            return jsonify({"error": url_error}), 400
+
+        status = data.get("status", "saved")
+        if not isinstance(status, str) or status not in VALID_STATUSES:
+            return jsonify({"error": "invalid status"}), 400
+
+        deadline = data.get("deadline")
+        if deadline is not None:
+            if not isinstance(deadline, str):
+                return jsonify({"error": "deadline must be YYYY-MM-DD or null"}), 400
+            try:
+                parsed_deadline = date.fromisoformat(deadline)
+            except ValueError:
+                return jsonify({"error": "deadline must be YYYY-MM-DD or null"}), 400
+            if parsed_deadline.isoformat() != deadline:
+                return jsonify({"error": "deadline must be YYYY-MM-DD or null"}), 400
+
+        cur.execute("SELECT skills FROM resumes WHERE user_id = %s", (g.user_id,))
+        resume_row = cur.fetchone()
+        resume_skills = resume_row[0] if resume_row else []
+        match = compute_match(skills, resume_skills)
+        match_score = match["score"] if match else None
+        match_detail = {
+            "matched": match["matched"],
+            "missing": match["missing"],
+        } if match else None
+
+        cur.execute(
+            """
+            INSERT INTO jobs (
+                user_id, raw_description, title, summary, no_bs_translation,
+                skills, company_name, location, work_type, source_url,
+                match_score, match_detail, status, deadline
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                g.user_id, raw_description, title, summary, no_bs_translation,
+                json.dumps(skills), company_name, location, work_type, source_url,
+                match_score, json.dumps(match_detail) if match_detail else None,
+                status, deadline,
+            ),
+        )
+        job_id = cur.fetchone()[0]
+
+        cur.execute(
+            """
+            UPDATE job_analysis_drafts
+            SET confirmed_job_id = %s, updated_at = now()
+            WHERE id = %s AND user_id = %s
+            """,
+            (job_id, draft_id, g.user_id),
+        )
+        cur.execute(
+            """
+            UPDATE idempotency_requests
+            SET job_id = %s
+            WHERE user_id = %s AND draft_id = %s AND job_id IS NULL
+            """,
+            (job_id, g.user_id, draft_id),
+        )
+
+    return jsonify({"id": str(job_id)}), 201
 
 
 #list all of the saved jobs from a user

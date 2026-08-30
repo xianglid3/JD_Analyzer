@@ -77,11 +77,32 @@ CREATE TABLE jobs (
 -- matches the list query: WHERE user_id = %s ORDER BY created_at DESC
 CREATE INDEX jobs_user_created_idx ON jobs (user_id, created_at DESC);
 
+CREATE TABLE job_analysis_drafts (
+  id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id           uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  raw_description   text NOT NULL,
+  source_url        text,
+  title             text,
+  summary           text,
+  no_bs_translation text,
+  skills            jsonb NOT NULL DEFAULT '[]'::jsonb,
+  company_name      text,
+  location          text,
+  work_type         work_type,
+  confirmed_job_id  uuid REFERENCES jobs(id) ON DELETE SET NULL,
+  expires_at        timestamptz NOT NULL DEFAULT (now() + interval '30 minutes'),
+  created_at        timestamptz NOT NULL DEFAULT now(),
+  updated_at        timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX job_analysis_drafts_user_idx ON job_analysis_drafts (user_id);
+CREATE INDEX job_analysis_drafts_expires_idx ON job_analysis_drafts (expires_at);
+
 CREATE TABLE idempotency_requests (
   user_id         uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   idempotency_key text NOT NULL,
   request_hash    text NOT NULL,
   job_id          uuid REFERENCES jobs(id) ON DELETE CASCADE,
+  draft_id        uuid REFERENCES job_analysis_drafts(id) ON DELETE SET NULL,
   created_at      timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (user_id, idempotency_key)
 );

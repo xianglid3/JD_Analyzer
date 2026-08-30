@@ -365,5 +365,39 @@ def get_resume_file():
     response.headers["Cache-Control"] = "no-store"
     return response, 200
 
+
+@resume_bp.route("/file", methods=["DELETE"])
+@require_auth
+def delete_saved_resume_file():
+    with get_cursor(commit=True) as cur:
+        cur.execute(
+            "SELECT storage_path FROM resumes WHERE user_id = %s FOR UPDATE",
+            (g.user_id,),
+        )
+        row = cur.fetchone()
+        if row is None or row[0] is None:
+            return jsonify({"error": "no resume file found"}), 404
+
+        storage_path = row[0]
+        cur.execute(
+            """
+            UPDATE resumes
+            SET storage_path = NULL,
+                original_filename = NULL,
+                file_mime_type = NULL,
+                file_size_bytes = NULL,
+                file_sha256 = NULL,
+                file_uploaded_at = NULL,
+                updated_at = now()
+            WHERE user_id = %s
+            """,
+            (g.user_id,),
+        )
+
+    # Postgres is the source of truth. If Storage is temporarily unavailable,
+    # reconciliation will remove the now-unreferenced private object later.
+    delete_storage_file_quietly(storage_path)
+    return jsonify({"ok": True}), 200
+
     
     

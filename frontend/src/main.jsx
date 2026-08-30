@@ -11,6 +11,7 @@ import DashboardPage from './pages/DashboardPage'
 import SignupPage from './pages/SignupPage'
 import ResumePage from './pages/ResumePage'
 import JobDetailPage from './pages/JobDetailPage'
+import JobReviewPage from './pages/JobReviewPage'
 
 const queryClient = new QueryClient()
 
@@ -32,6 +33,9 @@ createRoot(document.getElementById('root')).render(
 
           <Route path="/jobs/:id" element={
             <ProtectedRoute> <JobDetailPage /> </ProtectedRoute>} />
+
+          <Route path="/jobs/review/:id" element={
+            <ProtectedRoute> <JobReviewPage /> </ProtectedRoute>} />
 
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         

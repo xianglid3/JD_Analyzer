@@ -3,6 +3,7 @@ from routes.auth import auth_bp
 from routes.jobs import jobs_bp
 from routes.resume import resume_bp
 from extensions import limiter
+from commands import register_commands
 import logging
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -16,6 +17,7 @@ limiter.init_app(app) # connect limiter to app
 app.register_blueprint(auth_bp)
 app.register_blueprint(jobs_bp)
 app.register_blueprint(resume_bp)
+register_commands(app)
 
 @app.route("/api/health")
 def health():

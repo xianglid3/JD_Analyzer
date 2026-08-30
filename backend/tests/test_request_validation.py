@@ -35,7 +35,7 @@ def test_source_url_rejects_invalid_values(value):
 @pytest.mark.parametrize(
     ("method", "path"),
     [
-        ("POST", "/api/jobs"),
+        ("POST", "/api/jobs/drafts"),
         ("PATCH", "/api/jobs/00000000-0000-0000-0000-000000000000"),
         ("PUT", "/api/resume"),
         ("POST", "/api/resume/parse"),
@@ -73,7 +73,7 @@ def test_analysis_routes_reject_non_text_fields_before_openai(client, monkeypatc
         lambda text: calls.append(text),
     )
 
-    job = client.post("/api/jobs", json={"description": []})
+    job = client.post("/api/jobs/drafts", json={"description": []})
     resume = client.post("/api/resume/parse", json={"text": []})
 
     assert job.status_code == 400

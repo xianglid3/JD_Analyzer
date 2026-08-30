@@ -128,3 +128,75 @@ def test_resume_file_download_is_owned_and_short_lived(client, monkeypatch, _db)
     assert response.get_json()["expires_in"] == 60
     assert response.get_json()["filename"] == "resume.pdf"
     assert response.headers["Cache-Control"] == "no-store"
+
+
+def test_resume_file_delete_preserves_extracted_resume_data(client, monkeypatch, _db):
+    user = login(client)
+    storage_path = f"{user['id']}/source.pdf"
+    with _db.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO resumes (
+                user_id, skills, resume_text, storage_path, original_filename,
+                file_mime_type, file_size_bytes, file_sha256, file_uploaded_at
+            )
+            VALUES (%s, '["Python"]', 'Saved resume text', %s, 'resume.pdf',
+                    'application/pdf', 1234, 'abc123', now())
+            """,
+            (user["id"], storage_path),
+        )
+
+    deleted = []
+    monkeypatch.setattr("routes.resume.delete_resume_file", deleted.append)
+
+    response = client.delete("/api/resume/file")
+
+    assert response.status_code == 200
+    assert response.get_json() == {"ok": True}
+    assert deleted == [storage_path]
+    with _db.cursor() as cur:
+        cur.execute(
+            """
+            SELECT skills, resume_text, storage_path, original_filename,
+                   file_mime_type, file_size_bytes, file_sha256, file_uploaded_at
+            FROM resumes WHERE user_id = %s
+            """,
+            (user["id"],),
+        )
+        assert cur.fetchone() == (["Python"], "Saved resume text", None, None, None, None, None, None)
+
+
+def test_resume_file_delete_returns_not_found_without_saved_file(client, monkeypatch):
+    login(client)
+    deleted = []
+    monkeypatch.setattr("routes.resume.delete_resume_file", deleted.append)
+
+    response = client.delete("/api/resume/file")
+
+    assert response.status_code == 404
+    assert response.get_json() == {"error": "no resume file found"}
+    assert deleted == []
+
+
+def test_resume_file_delete_keeps_success_when_storage_cleanup_fails(client, monkeypatch, _db):
+    user = login(client)
+    with _db.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO resumes (user_id, skills, storage_path, original_filename)
+            VALUES (%s, '["Python"]', %s, 'resume.pdf')
+            """,
+            (user["id"], f"{user['id']}/source.pdf"),
+        )
+
+    def fail_delete(_path):
+        raise RuntimeError("storage unavailable")
+
+    monkeypatch.setattr("routes.resume.delete_resume_file", fail_delete)
+
+    response = client.delete("/api/resume/file")
+
+    assert response.status_code == 200
+    with _db.cursor() as cur:
+        cur.execute("SELECT skills, storage_path FROM resumes WHERE user_id = %s", (user["id"],))
+        assert cur.fetchone() == (["Python"], None)

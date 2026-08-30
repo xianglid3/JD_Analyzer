@@ -61,22 +61,19 @@ export default function DashboardPage() {
     }
   }
 
-  const createJob = useMutation({
+  const createDraft = useMutation({
     mutationFn: ({ description, sourceUrl: requestSourceUrl, idempotencyKey }) =>
-      apiFetch('/jobs', {
+      apiFetch('/jobs/drafts', {
         method: 'POST',
         headers: { 'Idempotency-Key': idempotencyKey },
         body: JSON.stringify({ description, source_url: requestSourceUrl.trim() || null }),
       }),
-    onSuccess: () => {
+    onSuccess: (data) => {
       analyzeRequestKey.current = null
-      queryClient.invalidateQueries({ queryKey: ['jobs'] })
-      queryClient.invalidateQueries({ queryKey: ['jobs-stats'] })
-      setPage(1)
       setText('')
       setSourceUrl('')
       setShowModal(false)
-      setNotice({ tone: 'success', message: 'Analysis saved to your dashboard.' })
+      navigate(data.confirmed ? `/jobs/${data.id}` : `/jobs/review/${data.id}`)
     },
   })
 
@@ -146,7 +143,7 @@ export default function DashboardPage() {
           <button
             className="primary-button shrink-0"
             onClick={() => {
-              createJob.reset()
+              createDraft.reset()
               setShowModal(true)
             }}
           >
@@ -295,19 +292,19 @@ export default function DashboardPage() {
         title="Analyze a job description"
         description="Paste the full posting to extract requirements and compare them with your saved skills."
         onClose={closeModal}
-        dismissible={!createJob.isPending}
+        dismissible={!createDraft.isPending}
         footer={(
           <>
-            <button className="secondary-button" onClick={closeModal} disabled={createJob.isPending}>Cancel</button>
+            <button className="secondary-button" onClick={closeModal} disabled={createDraft.isPending}>Cancel</button>
             <button
               className="primary-button min-w-28"
-              disabled={createJob.isPending || text.trim().length < 50 || text.trim().length > 10000}
+              disabled={createDraft.isPending || text.trim().length < 50 || text.trim().length > 10000}
               onClick={() => {
                 analyzeRequestKey.current ??= crypto.randomUUID()
-                createJob.mutate({ description: text, sourceUrl, idempotencyKey: analyzeRequestKey.current })
+                createDraft.mutate({ description: text, sourceUrl, idempotencyKey: analyzeRequestKey.current })
               }}
             >
-              <ButtonLabel pending={createJob.isPending} pendingText="Analyzing…">Analyze</ButtonLabel>
+              <ButtonLabel pending={createDraft.isPending} pendingText="Analyzing…">Analyze</ButtonLabel>
             </button>
           </>
         )}
@@ -319,12 +316,12 @@ export default function DashboardPage() {
           id="job-source-url"
           type="url"
           maxLength={2048}
-          disabled={createJob.isPending}
+          disabled={createDraft.isPending}
           value={sourceUrl}
           onChange={(event) => {
             setSourceUrl(event.target.value)
             analyzeRequestKey.current = null
-            createJob.reset()
+            createDraft.reset()
           }}
           placeholder="https://company.com/jobs/role"
           className="control mt-2 px-3 py-2.5 text-sm"
@@ -333,19 +330,19 @@ export default function DashboardPage() {
         <textarea
           id="job-description"
           autoFocus
-          disabled={createJob.isPending}
+          disabled={createDraft.isPending}
           value={text}
           onChange={(event) => {
             setText(event.target.value)
             analyzeRequestKey.current = null
-            createJob.reset()
+            createDraft.reset()
           }}
           onKeyDown={(event) => {
             const length = text.trim().length
-            if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !createJob.isPending && length >= 50 && length <= 10000) {
+            if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !createDraft.isPending && length >= 50 && length <= 10000) {
               event.preventDefault()
               analyzeRequestKey.current ??= crypto.randomUUID()
-              createJob.mutate({ description: text, sourceUrl, idempotencyKey: analyzeRequestKey.current })
+              createDraft.mutate({ description: text, sourceUrl, idempotencyKey: analyzeRequestKey.current })
             }
           }}
           placeholder="Paste a job description here…"
@@ -355,7 +352,7 @@ export default function DashboardPage() {
           <span>Minimum 50 characters · ⌘/Ctrl + Enter to analyze</span>
           <span className={text.length > 10000 ? 'text-ink' : ''}>{text.length.toLocaleString()} / 10,000</span>
         </div>
-        {createJob.error && <InlineAlert className="mt-4">{createJob.error.message}</InlineAlert>}
+        {createDraft.error && <InlineAlert className="mt-4">{createDraft.error.message}</InlineAlert>}
       </Dialog>
     </div>
   )

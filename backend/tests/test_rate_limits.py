@@ -14,9 +14,9 @@ def test_job_analysis_limit_is_isolated_per_user(client):
 
     # Short descriptions avoid OpenAI while still counting authenticated attempts.
     for _ in range(5):
-        assert client.post("/api/jobs", json={"description": "short"}).status_code == 400
-    assert client.post("/api/jobs", json={"description": "short"}).status_code == 429
+        assert client.post("/api/jobs/drafts", json={"description": "short"}).status_code == 400
+    assert client.post("/api/jobs/drafts", json={"description": "short"}).status_code == 429
 
     # A second account on the same test IP has an independent allowance.
     signup_and_login(client, USERS[1])
-    assert client.post("/api/jobs", json={"description": "short"}).status_code == 400
+    assert client.post("/api/jobs/drafts", json={"description": "short"}).status_code == 400

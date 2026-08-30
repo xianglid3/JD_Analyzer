@@ -74,4 +74,34 @@ describe('ResumePage', () => {
       })
     })
   })
+
+  it('requires confirmation before removing only the saved source file', async () => {
+    const user = userEvent.setup()
+    apiFetch.mockImplementation((path, options) => {
+      if (path === '/resume/file' && options?.method === 'DELETE') return Promise.resolve({ ok: true })
+      if (path === '/resume') {
+        return Promise.resolve({
+          skills: ['Python'],
+          resume_text: 'Saved resume text',
+          source_file: { filename: 'backend-resume.pdf', size_bytes: 2048 },
+        })
+      }
+      return Promise.resolve({})
+    })
+    renderWithProviders(<ResumePage />, { route: '/resume' })
+
+    expect(await screen.findByText('backend-resume.pdf')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Remove file' }))
+
+    expect(screen.getByRole('dialog', { name: 'Remove stored resume file?' })).toBeInTheDocument()
+    expect(screen.getByText(/extracted skills and resume text will stay saved/i)).toBeInTheDocument()
+    expect(apiFetch).not.toHaveBeenCalledWith('/resume/file', { method: 'DELETE' })
+
+    await user.click(screen.getByRole('button', { name: 'Remove stored file' }))
+
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/resume/file', { method: 'DELETE' }))
+    expect(await screen.findByText(/stored resume file removed/i)).toBeInTheDocument()
+    expect(screen.queryByText('backend-resume.pdf')).not.toBeInTheDocument()
+    expect(screen.getByText('Python')).toBeInTheDocument()
+  })
 })

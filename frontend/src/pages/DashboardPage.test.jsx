@@ -35,7 +35,7 @@ describe('DashboardPage', () => {
     apiFetch.mockImplementation((path, options) => {
       if (path === '/jobs/stats') return Promise.resolve(stats)
       if (path.startsWith('/jobs?')) return Promise.resolve(jobsPage)
-      if (path === '/jobs' && options?.method === 'POST') return Promise.resolve({ id: 8 })
+      if (path === '/jobs/drafts' && options?.method === 'POST') return Promise.resolve({ id: 'draft-8' })
       return Promise.resolve({})
     })
   })
@@ -61,11 +61,11 @@ describe('DashboardPage', () => {
     await user.type(screen.getByLabelText('Job description'), 'A'.repeat(60))
     await user.click(screen.getByRole('button', { name: 'Analyze' }))
 
-    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/jobs', {
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/jobs/drafts', {
       method: 'POST',
       headers: { 'Idempotency-Key': '123e4567-e89b-12d3-a456-426614174000' },
       body: JSON.stringify({ description: 'A'.repeat(60), source_url: 'https://example.com/jobs/42' }),
     }))
-    expect(await screen.findByText('Analysis saved to your dashboard.')).toBeInTheDocument()
+    expect(screen.queryByText('Analysis saved to your dashboard.')).not.toBeInTheDocument()
   })
 })

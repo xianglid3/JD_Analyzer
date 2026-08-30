@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ButtonLabel, InlineAlert, PageLoader } from '../components/Feedback'
+import Dialog from '../components/Dialog'
 import NavBar from '../components/NavBar'
 import { apiFetch, apiUpload } from '../lib/api'
 
@@ -37,6 +38,7 @@ export default function ResumePage() {
   const [uploadProgress, setUploadProgress] = useState(0)
   const [uploadPhase, setUploadPhase] = useState('idle')
   const [isDragging, setIsDragging] = useState(false)
+  const [showDeleteFileDialog, setShowDeleteFileDialog] = useState(false)
   const [notice, setNotice] = useState(null)
   const fileInputRef = useRef(null)
 
@@ -125,6 +127,17 @@ export default function ResumePage() {
     },
   })
 
+  const deleteFileMutation = useMutation({
+    mutationFn: () => apiFetch('/resume/file', { method: 'DELETE' }),
+    onSuccess: () => {
+      queryClient.setQueryData(['resume'], (current) => (
+        current ? { ...current, source_file: null } : current
+      ))
+      setShowDeleteFileDialog(false)
+      setNotice({ tone: 'success', message: 'Stored resume file removed. Your extracted skills and text were kept.' })
+    },
+  })
+
   function addSkill(event) {
     event?.preventDefault()
     if (!newSkill.trim()) return
@@ -177,7 +190,7 @@ export default function ResumePage() {
   if (resumeQuery.isLoading) return <PageLoader label="Loading your resume…" />
 
   const resumeLoadError = resumeQuery.isError && resumeQuery.error?.status !== 404
-  const activeError = parseMutation.error || uploadMutation.error || resumeMutation.error || downloadMutation.error
+  const activeError = parseMutation.error || uploadMutation.error || resumeMutation.error || downloadMutation.error || deleteFileMutation.error
 
   return (
     <div className="app-main min-h-screen bg-surface">
@@ -318,14 +331,27 @@ export default function ResumePage() {
                     Remove
                   </button>
                 ) : (
-                  <button
-                    type="button"
-                    className="secondary-button shrink-0"
-                    disabled={downloadMutation.isPending}
-                    onClick={() => downloadMutation.mutate()}
-                  >
-                    <ButtonLabel pending={downloadMutation.isPending} pendingText="Preparing…">Download original</ButtonLabel>
-                  </button>
+                  <div className="flex shrink-0 items-center gap-3">
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={downloadMutation.isPending || deleteFileMutation.isPending}
+                      onClick={() => downloadMutation.mutate()}
+                    >
+                      <ButtonLabel pending={downloadMutation.isPending} pendingText="Preparing…">Download original</ButtonLabel>
+                    </button>
+                    <button
+                      type="button"
+                      className="text-sm text-muted underline-offset-4 hover:text-ink hover:underline"
+                      disabled={deleteFileMutation.isPending}
+                      onClick={() => {
+                        deleteFileMutation.reset()
+                        setShowDeleteFileDialog(true)
+                      }}
+                    >
+                      Remove file
+                    </button>
+                  </div>
                 )}
               </div>
 
@@ -422,6 +448,26 @@ export default function ResumePage() {
           </button>
         </footer>
       </main>
+
+      <Dialog
+        open={showDeleteFileDialog}
+        title="Remove stored resume file?"
+        description="The original uploaded file will be permanently removed. Your extracted skills and resume text will stay saved."
+        onClose={() => setShowDeleteFileDialog(false)}
+        dismissible={!deleteFileMutation.isPending}
+        width="max-w-md"
+        footer={(
+          <>
+            <button className="secondary-button" onClick={() => setShowDeleteFileDialog(false)} disabled={deleteFileMutation.isPending}>Cancel</button>
+            <button className="danger-button" onClick={() => deleteFileMutation.mutate()} disabled={deleteFileMutation.isPending}>
+              <ButtonLabel pending={deleteFileMutation.isPending} pendingText="Removing…">Remove stored file</ButtonLabel>
+            </button>
+          </>
+        )}
+      >
+        {deleteFileMutation.error && <InlineAlert>{deleteFileMutation.error.message}</InlineAlert>}
+        <p className="text-sm leading-6 text-muted">You can upload and save another original file later.</p>
+      </Dialog>
     </div>
   )
 }

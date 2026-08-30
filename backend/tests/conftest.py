@@ -11,7 +11,7 @@ import pytest
 
 SCHEMA_SQL = (pathlib.Path(__file__).resolve().parent.parent / "schema.sql").read_text()
 DSN = os.environ["SUPABASE_URL"]
-TABLES = "idempotency_requests, refresh_tokens, jobs, resumes, users"
+TABLES = "idempotency_requests, job_analysis_drafts, refresh_tokens, jobs, resumes, users"
 
 
 def _looks_like_test_db(dsn):
