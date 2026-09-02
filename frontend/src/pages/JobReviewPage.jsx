@@ -27,6 +27,7 @@ export default function JobReviewPage() {
   const [sourceUrl, setSourceUrl] = useState('')
   const [status, setStatus] = useState('saved')
   const [deadline, setDeadline] = useState('')
+  const [requirements, setRequirements] = useState([])
 
   const draftQuery = useQuery({
     queryKey: ['job-draft', id],
@@ -47,6 +48,13 @@ export default function JobReviewPage() {
     setLocation(draft.location || '')
     setWorkType(draft.work_type || '')
     setSourceUrl(draft.source_url || '')
+    setRequirements(
+      (draft.requirements || []).map((item) => (
+        typeof item === 'string'
+          ? { skill: item, importance: 'required' }
+          : { skill: item.skill, importance: item.importance || 'required' }
+      )),
+    )
   }, [draftQuery.data, navigate])
 
   const confirmMutation = useMutation({
@@ -60,6 +68,9 @@ export default function JobReviewPage() {
         source_url: sourceUrl.trim() || null,
         status,
         deadline: deadline || null,
+        requirements: requirements
+          .filter((item) => item.skill.trim())
+          .map((item) => ({ skill: item.skill.trim(), importance: item.importance })),
       }),
     }),
     onSuccess: (data) => {
@@ -169,12 +180,53 @@ export default function JobReviewPage() {
             </section>
 
             <section className="surface-card p-5" aria-labelledby="draft-skills-heading">
-              <h2 id="draft-skills-heading" className="text-base font-medium text-ink">Extracted skills</h2>
-              <div className="mt-3 flex flex-wrap gap-2">
-                {draft.skills.map((skill) => (
-                  <span key={skill} className="rounded-full border border-border px-2.5 py-1 text-xs text-muted">{skill}</span>
+              <h2 id="draft-skills-heading" className="text-base font-medium text-ink">Requirements</h2>
+              <p className="mt-1 text-xs leading-5 text-muted">
+                These drive the match score. Fix anything the analysis got wrong — a bad requirement
+                follows this job around.
+              </p>
+
+              <ul className="mt-4 space-y-2">
+                {requirements.map((item, index) => (
+                  <li key={index} className="flex items-center gap-2">
+                    <input
+                      value={item.skill}
+                      maxLength={100}
+                      aria-label={`Requirement ${index + 1}`}
+                      onChange={(event) => setRequirements((current) => current.map((r, i) => (
+                        i === index ? { ...r, skill: event.target.value } : r
+                      )))}
+                      className="control flex-1 px-3 py-2 text-sm"
+                    />
+                    <select
+                      value={item.importance}
+                      aria-label={`Importance of ${item.skill || `requirement ${index + 1}`}`}
+                      onChange={(event) => setRequirements((current) => current.map((r, i) => (
+                        i === index ? { ...r, importance: event.target.value } : r
+                      )))}
+                      className="control min-h-11 w-40 px-3 py-2 text-sm"
+                    >
+                      <option value="required">Required</option>
+                      <option value="preferred">Preferred</option>
+                      <option value="nice_to_have">Nice to have</option>
+                    </select>
+                    <button
+                      className="text-xs text-muted hover:text-ink"
+                      aria-label={`Remove requirement ${index + 1}`}
+                      onClick={() => setRequirements((current) => current.filter((_, i) => i !== index))}
+                    >
+                      ×
+                    </button>
+                  </li>
                 ))}
-              </div>
+              </ul>
+
+              <button
+                className="mt-3 text-xs text-muted hover:text-ink"
+                onClick={() => setRequirements((current) => [...current, { skill: '', importance: 'required' }])}
+              >
+                + Add requirement
+              </button>
             </section>
           </div>
         </div>

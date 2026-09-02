@@ -150,7 +150,13 @@ def test_resume_save_recomputes_multiple_jobs_with_display_names(client, _db):
         )
         rows = cur.fetchall()
 
-    assert rows == [
-        ("Backend role", 50, {"matched": ["Python"], "missing": ["Docker"]}),
-        ("Frontend role", 50, {"matched": ["JavaScript"], "missing": ["REST API"]}),
+    # match_detail carries the whole explanation now — states, evidence, both scores — so
+    # this checks what the test was always about: recomputation ran and kept JD display casing
+    assert [(title, float(score)) for title, score, _ in rows] == [
+        ("Backend role", 50.0),
+        ("Frontend role", 50.0),
+    ]
+    assert [(detail["matched"], detail["missing"]) for _, _, detail in rows] == [
+        (["Python"], ["Docker"]),
+        (["JavaScript"], ["REST API"]),
     ]

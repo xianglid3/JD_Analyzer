@@ -66,11 +66,11 @@ def test_analysis_routes_reject_non_text_fields_before_openai(client, monkeypatc
 
     monkeypatch.setattr(
         "routes.jobs.analyze_job_description",
-        lambda text: calls.append(text),
+        lambda text, **_kwargs: calls.append(text),
     )
     monkeypatch.setattr(
         "routes.resume.analyze_resume",
-        lambda text: calls.append(text),
+        lambda text, **_kwargs: calls.append(text),
     )
 
     job = client.post("/api/jobs/drafts", json={"description": []})

@@ -28,7 +28,7 @@ def test_same_key_replays_original_draft_without_second_analysis(client, monkeyp
     login(client)
     calls = []
 
-    def analyze(description):
+    def analyze(description, **_kwargs):
         calls.append(description)
         return extracted_job()
 
@@ -55,7 +55,7 @@ def test_same_key_rejects_a_different_description(client, monkeypatch):
     login(client)
     calls = []
 
-    def analyze(description):
+    def analyze(description, **_kwargs):
         calls.append(description)
         return extracted_job()
 
@@ -79,7 +79,7 @@ def test_same_key_rejects_a_different_source_url(client, monkeypatch):
     login(client)
     calls = []
 
-    def analyze(description):
+    def analyze(description, **_kwargs):
         calls.append(description)
         return extracted_job()
 
@@ -107,7 +107,7 @@ def test_failed_analysis_releases_key_for_retry(client, monkeypatch):
     login(client)
     calls = 0
 
-    def analyze(_description):
+    def analyze(_description, **_kwargs):
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -129,7 +129,7 @@ def test_create_job_requires_a_uuid_idempotency_key(client, monkeypatch):
     login(client)
     analyze_called = False
 
-    def analyze(_description):
+    def analyze(_description, **_kwargs):
         nonlocal analyze_called
         analyze_called = True
         return extracted_job()
@@ -145,7 +145,7 @@ def test_create_job_requires_a_uuid_idempotency_key(client, monkeypatch):
 
 def test_new_analysis_sweeps_expired_completed_keys(client, monkeypatch, _db):
     login(client)
-    monkeypatch.setattr("routes.jobs.analyze_job_description", lambda _description: extracted_job())
+    monkeypatch.setattr("routes.jobs.analyze_job_description", lambda _description, **_kwargs: extracted_job())
     expired_key = str(uuid4())
     current_key = str(uuid4())
 

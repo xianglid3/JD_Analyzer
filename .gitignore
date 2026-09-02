@@ -42,11 +42,9 @@ dist/
 .DS_Store
 node_modules
 
-#documents
-PLAN.md
-TUTORIAL.md
-BUGS.md
-ASSESSMENT.md
-LEARNING_NOTES.md
-CODEX_PROGRESS.md
-CLAUDE.md
+# Local notes — top-level markdown stays out of the repo
+/*.md
+!README.md
+
+# Vendored style references
+frontend/design/SKILL.md

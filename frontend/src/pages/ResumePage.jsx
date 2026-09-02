@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ButtonLabel, InlineAlert, PageLoader } from '../components/Feedback'
 import Dialog from '../components/Dialog'
 import NavBar from '../components/NavBar'
+import ResumeStructureEditor from '../components/ResumeStructureEditor'
 import { apiFetch, apiUpload } from '../lib/api'
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024
@@ -28,18 +29,40 @@ function formatFileSize(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`
 }
 
+function UploadIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 20 20" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <path d="M10 13V3m0 0L6.5 6.5M10 3l3.5 3.5M4 12v3.5A1.5 1.5 0 0 0 5.5 17h9a1.5 1.5 0 0 0 1.5-1.5V12" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+function CheckIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.25">
+      <path d="m5 10.5 3.1 3.1L15.5 6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
 export default function ResumePage() {
+  const [structureOpen, setStructureOpen] = useState(false)
   const queryClient = useQueryClient()
   const [skills, setSkills] = useState([])
+  const [skillsDirty, setSkillsDirty] = useState(false)
   const [newSkill, setNewSkill] = useState('')
   const [resumeText, setResumeText] = useState('')
   const [pendingFile, setPendingFile] = useState(null)
-  const [pendingFileText, setPendingFileText] = useState('')
   const [uploadProgress, setUploadProgress] = useState(0)
   const [uploadPhase, setUploadPhase] = useState('idle')
+  const [sourceMode, setSourceMode] = useState('upload')
   const [isDragging, setIsDragging] = useState(false)
   const [showDeleteFileDialog, setShowDeleteFileDialog] = useState(false)
   const [notice, setNotice] = useState(null)
+  const [sourceNotice, setSourceNotice] = useState(null)
+  const [skillsNotice, setSkillsNotice] = useState(null)
+  const [evidenceNotice, setEvidenceNotice] = useState(null)
+  const [extractOnOpen, setExtractOnOpen] = useState(false)
   const fileInputRef = useRef(null)
 
   const resumeQuery = useQuery({
@@ -49,47 +72,11 @@ export default function ResumePage() {
   })
 
   useEffect(() => {
-    if (!resumeQuery.data) return
+    if (!resumeQuery.data || skillsDirty) return
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setSkills(resumeQuery.data.skills || [])
-  }, [resumeQuery.data])
-
-  const parseMutation = useMutation({
-    mutationFn: (text) => apiFetch('/resume/parse', {
-      method: 'POST',
-      body: JSON.stringify({ text }),
-    }),
-    onSuccess: (data) => {
-      setSkills((current) => mergeSkills(current, data.skills))
-      setResumeText(data.resume_text)
-      setNotice({ tone: 'success', message: `${data.skills.length} skills extracted. Review them before saving.` })
-    },
-  })
-
-  const uploadMutation = useMutation({
-    mutationFn: (file) => {
-      const form = new FormData()
-      form.append('file', file)
-      return apiUpload('/resume/upload', form, (progress) => {
-        setUploadProgress(progress)
-        if (progress >= 100) setUploadPhase('analyzing')
-      })
-    },
-    onSuccess: (data, file) => {
-      setSkills((current) => mergeSkills(current, data.skills))
-      setResumeText('')
-      setPendingFileText(data.resume_text.trim())
-      setPendingFile(file)
-      setUploadProgress(100)
-      setUploadPhase('complete')
-      setNotice({ tone: 'success', message: `${data.skills.length} skills extracted. Save to store ${file.name}.` })
-    },
-    onError: () => {
-      setPendingFile(null)
-      setUploadProgress(0)
-      setUploadPhase('idle')
-    },
-  })
+    setSkillsDirty(false)
+  }, [resumeQuery.data, skillsDirty])
 
   const resumeMutation = useMutation({
     mutationFn: ({ resume, file }) => {
@@ -104,13 +91,87 @@ export default function ResumePage() {
         body: JSON.stringify(resume),
       })
     },
-    onSuccess: () => {
-      setPendingFile(null)
-      setPendingFileText('')
-      setResumeText('')
+    onSuccess: (_data, variables) => {
+      queryClient.setQueryData(['resume'], (current) => ({
+        ...(current || {}),
+        skills: variables.resume.skills,
+        ...('resume_text' in variables.resume ? { resume_text: variables.resume.resume_text } : {}),
+        ...(variables.file ? {
+          source_file: { filename: variables.file.name, size_bytes: variables.file.size },
+        } : {}),
+      }))
+      setSkillsDirty(false)
       queryClient.invalidateQueries({ queryKey: ['jobs'] })
       queryClient.invalidateQueries({ queryKey: ['resume'] })
-      setNotice({ tone: 'success', message: 'Resume saved and match scores refreshed.' })
+      queryClient.invalidateQueries({ queryKey: ['resume-evidence'] })
+
+      if (variables.reason === 'skills') {
+        setSkillsNotice({ tone: 'success', message: 'Skill changes saved and match scores refreshed.' })
+        return
+      }
+
+      setPendingFile(null)
+      setResumeText('')
+      setUploadPhase('complete')
+      setSourceNotice({
+        tone: 'success',
+        message: variables.reason === 'upload'
+          ? `Resume saved. ${variables.resume.skills.length} skills extracted from ${variables.filename}.`
+          : `Resume saved. ${variables.resume.skills.length} skills extracted from the pasted text.`,
+      })
+    },
+    onError: (_error, variables) => {
+      if (variables?.reason !== 'skills') setUploadPhase('save_failed')
+    },
+  })
+
+  const parseMutation = useMutation({
+    mutationFn: (text) => apiFetch('/resume/parse', {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    }),
+    onSuccess: (data) => {
+      // a fresh extraction replaces the list rather than merging into it: merging keeps
+      // skills from a resume the user has just replaced, and those still score
+      setSkills(mergeSkills([], data.skills))
+      setSkillsDirty(false)
+      setUploadPhase('saving')
+      resumeMutation.mutate({
+        resume: { skills: mergeSkills([], data.skills), resume_text: data.resume_text },
+        file: null,
+        reason: 'paste',
+      })
+    },
+  })
+
+  const uploadMutation = useMutation({
+    mutationFn: (file) => {
+      const form = new FormData()
+      form.append('file', file)
+      return apiUpload('/resume/upload', form, (progress) => {
+        setUploadProgress(progress)
+        if (progress >= 100) setUploadPhase('analyzing')
+      })
+    },
+    onSuccess: (data, file) => {
+      const extractedSkills = mergeSkills([], data.skills)
+      setSkills(extractedSkills)
+      setSkillsDirty(false)
+      setResumeText('')
+      setPendingFile(file)
+      setUploadProgress(100)
+      setUploadPhase('saving')
+      resumeMutation.mutate({
+        resume: { skills: extractedSkills, resume_text: data.resume_text.trim() },
+        file,
+        reason: 'upload',
+        filename: file.name,
+      })
+    },
+    onError: () => {
+      setPendingFile(null)
+      setUploadProgress(0)
+      setUploadPhase('idle')
     },
   })
 
@@ -141,7 +202,14 @@ export default function ResumePage() {
   function addSkill(event) {
     event?.preventDefault()
     if (!newSkill.trim()) return
-    setSkills((current) => mergeSkills(current, [newSkill]))
+    const nextSkills = mergeSkills(skills, [newSkill])
+    if (nextSkills.length === skills.length) {
+      setNewSkill('')
+      return
+    }
+    setSkills(nextSkills)
+    setSkillsDirty(true)
+    setSkillsNotice(null)
     setNewSkill('')
     setNotice(null)
     resumeMutation.reset()
@@ -149,6 +217,8 @@ export default function ResumePage() {
 
   function removeSkill(skill) {
     setSkills((current) => current.filter((value) => value !== skill))
+    setSkillsDirty(true)
+    setSkillsNotice(null)
     setNotice(null)
     resumeMutation.reset()
   }
@@ -158,11 +228,11 @@ export default function ResumePage() {
 
     const extension = file.name.split('.').pop()?.toLocaleLowerCase()
     if (!SUPPORTED_EXTENSIONS.includes(extension)) {
-      setNotice({ tone: 'error', message: 'Choose a PDF, MD, TXT, or HTML file.' })
+        setSourceNotice({ tone: 'error', message: 'Choose a PDF, MD, TXT, or HTML file.' })
       return
     }
     if (file.size > MAX_FILE_SIZE) {
-      setNotice({ tone: 'error', message: 'File must be 5 MB or smaller.' })
+      setSourceNotice({ tone: 'error', message: 'File must be 5 MB or smaller.' })
       return
     }
 
@@ -170,8 +240,8 @@ export default function ResumePage() {
     resumeMutation.reset()
     uploadMutation.reset()
     setNotice(null)
+    setSourceNotice(null)
     setPendingFile(file)
-    setPendingFileText('')
     setUploadProgress(0)
     setUploadPhase('uploading')
     uploadMutation.mutate(file)
@@ -179,27 +249,46 @@ export default function ResumePage() {
 
   function removePendingFile() {
     setPendingFile(null)
-    setPendingFileText('')
     setUploadProgress(0)
     setUploadPhase('idle')
     uploadMutation.reset()
+    resumeMutation.reset()
     setNotice(null)
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
+  const evidenceQuery = useQuery({
+    queryKey: ['resume-evidence'],
+    queryFn: () => apiFetch('/resume/evidence'),
+    retry: false,
+  })
+
   if (resumeQuery.isLoading) return <PageLoader label="Loading your resume…" />
 
   const resumeLoadError = resumeQuery.isError && resumeQuery.error?.status !== 404
-  const activeError = parseMutation.error || uploadMutation.error || resumeMutation.error || downloadMutation.error || deleteFileMutation.error
+  const entries = evidenceQuery.data?.entries || []
+  const entryCount = entries.length
+  const evidenceCount = entries.reduce((total, entry) => total + entry.bullets.length, 0)
+  const evidenceStale = Boolean(evidenceQuery.data?.stale)
+  const hasResume = Boolean(resumeQuery.data?.resume_text || resumeQuery.data?.source_file)
+  const sourceBusy = parseMutation.isPending || uploadMutation.isPending || (resumeMutation.isPending && resumeMutation.variables?.reason !== 'skills')
+  const sourceLocked = sourceBusy || uploadPhase === 'save_failed'
+  const skillsReady = skills.length > 0 && !skillsDirty && !sourceLocked
+
+  const sourceError = parseMutation.error || uploadMutation.error || (resumeMutation.variables?.reason !== 'skills' ? resumeMutation.error : null)
+  const activeError = downloadMutation.error || deleteFileMutation.error
 
   return (
     <div className="app-main min-h-screen bg-surface">
       <NavBar />
       <main className="page-container animate-page-in">
-        <header className="mb-8">
+        <header className="mb-8 border-b border-border pb-8">
           <p className="eyebrow">Profile</p>
-          <h1 className="page-heading mt-2">Resume skills</h1>
-          <p className="mt-2 text-sm text-muted">Your saved skills power every job match score.</p>
+          <h1 className="page-heading mt-2">Your resume</h1>
+          <p className="mt-2 max-w-2xl text-sm text-muted">
+            Keep one trusted source, check the skills used for matching, then review the experience
+            used for tailoring suggestions.
+          </p>
         </header>
 
         {resumeLoadError && (
@@ -210,21 +299,49 @@ export default function ResumePage() {
         {activeError && <InlineAlert className="mb-4">{activeError.message}</InlineAlert>}
         {notice && !activeError && <InlineAlert tone={notice.tone} className="mb-4">{notice.message}</InlineAlert>}
 
-        <section className="surface-card mb-8 p-4" aria-labelledby="extract-heading">
-          <div className="mb-4">
-            <h2 id="extract-heading" className="text-base font-medium text-ink">Extract from a resume</h2>
-            <p className="mt-1 text-sm text-muted">Paste text or upload a supported file. Nothing is saved until you confirm below.</p>
+        <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_260px]">
+          <div className="min-w-0 space-y-6">
+        <section className="surface-card overflow-hidden" aria-labelledby="extract-heading">
+          <div className="border-b border-border p-5">
+            <p className="eyebrow">Source</p>
+            <h2 id="extract-heading" className="mt-2 text-base font-medium text-ink">Add or replace your resume</h2>
+            <p className="mt-1 text-sm text-muted">Add a file or paste text. We extract the skills and save the resume in one step.</p>
+
+            <div className="mt-4 inline-flex rounded-md border border-border bg-surface p-1" role="group" aria-label="Resume input method">
+              <button
+                type="button"
+                aria-pressed={sourceMode === 'upload'}
+                disabled={sourceBusy}
+                onClick={() => setSourceMode('upload')}
+                className={`min-h-11 rounded-md px-4 text-sm ${sourceMode === 'upload' ? 'bg-obsidian text-white' : 'text-charcoal hover:text-ink'}`}
+              >
+                Upload file
+              </button>
+              <button
+                type="button"
+                aria-pressed={sourceMode === 'paste'}
+                disabled={sourceBusy}
+                onClick={() => setSourceMode('paste')}
+                className={`min-h-11 rounded-md px-4 text-sm ${sourceMode === 'paste' ? 'bg-obsidian text-white' : 'text-charcoal hover:text-ink'}`}
+              >
+                Paste text
+              </button>
+            </div>
           </div>
 
+          <div className={sourceMode === 'paste' ? 'p-5' : 'hidden'} aria-label="Paste resume text">
           <textarea
             id="resume-text"
             value={resumeText}
-            disabled={parseMutation.isPending}
+            disabled={sourceBusy}
             onChange={(event) => {
               setResumeText(event.target.value)
               if (pendingFile) removePendingFile()
               parseMutation.reset()
+              resumeMutation.reset()
+              setUploadPhase('idle')
               setNotice(null)
+              setSourceNotice(null)
             }}
             placeholder="Paste your resume text here…"
             className="control mt-2 h-44 resize-y p-4 text-sm leading-6"
@@ -237,49 +354,49 @@ export default function ResumePage() {
           <div className="mt-4">
             <button
               className="primary-button"
-              disabled={parseMutation.isPending || resumeText.trim().length < 100 || resumeText.trim().length > 20000}
+              disabled={sourceBusy || resumeText.trim().length < 100 || resumeText.trim().length > 20000}
               onClick={() => {
                 uploadMutation.reset()
                 resumeMutation.reset()
                 setPendingFile(null)
-                setPendingFileText('')
                 parseMutation.mutate(resumeText)
               }}
             >
-              <ButtonLabel pending={parseMutation.isPending} pendingText="Extracting…">Extract skills</ButtonLabel>
+              <ButtonLabel
+                pending={sourceBusy}
+                pendingText={parseMutation.isPending ? 'Extracting…' : 'Saving…'}
+              >
+                Analyze and save
+              </ButtonLabel>
             </button>
           </div>
-
-          <div className="my-5 flex items-center gap-3" aria-hidden="true">
-            <span className="h-px flex-1 bg-border" />
-            <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">or upload a file</span>
-            <span className="h-px flex-1 bg-border" />
           </div>
 
+          <div className={sourceMode === 'upload' ? 'p-5' : 'hidden'} aria-label="Upload resume file">
           <div
             role="button"
-            tabIndex={uploadMutation.isPending ? -1 : 0}
+            tabIndex={sourceBusy ? -1 : 0}
             aria-label="Upload resume file"
-            aria-disabled={uploadMutation.isPending}
-            className={`rounded-md border border-dashed p-7 text-center transition-colors ${
+            aria-disabled={sourceBusy}
+            className={`rounded-md border border-dashed p-8 text-center transition-colors ${
               isDragging
                 ? 'border-ink bg-surface'
                 : 'border-border bg-soft-paper hover:border-ash hover:bg-surface'
-            } ${uploadMutation.isPending ? 'cursor-wait opacity-70' : 'cursor-pointer'}`}
-            onClick={() => !uploadMutation.isPending && fileInputRef.current?.click()}
+            } ${sourceBusy ? 'cursor-wait opacity-70' : 'cursor-pointer'}`}
+            onClick={() => !sourceBusy && fileInputRef.current?.click()}
             onKeyDown={(event) => {
-              if (!uploadMutation.isPending && (event.key === 'Enter' || event.key === ' ')) {
+              if (!sourceBusy && (event.key === 'Enter' || event.key === ' ')) {
                 event.preventDefault()
                 fileInputRef.current?.click()
               }
             }}
             onDragEnter={(event) => {
               event.preventDefault()
-              if (!uploadMutation.isPending) setIsDragging(true)
+              if (!sourceBusy) setIsDragging(true)
             }}
             onDragOver={(event) => {
               event.preventDefault()
-              if (!uploadMutation.isPending) event.dataTransfer.dropEffect = 'copy'
+              if (!sourceBusy) event.dataTransfer.dropEffect = 'copy'
             }}
             onDragLeave={(event) => {
               event.preventDefault()
@@ -288,10 +405,10 @@ export default function ResumePage() {
             onDrop={(event) => {
               event.preventDefault()
               setIsDragging(false)
-              if (!uploadMutation.isPending) analyzeFile(event.dataTransfer.files?.[0])
+              if (!sourceBusy) analyzeFile(event.dataTransfer.files?.[0])
             }}
           >
-            <div className="mx-auto grid size-9 place-items-center rounded-md border border-border bg-surface font-mono text-lg text-ink" aria-hidden="true">↑</div>
+            <div className="mx-auto grid size-11 place-items-center rounded-md border border-border bg-surface text-ink"><UploadIcon /></div>
             <p className="mt-3 text-sm text-ink">Drop your resume here</p>
             <p className="mt-1 text-xs text-muted">or click to browse · PDF, MD, TXT, HTML · 5 MB max</p>
             <input
@@ -299,7 +416,7 @@ export default function ResumePage() {
               type="file"
               accept=".pdf,.md,.txt,.html"
               className="sr-only"
-              disabled={uploadMutation.isPending}
+              disabled={sourceBusy}
               aria-label="Choose resume file"
               onChange={(event) => {
                 analyzeFile(event.target.files?.[0])
@@ -317,7 +434,7 @@ export default function ResumePage() {
                   </p>
                   <p className="mt-1 font-mono text-[11px] uppercase tracking-[0.06em] text-muted">
                     {pendingFile
-                      ? `${formatFileSize(pendingFile.size)} · ${uploadMutation.isPending ? 'processing' : 'pending save'}`
+                      ? `${formatFileSize(pendingFile.size)} · ${uploadPhase === 'save_failed' ? 'save failed' : 'processing'}`
                       : `${formatFileSize(resumeQuery.data.source_file.size_bytes)} · saved source`}
                   </p>
                 </div>
@@ -325,7 +442,7 @@ export default function ResumePage() {
                   <button
                     type="button"
                     className="text-sm text-muted hover:text-ink disabled:opacity-40"
-                    disabled={uploadMutation.isPending}
+                    disabled={sourceBusy}
                     onClick={removePendingFile}
                   >
                     Remove
@@ -355,10 +472,10 @@ export default function ResumePage() {
                 )}
               </div>
 
-              {uploadMutation.isPending && (
+              {pendingFile && sourceBusy && (
                 <div className="border-t border-border px-3 py-3" aria-live="polite">
                   <div className="flex items-center justify-between text-xs text-muted">
-                    <span>{uploadPhase === 'analyzing' ? 'Analyzing resume…' : 'Uploading resume…'}</span>
+                    <span>{uploadPhase === 'analyzing' ? 'Analyzing resume…' : uploadPhase === 'saving' ? 'Saving resume…' : 'Uploading resume…'}</span>
                     <span className="font-mono">{uploadProgress}%</span>
                   </div>
                   <div
@@ -379,13 +496,36 @@ export default function ResumePage() {
 
             </div>
           )}
+
+          </div>
+          {(sourceError || sourceNotice) && (
+            <div className="border-t border-border p-5">
+              {sourceError ? (
+                <InlineAlert>
+                  {sourceError.message}
+                  {resumeMutation.isError && resumeMutation.variables?.reason !== 'skills' && (
+                    <button
+                      type="button"
+                      className="ml-2 underline underline-offset-4"
+                      onClick={() => resumeMutation.mutate(resumeMutation.variables)}
+                    >
+                      Retry save
+                    </button>
+                  )}
+                </InlineAlert>
+              ) : (
+                <InlineAlert tone={sourceNotice.tone}>{sourceNotice.message}</InlineAlert>
+              )}
+            </div>
+          )}
         </section>
 
-        <section className="surface-card p-4" aria-labelledby="skills-heading">
+        <section className="surface-card p-5" aria-labelledby="skills-heading">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <h2 id="skills-heading" className="text-base font-medium text-ink">Skills</h2>
-              <p className="mt-1 text-xs text-muted">Up to 100 skills. Duplicates are removed automatically.</p>
+              <p className="eyebrow">Matching input</p>
+              <h2 id="skills-heading" className="mt-2 text-base font-medium text-ink">Review extracted skills</h2>
+              <p className="mt-1 text-xs text-muted">Used for match scores. Up to 100, duplicates removed.</p>
             </div>
             <span className="rounded-full border border-border px-2.5 py-1 text-xs text-muted">{skills.length} / 100</span>
           </div>
@@ -396,11 +536,12 @@ export default function ResumePage() {
               id="new-skill"
               value={newSkill}
               maxLength={100}
+              disabled={sourceLocked}
               onChange={(event) => setNewSkill(event.target.value)}
               placeholder="Add a skill, e.g. Python"
               className="control min-w-0 flex-1 px-3 py-2.5 text-sm"
             />
-            <button type="submit" className="secondary-button" disabled={!newSkill.trim() || skills.length >= 100}>Add</button>
+            <button type="submit" className="secondary-button" disabled={sourceLocked || !newSkill.trim() || skills.length >= 100}>Add</button>
           </form>
 
           {skills.length === 0 ? (
@@ -415,39 +556,125 @@ export default function ResumePage() {
                   {skill}
                   <button
                     type="button"
+                    disabled={sourceLocked}
                     onClick={() => removeSkill(skill)}
                     aria-label={`Remove ${skill}`}
-                    className="text-base leading-none text-muted hover:text-ink"
+                    className="text-base leading-none text-muted hover:text-ink disabled:opacity-40"
                   >×</button>
                 </span>
               ))}
             </div>
           )}
+
+          {(skillsDirty || skillsNotice || (resumeMutation.isError && resumeMutation.variables?.reason === 'skills')) && (
+            <div className="mt-4 flex flex-col gap-3 border-t border-border pt-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0 flex-1">
+                {resumeMutation.isError && resumeMutation.variables?.reason === 'skills' ? (
+                  <InlineAlert>{resumeMutation.error.message}</InlineAlert>
+                ) : skillsNotice ? (
+                  <InlineAlert tone={skillsNotice.tone}>{skillsNotice.message}</InlineAlert>
+                ) : (
+                  <p className="text-xs leading-5 text-muted">Save these edits to refresh every job’s match score.</p>
+                )}
+              </div>
+              {skillsDirty && (
+                <button
+                  type="button"
+                  className="primary-button compact-button shrink-0"
+                  disabled={resumeMutation.isPending}
+                  onClick={() => resumeMutation.mutate({ resume: { skills }, file: null, reason: 'skills' })}
+                >
+                  <ButtonLabel pending={resumeMutation.isPending} pendingText="Saving…">Save skill changes</ButtonLabel>
+                </button>
+              )}
+            </div>
+          )}
         </section>
 
-        <footer className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-end">
-          <span className="text-xs text-muted sm:mr-auto">Saving recalculates all existing match scores.</span>
-          <button
-            className="primary-button min-w-32"
-            onClick={() => {
-              parseMutation.reset()
-              uploadMutation.reset()
-              resumeMutation.mutate({
-                resume: {
-                  skills,
-                  resume_text: pendingFile
-                    ? pendingFileText
-                    : (resumeText.trim() || resumeQuery.data?.resume_text || null),
-                },
-                file: pendingFile,
-              })
-            }}
-            disabled={resumeMutation.isPending || uploadMutation.isPending}
-          >
-            <ButtonLabel pending={resumeMutation.isPending} pendingText="Saving…">Save resume</ButtonLabel>
-          </button>
-        </footer>
+        <section className="surface-card p-5" aria-labelledby="evidence-heading">
+          <p className="eyebrow">Tailoring source</p>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h2 id="evidence-heading" className="mt-2 text-base font-medium text-ink">Experience evidence</h2>
+              <p className="mt-1 max-w-xl text-xs leading-5 text-muted">
+                {evidenceStale
+                  ? 'Your resume changed. Re-extract experience before tailoring so every claim matches the current source.'
+                  : evidenceCount > 0
+                  ? `${evidenceCount} ${evidenceCount === 1 ? 'bullet' : 'bullets'} across ${entryCount} ${entryCount === 1 ? 'entry' : 'entries'}. Review the claims used for tailoring suggestions.`
+                  : hasResume
+                    ? 'Extract jobs, projects, and education from your saved resume, then review them before tailoring.'
+                    : 'Add a resume first. Once it is saved, you can extract experience here.'}
+              </p>
+            </div>
+            <button
+              className="secondary-button compact-button whitespace-nowrap"
+              disabled={!hasResume || sourceLocked}
+              onClick={() => {
+                setEvidenceNotice(null)
+                setExtractOnOpen(evidenceCount === 0 || evidenceStale)
+                setStructureOpen(true)
+              }}
+            >
+              {evidenceStale ? 'Re-extract experience' : evidenceCount > 0 ? 'Review experience' : 'Extract experience'}
+            </button>
+          </div>
+          {evidenceNotice && (
+            <InlineAlert tone={evidenceNotice.tone} className="mt-4">{evidenceNotice.message}</InlineAlert>
+          )}
+        </section>
+          </div>
+
+          <aside className="surface-card overflow-hidden lg:sticky lg:top-20" aria-labelledby="readiness-heading">
+            <div className="border-b border-border p-5">
+              <p className="eyebrow">Setup status</p>
+              <h2 id="readiness-heading" className="mt-2 text-base font-medium text-ink">Resume readiness</h2>
+              <p className="mt-1 text-xs leading-5 text-muted">Complete these once, then keep them current when your resume changes.</p>
+            </div>
+
+            <ol className="divide-y divide-border px-5">
+              {[
+                ['1', 'Add your resume', 'File or pasted text', hasResume],
+                ['2', 'Check your skills', 'Used for match scores', skillsReady],
+                ['3', 'Pull out your experience', 'Used as tailoring evidence', evidenceCount > 0 && !evidenceStale],
+              ].map(([step, title, detail, done]) => (
+                <li key={step} className="flex gap-3 py-4">
+                  <span className={`grid size-8 shrink-0 place-items-center rounded-full border font-mono text-xs ${done ? 'border-obsidian bg-obsidian text-white' : 'border-border text-muted'}`} aria-hidden="true">
+                    {done ? <CheckIcon /> : step}
+                  </span>
+                  <div className="min-w-0">
+                    <p className="text-sm text-ink">{title}</p>
+                    <p className="mt-0.5 text-xs text-muted">{detail}</p>
+                    <p className="sr-only">{done ? '✓ done' : `step ${step}`}</p>
+                  </div>
+                </li>
+              ))}
+            </ol>
+
+            <div className="border-t border-border p-5">
+              <p className="text-xs leading-5 text-muted">Resume uploads save automatically. Any later skill edits are saved beside the skill list.</p>
+            </div>
+          </aside>
+        </div>
       </main>
+
+      <Dialog
+        open={structureOpen}
+        title={extractOnOpen ? 'Review extracted experience' : 'Review experience'}
+        description="Check each job, project, and bullet before using them as tailoring evidence."
+        onClose={() => setStructureOpen(false)}
+        width="max-w-4xl"
+      >
+        <ResumeStructureEditor
+          autoExtract={extractOnOpen}
+          onClose={() => setStructureOpen(false)}
+          onSaved={() => {
+            setStructureOpen(false)
+            setExtractOnOpen(false)
+            setEvidenceNotice({ tone: 'success', message: 'Experience saved. Tailoring can now cite these bullets.' })
+            queryClient.invalidateQueries({ queryKey: ['resume-evidence'] })
+          }}
+        />
+      </Dialog>
 
       <Dialog
         open={showDeleteFileDialog}

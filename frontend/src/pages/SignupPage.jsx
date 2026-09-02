@@ -44,7 +44,7 @@ export default function SignupPage() {
             placeholder="Letters and numbers only"
             className="control mt-2 px-3 py-3 text-sm"
           />
-          <span className="mt-1 block text-xs text-muted">3–50 characters</span>
+          <span className="mt-1 block text-xs text-muted">Letters and numbers, 3–50 characters</span>
         </label>
 
         <label className="block text-sm text-ink">
@@ -67,7 +67,7 @@ export default function SignupPage() {
               {showPassword ? 'Hide' : 'Show'}
             </button>
           </span>
-          <span className="mt-1 block text-xs text-muted">8–72 bytes, with no spaces</span>
+          <span className="mt-1 block text-xs text-muted">At least 8 characters, no spaces</span>
         </label>
 
         <button type="submit" disabled={signupMutation.isPending} className="primary-button mt-2 w-full">

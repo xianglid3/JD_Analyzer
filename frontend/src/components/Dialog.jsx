@@ -13,18 +13,22 @@ export default function Dialog({
   const titleId = useId()
   const descriptionId = useId()
   const panel = useRef(null)
+  const trigger = useRef(null)
 
   useEffect(() => {
     if (!open) return undefined
 
     const previousOverflow = document.body.style.overflow
+    trigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
     document.body.style.overflow = 'hidden'
     const focusableSelector = 'button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'
-    const focusable = [...panel.current.querySelectorAll(focusableSelector)]
-    focusable[0]?.focus()
+    const initialFocusable = [...panel.current.querySelectorAll(focusableSelector)]
+    const initialFocus = panel.current.querySelector('[data-dialog-autofocus]') || initialFocusable[0]
+    initialFocus?.focus()
 
     function handleKeyDown(event) {
       if (event.key === 'Escape' && dismissible) onClose()
+      const focusable = [...panel.current.querySelectorAll(focusableSelector)]
       if (event.key !== 'Tab' || focusable.length === 0) return
 
       const first = focusable[0]
@@ -42,6 +46,7 @@ export default function Dialog({
     return () => {
       document.body.style.overflow = previousOverflow
       document.removeEventListener('keydown', handleKeyDown)
+      trigger.current?.focus()
     }
   }, [dismissible, onClose, open])
 

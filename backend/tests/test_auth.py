@@ -25,12 +25,12 @@ def test_valid_credentials_allow_password_symbols():
 @pytest.mark.parametrize(
     ("data", "message"),
     [
-        (None, "JSON body required"),
-        ({"username": "alice"}, "username and password required"),
-        ({"username": "a", "password": "pw123456"}, "username must be 3–50 characters"),
-        ({"username": "alice_1", "password": "pw123456"}, "username can only contain letters and numbers"),
-        ({"username": "alice", "password": "pass word"}, "password cannot contain whitespace"),
-        ({"username": "alice", "password": "x" * 73}, "password must be 8–72 bytes"),
+        (None, "Username and password required"),
+        ({"username": "alice"}, "Username and password required"),
+        ({"username": "a", "password": "pw123456"}, "Username must be at least 3 characters"),
+        ({"username": "alice_1", "password": "pw123456"}, "Username can only contain letters and numbers"),
+        ({"username": "alice", "password": "pass word"}, "Password cannot contain spaces"),
+        ({"username": "alice", "password": "x" * 73}, "Password is too long — please use something shorter"),
     ],
 )
 def test_invalid_credentials(data, message):
@@ -44,9 +44,9 @@ def test_auth_routes_reject_malformed_json(client):
     login = client.post("/api/auth/login", data="{", headers=headers)
 
     assert signup.status_code == 400
-    assert signup.get_json()["error"] == "JSON body required"
+    assert signup.get_json()["error"] == "Username and password required"
     assert login.status_code == 400
-    assert login.get_json()["error"] == "JSON body required"
+    assert login.get_json()["error"] == "Username and password required"
 
 
 def test_refresh_rotates_token_and_rejects_old_token(client):

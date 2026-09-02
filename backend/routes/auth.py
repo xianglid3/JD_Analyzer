@@ -1,6 +1,7 @@
 from flask import Blueprint, request, jsonify, g
 from db import get_cursor
 from middleware import require_auth
+from extensions import credential_key, limiter
 import psycopg2
 import bcrypt
 import secrets
@@ -23,28 +24,35 @@ USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9]+$")
 
 def validate_credentials(data):
     if not isinstance(data, dict):
-        return None, None, "JSON body required"
+        return None, None, "Username and password required"
 
     username = data.get("username")
     password = data.get("password")
 
     if not isinstance(username, str) or not isinstance(password, str):
-        return None, None, "username and password required"
+        return None, None, "Username and password required"
 
     username = username.strip()
     password_bytes = password.encode("utf-8")
 
-    if not MIN_USERNAME_CHARS <= len(username) <= MAX_USERNAME_CHARS:
-        return None, None, "username must be 3–50 characters"
+    if len(username) < MIN_USERNAME_CHARS:
+        return None, None, f"Username must be at least {MIN_USERNAME_CHARS} characters"
+
+    if len(username) > MAX_USERNAME_CHARS:
+        return None, None, f"Username must be {MAX_USERNAME_CHARS} characters or fewer"
 
     if not USERNAME_PATTERN.fullmatch(username):
-        return None, None, "username can only contain letters and numbers"
+        return None, None, "Username can only contain letters and numbers"
 
     if any(char.isspace() for char in password):
-        return None, None, "password cannot contain whitespace"
+        return None, None, "Password cannot contain spaces"
 
-    if not MIN_PASSWORD_BYTES <= len(password_bytes) <= MAX_PASSWORD_BYTES:
-        return None, None, "password must be 8–72 bytes"
+    if len(password_bytes) < MIN_PASSWORD_BYTES:
+        return None, None, f"Password must be at least {MIN_PASSWORD_BYTES} characters"
+
+    # bcrypt truncates past 72 bytes, and an accented character costs more than one
+    if len(password_bytes) > MAX_PASSWORD_BYTES:
+        return None, None, "Password is too long — please use something shorter"
 
     return username, password, None
 
@@ -64,6 +72,7 @@ def me():
 
 
 @auth_bp.route("/signup", methods=["POST"])
+@limiter.limit("5 per minute; 20 per hour")
 def signup():
 
     # silent=true prevents bad JSON causing flask error before validation run
@@ -90,6 +99,8 @@ def signup():
 
 
 @auth_bp.route("/login", methods =["POST"])
+@limiter.limit("10 per minute; 60 per hour")
+@limiter.limit("5 per minute; 20 per hour", key_func=credential_key)
 def login():
     data = request.get_json(silent=True)
     username, password, error = validate_credentials(data)
@@ -145,6 +156,7 @@ def login():
 
 
 @auth_bp.route("/refresh", methods = ["POST"])
+@limiter.limit("30 per minute")
 def refresh():
     #fetch refresh token
     refresh_raw = request.cookies.get("refresh_token")

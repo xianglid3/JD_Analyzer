@@ -47,3 +47,50 @@ def reconcile_resume_storage_command(delete_orphans, min_age_hours):
 
 def register_commands(app):
     app.cli.add_command(reconcile_resume_storage_command)
+
+
+def register_usage_report(app):
+    import click
+
+    @app.cli.command("usage-report")
+    @click.option("--days", default=30, help="How far back to look.")
+    def usage_report(days):
+        """What the model calls cost, and how long they took."""
+        from db import get_cursor
+        from services.usage import DAILY_LIMIT_USD, report
+
+        with get_cursor() as cur:
+            data = report(cur, days)
+
+        click.echo(f"last {days} days · daily cap ${DAILY_LIMIT_USD:.2f} per user\n")
+
+        if not data["by_kind"]:
+            click.echo("no model calls recorded yet")
+            return
+
+        click.echo(f"{'kind':<20}{'calls':>7}{'p50 ms':>9}{'p95 ms':>9}{'cost':>10}")
+        for row in data["by_kind"]:
+            click.echo(f"{row['kind']:<20}{row['calls']:>7}{row['p50_ms']:>9.0f}"
+                       f"{row['p95_ms']:>9.0f}{row['cost_usd']:>10.4f}")
+
+        click.echo(f"\n{'user':<20}{'calls':>7}{'tokens':>10}{'cost':>10}")
+        for row in data["by_user"]:
+            click.echo(f"{row['username']:<20}{row['calls']:>7}{row['tokens']:>10}"
+                       f"{row['cost_usd']:>10.4f}")
+
+
+def register_run_sweep(app):
+    import click
+
+    @app.cli.command("sweep-tailoring-runs")
+    def sweep_runs():
+        """Close out tailoring runs whose worker stopped reporting."""
+        from db import get_cursor
+        from services.tailoring_agent import sweep_abandoned_runs
+
+        with get_cursor(commit=True) as cur:
+            swept = sweep_abandoned_runs(cur)
+
+        click.echo(f"closed {len(swept)} abandoned run(s)")
+        for run_id in swept:
+            click.echo(f"  {run_id}")

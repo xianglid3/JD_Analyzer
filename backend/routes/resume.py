@@ -7,10 +7,26 @@ from uuid import uuid4
 from werkzeug.utils import secure_filename
 from db import get_cursor
 from middleware import require_auth
-from services.match import compute_match
-from services.openai_services import analyze_resume
+from pydantic import ValidationError
+from services.openai_services import (
+    ResumeHeader,
+    ResumeStructure,
+    analyze_resume,
+    analyze_resume_structure,
+    enforce_structure_limits,
+)
 from services.jd_preprocess import preprocess_text
 from services.file_extract import extract_text_from_file, validate_resume_file
+from services.skill_evidence import recompute_user_matches
+from services.resume_evidence import (
+    evidence_is_stale,
+    list_resume_evidence,
+    load_resume_header,
+    save_resume_evidence,
+    save_resume_header,
+    set_evidence_source,
+    source_hash,
+)
 from services.supabase_storage import (
     create_resume_download_url,
     delete_resume_file,
@@ -19,6 +35,7 @@ from services.supabase_storage import (
 from extensions import authenticated_user_key, limiter
 from routes.analysis_errors import analysis_error_response
 from routes.request_validation import get_json_object
+from services.usage import QuotaExceeded, check_quota, recorder
 
 
 resume_bp = Blueprint("resume", __name__, url_prefix="/api/resume") #why __name__
@@ -29,6 +46,9 @@ RESUME_LIST_FIELDS = ("education", "work_experience", "projects", "skills", "cer
 MAX_RESUME_SKILLS = 100
 MAX_SKILL_CHARS = 100
 MAX_RESUME_TEXT_CHARS = 20000
+MAX_ENTRY_FIELD_CHARS = 200
+MAX_HEADER_FIELD_CHARS = 200
+MAX_BULLET_CHARS = 500
 
 
 def get_resume_request_data():
@@ -233,37 +253,8 @@ def upsert_resume():
                 ),
             )
 
-            # recompute match scores for this user's jobs against the new resume skills
-            cur.execute("SELECT id, skills FROM jobs WHERE user_id = %s", (g.user_id,))
-            match_updates = []
-            for job_id, job_skills in cur.fetchall():
-                match = compute_match(job_skills, skills)
-                score = match["score"] if match else None
-                detail = {
-                    "matched": match["matched"],
-                    "missing": match["missing"],
-                } if match else None
-                match_updates.append({
-                    "id": str(job_id),
-                    "match_score": score,
-                    "match_detail": detail,
-                })
-
-            if match_updates:
-                cur.execute(
-                    """
-                    UPDATE jobs AS job
-                    SET match_score = match.match_score,
-                        match_detail = match.match_detail
-                    FROM jsonb_to_recordset(%s::jsonb) AS match(
-                        id uuid,
-                        match_score numeric,
-                        match_detail jsonb
-                    )
-                    WHERE job.id = match.id AND job.user_id = %s
-                    """,
-                    (json.dumps(match_updates), g.user_id),
-                )
+            # rescore against the structured evidence, not just the flat skills list
+            recompute_user_matches(cur, g.user_id)
     except Exception:
         delete_storage_file_quietly(new_storage_path)
         raise
@@ -297,10 +288,13 @@ def parse_resume():
     cleaned = preprocess_text(text)
 
     try:
-        resume = analyze_resume(cleaned)
+        check_quota(g.user_id)
+        resume = analyze_resume(cleaned, on_usage=recorder(g.user_id, "resume_parse"))
+    except QuotaExceeded as exc:
+        return jsonify({"error": f"daily AI budget reached ({exc})"}), 429
     except Exception as exc:
         return analysis_error_response(exc, logger)
-    
+
     return jsonify({"skills": resume.skills, "resume_text": text}), 200
 
 
@@ -330,7 +324,10 @@ def upload_resume():
     cleaned = preprocess_text(text)
 
     try:
-        resume = analyze_resume(cleaned)
+        check_quota(g.user_id)
+        resume = analyze_resume(cleaned, on_usage=recorder(g.user_id, "resume_upload"))
+    except QuotaExceeded as exc:
+        return jsonify({"error": f"daily AI budget reached ({exc})"}), 429
     except Exception as exc:
         return analysis_error_response(exc, logger)
 
@@ -399,5 +396,202 @@ def delete_saved_resume_file():
     delete_storage_file_quietly(storage_path)
     return jsonify({"ok": True}), 200
 
-    
-    
+
+def validate_structure(data):
+    """Validate the reviewed structure — the same rules the model's output goes through,
+    applied to the version the user corrected."""
+    header_data = data.get("header") or {}
+    if not isinstance(header_data, dict):
+        return None, "header must be an object"
+    for field in ("full_name", "email", "phone", "location"):
+        value = header_data.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            return None, f"{field} must be text or null"
+        if len(value) > MAX_HEADER_FIELD_CHARS:
+            return None, f"{field} must be {MAX_HEADER_FIELD_CHARS} characters or fewer"
+    links = header_data.get("links", [])
+    if not isinstance(links, list) or any(not isinstance(link, str) for link in links):
+        return None, "links must be an array of text"
+    if any(len(link) > MAX_HEADER_FIELD_CHARS for link in links):
+        return None, f"each link must be {MAX_HEADER_FIELD_CHARS} characters or fewer"
+
+    entries = data.get("entries")
+    if not isinstance(entries, list):
+        return None, "entries must be an array"
+
+    claimed_ids = set()
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            return None, "each entry must be an object"
+        for field in ("organization", "title", "location", "start_date", "end_date"):
+            value = entry.get(field)
+            if value is None:
+                continue
+            if not isinstance(value, str):
+                return None, f"{field} must be text or null"
+            if len(value) > MAX_ENTRY_FIELD_CHARS:
+                return None, f"{field} must be {MAX_ENTRY_FIELD_CHARS} characters or fewer"
+        bullets = entry.get("bullets", [])
+        if not isinstance(bullets, list):
+            return None, "bullets must be an array"
+        for bullet in bullets:
+            # a bullet is either new text or an existing one being edited, which carries its id
+            if isinstance(bullet, dict):
+                text, bullet_id = bullet.get("text"), bullet.get("id")
+                if bullet_id is not None and not isinstance(bullet_id, str):
+                    return None, "bullet id must be text"
+                if bullet_id is not None:
+                    if bullet_id in claimed_ids:
+                        return None, "the same bullet id was sent twice"
+                    claimed_ids.add(bullet_id)
+            elif isinstance(bullet, str):
+                text = bullet
+            else:
+                return None, "each bullet must be text"
+            if not isinstance(text, str):
+                return None, "each bullet must be text"
+            if len(text) > MAX_BULLET_CHARS:
+                return None, f"each bullet must be {MAX_BULLET_CHARS} characters or fewer"
+
+    try:
+        structure = ResumeStructure(
+            header=ResumeHeader(
+                full_name=(header_data.get("full_name") or None),
+                email=(header_data.get("email") or None),
+                phone=(header_data.get("phone") or None),
+                location=(header_data.get("location") or None),
+                links=links,
+            ),
+            entries=entries,
+            skills=[],   # the client sends skills as a `skill` entry, not separately
+        )
+    except ValidationError as exc:
+        # the only field that can still fail is `kind`, which is a fixed enum
+        logger.info("resume structure rejected: %s", exc.error_count())
+        return None, "each entry needs a kind of experience, project, education, or certificate"
+
+    return enforce_structure_limits(structure), None
+
+
+@resume_bp.route("/structure", methods=["POST"])
+@require_auth
+@limiter.limit("5 per minute; 10 per day", key_func=authenticated_user_key)
+def extract_resume_structure():
+    """Extract entries and bullets. Saves nothing — the user reviews first, same as
+    /parse and /upload."""
+    data, error = get_json_object()
+    if error:
+        return error
+
+    text = data.get("text")
+    if text is None:
+        with get_cursor() as cur:
+            cur.execute("SELECT resume_text FROM resumes WHERE user_id = %s", (g.user_id,))
+            row = cur.fetchone()
+        text = row[0] if row else None
+        if not text:
+            return jsonify({"error": "no saved resume text — paste or upload a resume first"}), 404
+
+    if not isinstance(text, str):
+        return jsonify({"error": "Resume text must be text"}), 400
+
+    text = text.strip()
+    if len(text) < MIN_RESUME_CHARS:
+        return jsonify({"error": "Resume text too short"}), 400
+    if len(text) > MAX_RESUME_TEXT_CHARS:
+        return jsonify({"error": "Resume text too long"}), 400
+
+    cleaned = preprocess_text(text)
+
+    try:
+        check_quota(g.user_id)
+        structure = analyze_resume_structure(cleaned, on_usage=recorder(g.user_id, "resume_structure"))
+    except QuotaExceeded as exc:
+        return jsonify({"error": f"daily AI budget reached ({exc})"}), 429
+    except Exception as exc:
+        return analysis_error_response(exc, logger)
+
+    # bullets go out as plain strings: a freshly extracted bullet has no id yet, and
+    # sending `{id: null}` would invite the client to make one up
+    return jsonify({
+        "header": structure.header.model_dump(),
+        "entries": [
+            {**entry.model_dump(exclude={"bullets"}),
+             "bullets": [bullet.text for bullet in entry.bullets]}
+            for entry in structure.entries
+        ],
+        "skills": structure.skills,
+        # the client sends this back on save, so evidence is stamped with the text it was
+        # actually extracted from — stamping at save time would bless whatever is current
+        "source_hash": source_hash(text),
+    }), 200
+
+
+@resume_bp.route("/evidence", methods=["GET"])
+@require_auth
+def get_resume_evidence():
+    with get_cursor() as cur:
+        entries = list_resume_evidence(cur, g.user_id)
+        header = load_resume_header(cur, g.user_id)
+        stale = evidence_is_stale(cur, g.user_id)
+        cur.execute("SELECT evidence_source_hash FROM resumes WHERE user_id = %s", (g.user_id,))
+        row = cur.fetchone()
+    return jsonify({
+        "header": header, "entries": entries, "stale": stale,
+        "source_hash": row[0] if row else None,
+    }), 200
+
+
+@resume_bp.route("/evidence", methods=["PUT"])
+@require_auth
+def upsert_resume_evidence():
+    """Commit the reviewed structure. Unchanged bullets keep their ids, so earlier citations
+    stay valid."""
+    data, error = get_json_object()
+    if error:
+        return error
+
+    structure, validation_error = validate_structure(data)
+    if validation_error:
+        return jsonify({"error": validation_error}), 400
+
+    submitted_hash = data.get("source_hash")
+    if submitted_hash is not None and not isinstance(submitted_hash, str):
+        return jsonify({"error": "source_hash must be text"}), 400
+
+    with get_cursor(commit=True) as cur:
+        save_resume_header(cur, g.user_id, structure.header)
+        stats = save_resume_evidence(cur, g.user_id, structure)
+
+        if submitted_hash:
+            # the extraction this evidence came from says which text it describes
+            cur.execute(
+                "UPDATE resumes SET evidence_source_hash = %s WHERE user_id = %s",
+                (submitted_hash, g.user_id),
+            )
+        else:
+            # No extraction behind this save. Stamping the current text here would let
+            # someone clear a stale warning by opening the editor and pressing save, which
+            # is exactly the lie the flag exists to prevent — so an existing stamp is kept
+            # and only never-extracted evidence gets one.
+            cur.execute(
+                "SELECT resume_text, evidence_source_hash FROM resumes WHERE user_id = %s",
+                (g.user_id,),
+            )
+            row = cur.fetchone()
+            if row and row[1] is None:
+                set_evidence_source(cur, g.user_id, row[0])
+
+        recompute_user_matches(cur, g.user_id)
+        entries = list_resume_evidence(cur, g.user_id)
+        header = load_resume_header(cur, g.user_id)
+        stale = evidence_is_stale(cur, g.user_id)
+
+    logger.info(
+        "resume evidence saved entries=%d bullets=%d reused=%d",
+        stats["entries"], stats["bullets"], stats["reused_bullets"],
+    )
+    return jsonify({"header": header, "entries": entries, "saved": stats, "stale": stale}), 200

@@ -8,6 +8,7 @@
   --color-surface: #fafafa;
   --color-border: #ebebeb;
   --color-soft-paper: #ffffff;
+  --color-pure-white: #ffffff;
   --color-ash: #c9c9c9;
   --color-smoke: #a8a8a8;
   --color-graphite: #8f8f8f;
@@ -122,7 +123,7 @@ button:disabled { cursor: not-allowed; }
 .secondary-button,
 .danger-button {
   display: inline-flex;
-  min-height: 2.5rem;
+  min-height: 2.75rem;
   align-items: center;
   justify-content: center;
   border-radius: 0.375rem;
@@ -160,10 +161,14 @@ button:disabled { cursor: not-allowed; }
 .secondary-button:disabled,
 .danger-button:disabled { opacity: 0.45; }
 
+.compact-button {
+  padding-inline: 0.75rem;
+}
+
 .icon-button {
   display: inline-grid;
-  width: 2.5rem;
-  height: 2.5rem;
+  width: 2.75rem;
+  height: 2.75rem;
   place-items: center;
   border-radius: 0.375rem;
   color: #666666;
@@ -214,6 +219,10 @@ button:disabled { cursor: not-allowed; }
 @media (max-width: 640px) {
   .page-container { padding: 2rem 1rem; }
   .page-heading { font-size: 1.5rem; }
+}
+
+@media (min-width: 641px) and (max-width: 1024px) {
+  .page-container { padding: 2.5rem 2rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {

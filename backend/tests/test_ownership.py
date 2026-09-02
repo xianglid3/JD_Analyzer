@@ -107,3 +107,19 @@ def test_job_list_filters_searches_and_sorts_before_paginating(client, insert_jo
         "Frontend Engineer",
         "Backend Engineer",
     ]
+
+
+def test_job_list_accepts_multiple_status_filters(client, insert_job):
+    user = client.post("/api/auth/signup", json=A).get_json()
+    client.post("/api/auth/login", json=A)
+
+    insert_job(user["id"], title="Saved role", status="saved")
+    insert_job(user["id"], title="Applied role", status="applied")
+    insert_job(user["id"], title="Interview role", status="interview")
+
+    response = client.get("/api/jobs?status=saved&status=applied")
+    data = response.get_json()
+
+    assert response.status_code == 200
+    assert data["total"] == 2
+    assert {job["title"] for job in data["jobs"]} == {"Saved role", "Applied role"}

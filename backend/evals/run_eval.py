@@ -21,7 +21,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from dotenv import load_dotenv
 load_dotenv()  # OPENAI_API_KEY from backend/.env
 
-from services.openai_services import analyze_job_description
+from services.openai_services import PROMPT_VERSION, analyze_job_description
 from services.match import normalize_skill
 
 DATASET = pathlib.Path(__file__).parent / "dataset.jsonl"
@@ -45,6 +45,7 @@ def norm(v):
 
 def main():
     verbose = "--verbose" in sys.argv or "-v" in sys.argv
+    print(f"prompt_version={PROMPT_VERSION}")
     rows = [json.loads(line) for line in DATASET.read_text().splitlines() if line.strip()]
     if not rows:
         print("evals/dataset.jsonl is empty — add labeled JDs first.")

@@ -7,7 +7,8 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   test: {
     environment: 'jsdom',
-    setupFiles: './src/test/setup.js',
+    setupFiles: './tests/helpers/setup.js',
+    include: ['tests/**/*.test.{js,jsx}'],
   },
   server: {
     proxy: {

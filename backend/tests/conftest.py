@@ -11,7 +11,7 @@ import pytest
 
 SCHEMA_SQL = (pathlib.Path(__file__).resolve().parent.parent / "schema.sql").read_text()
 DSN = os.environ["SUPABASE_URL"]
-TABLES = "idempotency_requests, job_analysis_drafts, refresh_tokens, jobs, resumes, users"
+TABLES = "llm_calls, evidence_links, gaps, proposed_edits, tool_calls, tailoring_runs, resume_bullets, resume_entries, resume_headers, idempotency_requests, job_analysis_drafts, refresh_tokens, jobs, resumes, users"
 
 
 def _looks_like_test_db(dsn):
@@ -38,6 +38,27 @@ def _db():
         cur.execute(SCHEMA_SQL)
     yield conn
     conn.close()
+
+
+@pytest.fixture(autouse=True)
+def _no_live_openai(monkeypatch):
+    """Nothing in the suite may reach OpenAI.
+
+    `backend/.env` carries a real key and `load_dotenv()` overrides the dummy set above, so
+    an unmocked call spends money and makes the test depend on the network. Tests that need
+    a model response patch the analyze_* function; anything else fails here instead.
+    """
+    def refuse(*_args, **_kwargs):
+        raise AssertionError(
+            "a test called OpenAI — patch the analyze_* function it goes through"
+        )
+
+    # both modules build their own client, and only patching one leaves the other spending
+    import services.openai_services as openai_services
+    import services.tailoring_agent as tailoring_agent
+
+    monkeypatch.setattr(openai_services.client.chat.completions, "create", refuse)
+    monkeypatch.setattr(tailoring_agent.client.chat.completions, "create", refuse)
 
 
 @pytest.fixture

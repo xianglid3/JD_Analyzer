@@ -25,7 +25,7 @@ export default function NavBar() {
   return (
     <header className="sticky top-0 z-40 h-16 bg-surface/90 backdrop-blur-xl">
       <div className="mx-auto flex h-full max-w-7xl items-center gap-4 px-4 sm:px-6 lg:px-12">
-        <Link to="/dashboard" className="flex shrink-0 items-center gap-2 text-sm font-medium text-ink">
+        <Link to="/dashboard" className="flex min-h-11 shrink-0 items-center gap-2 text-sm font-medium text-ink">
           <TranslateMark className="h-[18px] w-[18px] text-carbon" />
           <span className="hidden sm:inline">JD Translator</span>
           <span className="sm:hidden">JD</span>
@@ -36,7 +36,7 @@ export default function NavBar() {
             <NavLink
               key={to}
               to={to}
-              className={({ isActive }) => `rounded-md px-3 py-2 text-sm ${
+              className={({ isActive }) => `inline-flex min-h-11 items-center rounded-md px-3 py-2 text-sm ${
                 isActive ? 'bg-white text-ink shadow-[0_0_0_1px_#ebebeb]' : 'text-charcoal hover:text-ink'
               }`}
             >
@@ -51,7 +51,7 @@ export default function NavBar() {
             type="button"
             onClick={() => logout.mutate()}
             disabled={logout.isPending}
-            className="inline-flex items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-normal leading-5 text-charcoal hover:text-ink"
+            className="inline-flex min-h-11 items-center gap-2 rounded-md px-3 py-2 text-sm font-normal text-charcoal hover:bg-white hover:text-ink"
           >
             {logout.isPending && <Spinner size="sm" />}
             <span className="hidden sm:inline">{logout.isPending ? 'Logging out…' : 'Log out'}</span>

@@ -23,7 +23,7 @@ def extracted_job():
 def analyze_draft(client, monkeypatch, credentials=A):
     client.post("/api/auth/signup", json=credentials)
     assert client.post("/api/auth/login", json=credentials).status_code == 200
-    monkeypatch.setattr("routes.jobs.analyze_job_description", lambda _text: extracted_job())
+    monkeypatch.setattr("routes.jobs.analyze_job_description", lambda _text, **_kwargs: extracted_job())
     return client.post(
         "/api/jobs/drafts",
         json={"description": DESCRIPTION, "source_url": "https://example.com/jobs/42"},
@@ -97,3 +97,52 @@ def test_cancelling_a_draft_creates_no_job(client, monkeypatch):
     assert client.delete(f"/api/jobs/drafts/{draft['id']}").status_code == 200
     assert client.get(f"/api/jobs/drafts/{draft['id']}").status_code == 404
     assert client.get("/api/jobs").get_json()["total"] == 0
+
+
+def test_requirements_can_be_corrected_at_review(client, monkeypatch, _db):
+    """Extraction gets importance wrong often enough that a bad requirement would otherwise
+    score every future match against this job."""
+    draft = analyze_draft(client, monkeypatch).get_json()
+
+    response = client.post(f"/api/jobs/drafts/{draft['id']}/confirm", json={
+        "title": "Platform Engineer",
+        "requirements": [
+            {"skill": "Kubernetes", "importance": "required"},
+            {"skill": "Jira", "importance": "nice_to_have"},
+        ],
+    })
+
+    assert response.status_code == 201
+    job = client.get(f"/api/jobs/{response.get_json()['id']}").get_json()
+    assert job["requirements"] == [
+        {"skill": "Kubernetes", "importance": "required"},
+        {"skill": "Jira", "importance": "nice_to_have"},
+    ]
+    # the flat list is regenerated from the same edit, so the two cannot disagree
+    assert job["skills"] == ["Kubernetes", "Jira"]
+
+
+def test_edited_requirements_are_validated(client, monkeypatch):
+    draft = analyze_draft(client, monkeypatch).get_json()
+
+    for body, expected in [
+        ({"requirements": "nope"}, "requirements must be an array"),
+        ({"requirements": [{"skill": ""}]}, "each requirement needs a skill"),
+        ({"requirements": [{"skill": "Go", "importance": "critical"}]}, "importance must be required, preferred, or nice_to_have"),
+    ]:
+        response = client.post(f"/api/jobs/drafts/{draft['id']}/confirm",
+                               json={"title": "Platform Engineer", **body})
+        assert response.status_code == 400
+        assert response.get_json()["error"] == expected
+
+
+def test_duplicate_requirements_are_collapsed(client, monkeypatch):
+    draft = analyze_draft(client, monkeypatch).get_json()
+
+    response = client.post(f"/api/jobs/drafts/{draft['id']}/confirm", json={
+        "title": "Platform Engineer",
+        "requirements": [{"skill": "Go"}, {"skill": "go"}],
+    })
+
+    job = client.get(f"/api/jobs/{response.get_json()['id']}").get_json()
+    assert job["skills"] == ["Go"]
