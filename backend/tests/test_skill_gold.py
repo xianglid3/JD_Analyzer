@@ -132,6 +132,24 @@ REWRITE_GOLD = [
     ("Served 3 regions", ["Deployed across 3 regions"], [], "number is supported"),
     ("Improved throughput 3x", ["Handled 3 services"], ["3x"], "a multiple is not a count"),
     ("Reduced cost by $1.2k", ["Reduced cost"], ["1200"], "currency and units normalize"),
+
+    # --- one phrase is one concept, not its pieces ---
+    ("Applied object-oriented programming",
+     ["Designed classes using object-oriented programming"], [],
+     "OOP is one concept: reading it as oop + programming made the checker contradict itself"),
+    ("Practised object-oriented programming", ["Wrote C++ classes"], ["oop"],
+     "match credit is not permission to write OOP into a bullet"),
+    ("Developed the frontend using JavaScript with React + TypeScript",
+     ["Developed the frontend using React + TypeScript"], ["javascript"],
+     "React and TypeScript earn JS match credit but do not justify keyword insertion"),
+    ("Applied object-oriented programming principles", ["Tested C++ code with Google Test"], ["oop"],
+     "Google Test to C++ to OOP is an unsafe transitive authorship claim"),
+    ("Built machine learning pipelines", ["Trained models with machine learning"], [],
+     "the phrase is supported, and 'learning' is not a separate claim"),
+    ("Used natural language processing", ["Applied natural language processing to tickets"], [],
+     "three-word phrase claims all three words"),
+    ("Did general programming work", ["Deployed to Kubernetes"], ["programming"],
+     "a bare piece with nothing behind it is still caught"),
 ]
 
 

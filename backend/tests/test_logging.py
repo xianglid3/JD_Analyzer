@@ -55,7 +55,8 @@ def test_schema_check_reports_missing_columns(_db, caplog):
     with caplog.at_level(logging.ERROR):
         missing = check_schema(fake_schema)
 
-    assert missing == ["users.invented_column"]
+    assert missing.missing == ["users.invented_column"]
+    assert missing.reachable
     pathlib.Path(fake_schema).unlink()
 
 
@@ -93,7 +94,7 @@ def test_schema_check_reports_missing_tables(_db, caplog):
     with caplog.at_level(logging.ERROR):
         missing = check_schema(fake_schema)
 
-    assert missing == ["not_created_yet"]
+    assert missing.missing == ["not_created_yet"]
     assert "not_created_yet" in caplog.text
     pathlib.Path(fake_schema).unlink()
 
@@ -104,5 +105,34 @@ def test_schema_check_is_quiet_when_the_database_matches(_db, caplog):
     from db import check_schema
 
     with caplog.at_level(logging.ERROR):
-        assert check_schema() == []
+        state = check_schema()
+    assert state.ok and state.missing == []
     assert "missing" not in caplog.text
+
+
+def test_readiness_fails_when_the_database_is_unreachable(client, monkeypatch):
+    """The old checker returned None here, and `if missing:` read that as healthy — so an
+    unreachable database would have passed readiness and taken traffic."""
+    import db
+
+    def refuse(*_args, **_kwargs):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(db, "get_cursor", refuse)
+    state = db.check_schema()
+
+    assert not state.reachable and not state.ok
+
+
+def test_readiness_reports_a_schema_that_is_behind(client, monkeypatch):
+    import app as app_module
+    from db import SchemaState
+
+    monkeypatch.setattr(app_module, "check_schema",
+                        lambda *a, **k: SchemaState(True, ["index tailoring_runs_one_active_per_job"]))
+    response = client.get("/api/ready")
+
+    assert response.status_code == 503
+    assert response.get_json()["missing"] == ["index tailoring_runs_one_active_per_job"]
+    # liveness is a different question and must not fail with it
+    assert client.get("/api/health").status_code == 200

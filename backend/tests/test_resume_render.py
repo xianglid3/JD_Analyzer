@@ -69,7 +69,8 @@ def test_document_groups_entries_and_pulls_skills_out(_db, resume):
     with _db.cursor() as cur:
         document = build_document(cur, resume["user_id"])
 
-    assert [s["title"] for s in document["sections"]] == ["Experience", "Projects"]
+    # education, then projects, then work — the page order, not the order they were entered
+    assert [s["title"] for s in document["sections"]] == ["Projects", "Experience"]
     assert document["skills"] == ["Python", "C++"]
     assert document["header"]["full_name"] == "Shawn Li"
 
@@ -85,6 +86,35 @@ def test_accepted_edits_replace_their_bullets(_db, resume):
     texts = [b["text"] for s in document["sections"] for e in s["entries"] for b in e["bullets"]]
     assert "Designed and shipped a FastAPI backend serving REST APIs" in texts
     assert original not in texts
+    assert document["tailored_count"] == 1
+
+
+def test_accepted_merge_replaces_primary_and_removes_consumed_bullet(_db, resume):
+    first = resume["bullets"]["Built a calendar app with React & Tailwind"]
+    second = resume["bullets"]["Designed a FastAPI backend"]
+    merged = "Built a calendar app with React and a FastAPI backend"
+    with _db.cursor() as cur:
+        run_id = make_run(cur, resume["user_id"], [])
+        cur.execute(
+            """
+            INSERT INTO proposed_edits (
+                run_id, user_id, bullet_id, requirement, proposed_text, edit_type, status
+            ) VALUES (%s, %s, %s, 'Full-stack development', %s, 'merge', 'accepted')
+            RETURNING id
+            """,
+            (run_id, resume["user_id"], first, merged),
+        )
+        edit_id = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO tailoring_edit_bullets (edit_id, bullet_id, sort_order) VALUES (%s, %s, 1)",
+            (edit_id, second),
+        )
+        document = build_document(cur, resume["user_id"], run_id)
+
+    texts = [b["text"] for s in document["sections"] for e in s["entries"] for b in e["bullets"]]
+    assert merged in texts
+    assert "Built a calendar app with React & Tailwind" not in texts
+    assert "Designed a FastAPI backend" not in texts
     assert document["tailored_count"] == 1
 
 
@@ -179,3 +209,23 @@ def test_an_empty_resume_still_renders(_db):
 
     assert "Your name" in render_html(document)
     assert r"\end{document}" in render_latex(document)
+
+
+def test_sections_render_education_then_projects_then_work(_db, resume):
+    """The page order is fixed by KIND_TITLES, not by the order entries were saved."""
+    with _db.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO resume_entries (user_id, kind, title, organization, sort_order)
+            VALUES (%s, 'education', 'BSc Computer Science', 'University', 99)
+            """,
+            (resume["user_id"],),
+        )
+        document = build_document(cur, resume["user_id"])
+        tex = render_latex(document)
+
+    assert [s["title"] for s in document["sections"]] == ["Education", "Projects", "Experience"]
+    assert (tex.index(r"\section{Education}")
+            < tex.index(r"\section{Projects}")
+            < tex.index(r"\section{Experience}")
+            < tex.index(r"\section{Technical Skills}"))

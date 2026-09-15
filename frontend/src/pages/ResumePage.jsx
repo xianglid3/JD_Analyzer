@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ButtonLabel, InlineAlert, PageLoader } from '../components/Feedback'
 import Dialog from '../components/Dialog'
 import NavBar from '../components/NavBar'
 import ResumeStructureEditor from '../components/ResumeStructureEditor'
+import { EMPTY, READING, READY, REVIEW, STALE, resumeState } from '../lib/resumeReady'
 import { apiFetch, apiUpload } from '../lib/api'
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024
@@ -57,7 +58,7 @@ export default function ResumePage() {
   const [uploadPhase, setUploadPhase] = useState('idle')
   const [sourceMode, setSourceMode] = useState('upload')
   const [isDragging, setIsDragging] = useState(false)
-  const [showDeleteFileDialog, setShowDeleteFileDialog] = useState(false)
+  const [showDeleteResumeDialog, setShowDeleteResumeDialog] = useState(false)
   const [notice, setNotice] = useState(null)
   const [sourceNotice, setSourceNotice] = useState(null)
   const [skillsNotice, setSkillsNotice] = useState(null)
@@ -113,6 +114,9 @@ export default function ResumePage() {
       setPendingFile(null)
       setResumeText('')
       setUploadPhase('complete')
+      setEvidenceNotice(null)
+      setExtractOnOpen(true)
+      setStructureOpen(true)
       setSourceNotice({
         tone: 'success',
         message: variables.reason === 'upload'
@@ -188,14 +192,29 @@ export default function ResumePage() {
     },
   })
 
-  const deleteFileMutation = useMutation({
-    mutationFn: () => apiFetch('/resume/file', { method: 'DELETE' }),
+  const deleteResumeMutation = useMutation({
+    mutationFn: () => apiFetch('/resume', { method: 'DELETE' }),
     onSuccess: () => {
-      queryClient.setQueryData(['resume'], (current) => (
-        current ? { ...current, source_file: null } : current
-      ))
-      setShowDeleteFileDialog(false)
-      setNotice({ tone: 'success', message: 'Stored resume file removed. Your extracted skills and text were kept.' })
+      queryClient.setQueryData(['resume'], null)
+      queryClient.setQueryData(['resume-evidence'], {
+        header: {}, entries: [], stale: false, source_hash: null,
+      })
+      queryClient.invalidateQueries({ queryKey: ['jobs'] })
+      setSkills([])
+      setSkillsDirty(false)
+      setResumeText('')
+      setPendingFile(null)
+      setUploadProgress(0)
+      setUploadPhase('idle')
+      setSourceMode('upload')
+      setStructureOpen(false)
+      setExtractOnOpen(false)
+      setSourceNotice(null)
+      setSkillsNotice(null)
+      setEvidenceNotice(null)
+      setShowDeleteResumeDialog(false)
+      setNotice({ tone: 'success', message: 'Resume and all extracted data removed.' })
+      if (fileInputRef.current) fileInputRef.current.value = ''
     },
   })
 
@@ -257,11 +276,36 @@ export default function ResumePage() {
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
+  const openExtractionReview = useCallback(() => {
+    setEvidenceNotice(null)
+    setExtractOnOpen(true)
+    setStructureOpen(true)
+  }, [])
+
+  const closeStructureReview = useCallback(() => {
+    setStructureOpen(false)
+    setExtractOnOpen(false)
+  }, [])
+
   const evidenceQuery = useQuery({
     queryKey: ['resume-evidence'],
     queryFn: () => apiFetch('/resume/evidence'),
     retry: false,
   })
+
+  // Safety net for resumes saved before extraction became part of upload. Open the same
+  // confirmation flow, but never persist model-extracted evidence without the user's review.
+  const evidenceReady = !evidenceQuery.isLoading && !evidenceQuery.isError
+  const needsReview = Boolean(
+    (resumeQuery.data?.resume_text || resumeQuery.data?.source_file)
+    && evidenceReady
+    && (evidenceQuery.data?.entries || []).length === 0
+  )
+  useEffect(() => {
+    if (!needsReview) return undefined
+    const timer = window.setTimeout(openExtractionReview, 0)
+    return () => window.clearTimeout(timer)
+  }, [needsReview, openExtractionReview])
 
   if (resumeQuery.isLoading) return <PageLoader label="Loading your resume…" />
 
@@ -271,12 +315,20 @@ export default function ResumePage() {
   const evidenceCount = entries.reduce((total, entry) => total + entry.bullets.length, 0)
   const evidenceStale = Boolean(evidenceQuery.data?.stale)
   const hasResume = Boolean(resumeQuery.data?.resume_text || resumeQuery.data?.source_file)
-  const sourceBusy = parseMutation.isPending || uploadMutation.isPending || (resumeMutation.isPending && resumeMutation.variables?.reason !== 'skills')
+  const hasSavedResumeData = Boolean(resumeQuery.data || skills.length > 0 || evidenceCount > 0)
+  const sourceBusy = parseMutation.isPending || uploadMutation.isPending || deleteResumeMutation.isPending || (resumeMutation.isPending && resumeMutation.variables?.reason !== 'skills')
   const sourceLocked = sourceBusy || uploadPhase === 'save_failed'
   const skillsReady = skills.length > 0 && !skillsDirty && !sourceLocked
 
+  const readState = resumeState({
+    hasResume,
+    bulletCount: evidenceCount,
+    stale: evidenceStale,
+    reading: structureOpen && extractOnOpen,
+  })
+
   const sourceError = parseMutation.error || uploadMutation.error || (resumeMutation.variables?.reason !== 'skills' ? resumeMutation.error : null)
-  const activeError = downloadMutation.error || deleteFileMutation.error
+  const activeError = downloadMutation.error || deleteResumeMutation.error
 
   return (
     <div className="app-main min-h-screen bg-surface">
@@ -303,9 +355,26 @@ export default function ResumePage() {
           <div className="min-w-0 space-y-6">
         <section className="surface-card overflow-hidden" aria-labelledby="extract-heading">
           <div className="border-b border-border p-5">
-            <p className="eyebrow">Source</p>
-            <h2 id="extract-heading" className="mt-2 text-base font-medium text-ink">Add or replace your resume</h2>
-            <p className="mt-1 text-sm text-muted">Add a file or paste text. We extract the skills and save the resume in one step.</p>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <p className="eyebrow">Source</p>
+                <h2 id="extract-heading" className="mt-2 text-base font-medium text-ink">Add or replace your resume</h2>
+                <p className="mt-1 text-sm text-muted">Add a file or paste text. We save the source, extract the details, then open them for confirmation.</p>
+              </div>
+              {hasSavedResumeData && (
+                <button
+                  type="button"
+                  className="shrink-0 text-sm text-muted underline-offset-4 hover:text-ink hover:underline"
+                  disabled={sourceBusy}
+                  onClick={() => {
+                    deleteResumeMutation.reset()
+                    setShowDeleteResumeDialog(true)
+                  }}
+                >
+                  Remove resume
+                </button>
+              )}
+            </div>
 
             <div className="mt-4 inline-flex rounded-md border border-border bg-surface p-1" role="group" aria-label="Resume input method">
               <button
@@ -452,21 +521,10 @@ export default function ResumePage() {
                     <button
                       type="button"
                       className="secondary-button"
-                      disabled={downloadMutation.isPending || deleteFileMutation.isPending}
+                      disabled={downloadMutation.isPending || deleteResumeMutation.isPending}
                       onClick={() => downloadMutation.mutate()}
                     >
                       <ButtonLabel pending={downloadMutation.isPending} pendingText="Preparing…">Download original</ButtonLabel>
-                    </button>
-                    <button
-                      type="button"
-                      className="text-sm text-muted underline-offset-4 hover:text-ink hover:underline"
-                      disabled={deleteFileMutation.isPending}
-                      onClick={() => {
-                        deleteFileMutation.reset()
-                        setShowDeleteFileDialog(true)
-                      }}
-                    >
-                      Remove file
                     </button>
                   </div>
                 )}
@@ -527,7 +585,25 @@ export default function ResumePage() {
               <h2 id="skills-heading" className="mt-2 text-base font-medium text-ink">Review extracted skills</h2>
               <p className="mt-1 text-xs text-muted">Used for match scores. Up to 100, duplicates removed.</p>
             </div>
-            <span className="rounded-full border border-border px-2.5 py-1 text-xs text-muted">{skills.length} / 100</span>
+            <div className="flex shrink-0 items-center gap-3">
+              <span className="rounded-full border border-border px-2.5 py-1 text-xs text-muted">{skills.length} / 100</span>
+              {skills.length > 0 && (
+                <button
+                  type="button"
+                  className="text-xs text-muted underline-offset-4 hover:text-ink hover:underline disabled:opacity-40"
+                  disabled={sourceLocked}
+                  onClick={() => {
+                    setSkills([])
+                    setSkillsDirty(true)
+                    setSkillsNotice(null)
+                    setNotice(null)
+                    resumeMutation.reset()
+                  }}
+                >
+                  Clear all
+                </button>
+              )}
+            </div>
           </div>
 
           <form onSubmit={addSkill} className="mt-4 flex gap-2">
@@ -593,30 +669,51 @@ export default function ResumePage() {
 
         <section className="surface-card p-5" aria-labelledby="evidence-heading">
           <p className="eyebrow">Tailoring source</p>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="mt-2 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <h2 id="evidence-heading" className="mt-2 text-base font-medium text-ink">Experience evidence</h2>
+              <h2 id="evidence-heading" className="text-base font-medium text-ink">
+                {{
+                  [EMPTY]: 'No resume yet',
+                  [READING]: 'Reading your experience…',
+                  [REVIEW]: 'Confirm your experience',
+                  [READY]: 'Resume ready',
+                  [STALE]: 'Resume changed',
+                }[readState]}
+              </h2>
               <p className="mt-1 max-w-xl text-xs leading-5 text-muted">
-                {evidenceStale
-                  ? 'Your resume changed. Re-extract experience before tailoring so every claim matches the current source.'
-                  : evidenceCount > 0
-                  ? `${evidenceCount} ${evidenceCount === 1 ? 'bullet' : 'bullets'} across ${entryCount} ${entryCount === 1 ? 'entry' : 'entries'}. Review the claims used for tailoring suggestions.`
-                  : hasResume
-                    ? 'Extract jobs, projects, and education from your saved resume, then review them before tailoring.'
-                    : 'Add a resume first. Once it is saved, you can extract experience here.'}
+                {{
+                  [EMPTY]: 'Add a file or paste your resume above. Everything else happens on its own.',
+                  [READING]: 'Pulling out your jobs, projects and education for you to check.',
+                  [REVIEW]: 'Review the extracted draft, correct anything wrong, then confirm it before tailoring.',
+                  [READY]: `${entryCount} ${entryCount === 1 ? 'entry' : 'entries'} · ${evidenceCount} ${evidenceCount === 1 ? 'bullet' : 'bullets'} · ${skills.length} skills. These are the claims tailoring is allowed to cite.`,
+                  [STALE]: 'Your resume changed after this was confirmed. Re-read and confirm it so every tailored claim matches the current source.',
+                }[readState]}
               </p>
             </div>
-            <button
-              className="secondary-button compact-button whitespace-nowrap"
-              disabled={!hasResume || sourceLocked}
-              onClick={() => {
-                setEvidenceNotice(null)
-                setExtractOnOpen(evidenceCount === 0 || evidenceStale)
-                setStructureOpen(true)
-              }}
-            >
-              {evidenceStale ? 'Re-extract experience' : evidenceCount > 0 ? 'Review experience' : 'Extract experience'}
-            </button>
+            <div className="flex shrink-0 flex-wrap gap-2">
+              {readState === READY && (
+                <button
+                  className="secondary-button compact-button whitespace-nowrap"
+                  disabled={sourceLocked}
+                  onClick={() => {
+                    setEvidenceNotice(null)
+                    setExtractOnOpen(false)
+                    setStructureOpen(true)
+                  }}
+                >
+                  Review extracted info
+                </button>
+              )}
+              {(readState === REVIEW || readState === STALE) && (
+                <button
+                  className="secondary-button compact-button whitespace-nowrap"
+                  disabled={sourceLocked}
+                  onClick={openExtractionReview}
+                >
+                  {readState === STALE ? 'Re-read and confirm' : 'Review and confirm'}
+                </button>
+              )}
+            </div>
           </div>
           {evidenceNotice && (
             <InlineAlert tone={evidenceNotice.tone} className="mt-4">{evidenceNotice.message}</InlineAlert>
@@ -631,23 +728,40 @@ export default function ResumePage() {
               <p className="mt-1 text-xs leading-5 text-muted">Complete these once, then keep them current when your resume changes.</p>
             </div>
 
-            <ol className="divide-y divide-border px-5">
+            <ol className="px-5">
               {[
                 ['1', 'Add your resume', 'File or pasted text', hasResume],
                 ['2', 'Check your skills', 'Used for match scores', skillsReady],
                 ['3', 'Pull out your experience', 'Used as tailoring evidence', evidenceCount > 0 && !evidenceStale],
-              ].map(([step, title, detail, done]) => (
-                <li key={step} className="flex gap-3 py-4">
-                  <span className={`grid size-8 shrink-0 place-items-center rounded-full border font-mono text-xs ${done ? 'border-obsidian bg-obsidian text-white' : 'border-border text-muted'}`} aria-hidden="true">
-                    {done ? <CheckIcon /> : step}
-                  </span>
-                  <div className="min-w-0">
-                    <p className="text-sm text-ink">{title}</p>
-                    <p className="mt-0.5 text-xs text-muted">{detail}</p>
-                    <p className="sr-only">{done ? '✓ done' : `step ${step}`}</p>
-                  </div>
-                </li>
-              ))}
+              ].map(([step, title, detail, done], index, steps) => {
+                const nextDone = index < steps.length - 1 && done && steps[index + 1][3]
+                return (
+                  <li key={step} className="relative flex gap-3 py-4">
+                    {index < steps.length - 1 && (
+                      <span
+                        aria-hidden="true"
+                        data-testid={`readiness-connector-${index + 1}`}
+                        data-complete={nextDone ? 'true' : 'false'}
+                        className="absolute -bottom-4 left-[15px] top-12 w-px overflow-hidden bg-border"
+                      >
+                        <span
+                          className={`block h-full origin-top bg-obsidian transition-transform duration-500 ease-out motion-reduce:transition-none ${
+                            nextDone ? 'scale-y-100' : 'scale-y-0'
+                          }`}
+                        />
+                      </span>
+                    )}
+                    <span className={`relative z-10 grid size-8 shrink-0 place-items-center rounded-full border font-mono text-xs transition-colors duration-300 motion-reduce:transition-none ${done ? 'border-obsidian bg-obsidian text-white' : 'border-border bg-surface text-muted'}`} aria-hidden="true">
+                      {done ? <CheckIcon /> : step}
+                    </span>
+                    <div className="min-w-0">
+                      <p className="text-sm text-ink">{title}</p>
+                      <p className="mt-0.5 text-xs text-muted">{detail}</p>
+                      <p className="sr-only">{done ? '✓ done' : `step ${step}`}</p>
+                    </div>
+                  </li>
+                )
+              })}
             </ol>
 
             <div className="border-t border-border p-5">
@@ -660,40 +774,43 @@ export default function ResumePage() {
       <Dialog
         open={structureOpen}
         title={extractOnOpen ? 'Review extracted experience' : 'Review experience'}
-        description="Check each job, project, and bullet before using them as tailoring evidence."
-        onClose={() => setStructureOpen(false)}
+        description={extractOnOpen
+          ? 'We will extract a draft first. Nothing becomes tailoring evidence until you confirm it.'
+          : 'Check each job, project, and bullet used as tailoring evidence.'}
+        onClose={closeStructureReview}
+        dismissible={!extractOnOpen}
         width="max-w-4xl"
       >
         <ResumeStructureEditor
           autoExtract={extractOnOpen}
-          onClose={() => setStructureOpen(false)}
+          onClose={closeStructureReview}
           onSaved={() => {
-            setStructureOpen(false)
-            setExtractOnOpen(false)
-            setEvidenceNotice({ tone: 'success', message: 'Experience saved. Tailoring can now cite these bullets.' })
+            closeStructureReview()
+            setEvidenceNotice({ tone: 'success', message: 'Experience confirmed. Tailoring can now cite these bullets.' })
             queryClient.invalidateQueries({ queryKey: ['resume-evidence'] })
+            queryClient.invalidateQueries({ queryKey: ['jobs'] })
           }}
         />
       </Dialog>
 
       <Dialog
-        open={showDeleteFileDialog}
-        title="Remove stored resume file?"
-        description="The original uploaded file will be permanently removed. Your extracted skills and resume text will stay saved."
-        onClose={() => setShowDeleteFileDialog(false)}
-        dismissible={!deleteFileMutation.isPending}
+        open={showDeleteResumeDialog}
+        title="Remove your resume?"
+        description="This permanently removes the original file, extracted text, skills, experience evidence, and tailoring history. Your tracked jobs remain, but their match scores will reset."
+        onClose={() => setShowDeleteResumeDialog(false)}
+        dismissible={!deleteResumeMutation.isPending}
         width="max-w-md"
         footer={(
           <>
-            <button className="secondary-button" onClick={() => setShowDeleteFileDialog(false)} disabled={deleteFileMutation.isPending}>Cancel</button>
-            <button className="danger-button" onClick={() => deleteFileMutation.mutate()} disabled={deleteFileMutation.isPending}>
-              <ButtonLabel pending={deleteFileMutation.isPending} pendingText="Removing…">Remove stored file</ButtonLabel>
+            <button className="secondary-button" onClick={() => setShowDeleteResumeDialog(false)} disabled={deleteResumeMutation.isPending}>Cancel</button>
+            <button className="danger-button" onClick={() => deleteResumeMutation.mutate()} disabled={deleteResumeMutation.isPending}>
+              <ButtonLabel pending={deleteResumeMutation.isPending} pendingText="Removing…">Remove resume</ButtonLabel>
             </button>
           </>
         )}
       >
-        {deleteFileMutation.error && <InlineAlert>{deleteFileMutation.error.message}</InlineAlert>}
-        <p className="text-sm leading-6 text-muted">You can upload and save another original file later.</p>
+        {deleteResumeMutation.error && <InlineAlert>{deleteResumeMutation.error.message}</InlineAlert>}
+        <p className="text-sm leading-6 text-muted">To update your resume without clearing everything, upload its replacement instead.</p>
       </Dialog>
     </div>
   )

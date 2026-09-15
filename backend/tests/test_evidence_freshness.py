@@ -157,7 +157,11 @@ def test_tailoring_refuses_to_run_on_stale_evidence(client, insert_job):
     response = client.post(f"/api/jobs/{job_id}/tailor")
 
     assert response.status_code == 409
-    assert "re-extract" in response.get_json()["error"]
+    body = response.get_json()
+    # the reason code sends the client to the review gate instead of silently trusting a
+    # fresh model extraction.
+    assert body["reason"] == "needs_confirmation"
+    assert "changed" in body["error"]
 
 
 def test_re_extracting_clears_the_stale_flag(client):

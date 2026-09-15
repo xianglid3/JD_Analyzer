@@ -4,12 +4,16 @@ import re
 
 from jinja2 import Environment, StrictUndefined, select_autoescape
 
-from services.resume_evidence import load_resume_header
+from services.composition import compose, scored_bullets, summarize
+from services.resume_evidence import STALE_EDIT_CONDITION, load_resume_header, stale_edit_ids
 
+# Section order on the page. Education first, then projects, then work — the order a
+# student or new grad wants, since the degree and the projects are the strongest evidence
+# they have. Skills are rendered last by both templates, outside this list.
 KIND_TITLES = [
-    ("experience", "Experience"),
-    ("project", "Projects"),
     ("education", "Education"),
+    ("project", "Projects"),
+    ("experience", "Experience"),
     ("certificate", "Certificates"),
 ]
 
@@ -35,27 +39,35 @@ def latex_escape(value):
     return LATEX_PATTERN.sub(lambda m: LATEX_ESCAPES[m.group()], str(value))
 
 
-def build_document(cur, user_id, run_id=None):
-    """The resume with this run's accepted edits swapped in.
+def _composition_input(order, entries):
+    return [
+        {
+            "id": entry_id,
+            "kind": entries[entry_id]["kind"],
+            "title": entries[entry_id]["title"],
+            "organization": entries[entry_id]["organization"],
+            "bullets": [
+                {"id": bullet["id"], "text": bullet["source_text"]}
+                for bullet in entries[entry_id]["bullets"]
+            ],
+        }
+        for entry_id in order
+    ]
 
-    The swap happens here rather than in resume_bullets, because those bullets are shared by
-    every job and are what all the citations point at.
-    """
-    header = load_resume_header(cur, user_id)
 
-    replacements = {}
-    if run_id is not None:
-        cur.execute(
-            """
-            SELECT bullet_id, proposed_text
-            FROM proposed_edits
-            WHERE run_id = %s AND user_id = %s AND status = 'accepted' AND bullet_id IS NOT NULL
-            ORDER BY created_at
-            """,
-            (run_id, user_id),
-        )
-        replacements = {str(row[0]): row[1] for row in cur.fetchall()}
+def _reorder(order, entries, requirements):
+    """Put the most relevant work first. Reordering only — nothing is added, dropped or
+    reworded, so there is no new claim to verify."""
+    plan = compose(_composition_input(order, entries), requirements)
+    for entry_id, bullet_ids in plan["bullet_order"].items():
+        by_id = {bullet["id"]: bullet for bullet in entries[entry_id]["bullets"]}
+        entries[entry_id]["bullets"] = [by_id[bullet_id] for bullet_id in bullet_ids]
+    return plan["entry_order"], entries
 
+
+def _load_entries(cur, user_id, replacements=None, omitted=None):
+    replacements = replacements or {}
+    omitted = omitted or set()
     cur.execute(
         """
         SELECT e.id, e.kind, e.organization, e.title, e.location, e.start_date, e.end_date,
@@ -81,10 +93,68 @@ def build_document(cur, user_id, run_id=None):
             order.append(entry_id)
         if row[7] is not None:
             bullet_id = str(row[7])
+            if bullet_id in omitted:
+                continue
             entries[entry_id]["bullets"].append({
+                "id": bullet_id,
                 "text": replacements.get(bullet_id, row[8]),
+                "source_text": row[8],
                 "tailored": bullet_id in replacements,
             })
+    return order, entries
+
+
+def composition_summary(cur, user_id, requirements):
+    """Describe the tailored ordering without rendering or changing the resume."""
+    order, entries = _load_entries(cur, user_id)
+    source = _composition_input(order, entries)
+    plan = compose(source, requirements)
+    result = summarize(source, plan)
+    # the per-bullet scores behind the ordering, so it can be inspected rather than trusted
+    result["scored_bullets"] = scored_bullets(source, requirements, plan)
+    return result
+
+
+def build_document(cur, user_id, run_id=None, requirements=None):
+    """The resume with this run's accepted edits swapped in.
+
+    The swap happens here rather than in resume_bullets, because those bullets are shared by
+    every job and are what all the citations point at.
+
+    With raw requirements, entries and bullets come out in relevance order for that posting
+    instead of the resume's own. Without one, nothing moves.
+    """
+    header = load_resume_header(cur, user_id)
+
+    replacements = {}
+    omitted = set()
+    stale = []
+    if run_id is not None:
+        # An accepted edit is only applied while the evidence behind it still says what it
+        # said. Ids survive a reword, so without this an old rewrite could be pasted onto a
+        # bullet that is now about something else entirely (AE-01).
+        stale = stale_edit_ids(cur, user_id, run_id)
+        cur.execute(
+            f"""
+            SELECT e.bullet_id, e.proposed_text, mb.bullet_id
+            FROM proposed_edits AS e
+            LEFT JOIN tailoring_edit_bullets AS mb ON mb.edit_id = e.id
+            WHERE e.run_id = %s AND e.user_id = %s
+              AND e.status = 'accepted' AND e.bullet_id IS NOT NULL
+              AND NOT ({STALE_EDIT_CONDITION})
+            ORDER BY e.created_at, mb.sort_order
+            """,
+            (run_id, user_id),
+        )
+        for primary_id, proposed_text, merged_id in cur.fetchall():
+            replacements[str(primary_id)] = proposed_text
+            if merged_id is not None:
+                omitted.add(str(merged_id))
+
+    order, entries = _load_entries(cur, user_id, replacements, omitted)
+
+    if requirements:
+        order, entries = _reorder(order, entries, requirements)
 
     all_entries = [entries[entry_id] for entry_id in order]
     sections = [
@@ -103,6 +173,9 @@ def build_document(cur, user_id, run_id=None):
         "tailored_count": sum(
             1 for entry in all_entries for bullet in entry["bullets"] if bullet["tailored"]
         ),
+        # left out because their evidence changed after they were accepted — reported so the
+        # omission is visible rather than silent
+        "stale_edits": stale,
     }
 
 
@@ -128,8 +201,8 @@ HTML_TEMPLATE = """<!doctype html>
   :root { color-scheme: light; }
   body { font-family: Georgia, 'Times New Roman', serif; color: #171717; max-width: 7.5in;
          margin: 0 auto; padding: 0.5in; line-height: 1.4; font-size: 11pt; }
-  h1 { font-size: 20pt; margin: 0 0 4px; letter-spacing: 0.02em; }
-  .contact { font-size: 9.5pt; color: #4d4d4d; margin-bottom: 18px; }
+  h1 { font-size: 20pt; margin: 0 0 4px; letter-spacing: 0.02em; text-align: center; }
+  .contact { font-size: 9.5pt; color: #4d4d4d; margin-bottom: 18px; text-align: center; }
   h2 { font-size: 11pt; text-transform: uppercase; letter-spacing: 0.08em;
        border-bottom: 1px solid #171717; padding-bottom: 2px; margin: 18px 0 8px; }
   .entry { margin-bottom: 10px; }

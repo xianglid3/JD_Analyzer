@@ -200,3 +200,111 @@ def test_resume_file_delete_keeps_success_when_storage_cleanup_fails(client, mon
     with _db.cursor() as cur:
         cur.execute("SELECT skills, storage_path FROM resumes WHERE user_id = %s", (user["id"],))
         assert cur.fetchone() == (["Python"], None)
+
+
+def test_resume_delete_removes_all_derived_data_and_resets_matches(client, monkeypatch, _db):
+    user = login(client)
+    storage_path = f"{user['id']}/source.pdf"
+    with _db.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO resumes (user_id, skills, resume_text, storage_path, original_filename)
+            VALUES (%s, '["Python"]', 'Saved resume text', %s, 'resume.pdf')
+            """,
+            (user["id"], storage_path),
+        )
+        cur.execute(
+            "INSERT INTO resume_headers (user_id, full_name) VALUES (%s, 'Resume Owner')",
+            (user["id"],),
+        )
+        cur.execute(
+            """
+            INSERT INTO resume_entries (user_id, kind, title)
+            VALUES (%s, 'project', 'API') RETURNING id
+            """,
+            (user["id"],),
+        )
+        entry_id = cur.fetchone()[0]
+        cur.execute(
+            """
+            INSERT INTO resume_bullets (entry_id, user_id, text, content_hash)
+            VALUES (%s, %s, 'Built a Python API', %s)
+            """,
+            (entry_id, user["id"], hashlib.sha256(b"built a python api").hexdigest()),
+        )
+        cur.execute(
+            """
+            INSERT INTO jobs (user_id, raw_description, title, skills, match_score, match_detail)
+            VALUES (%s, 'Python developer', 'Developer', '["Python"]', 100, '{"matched":["Python"]}')
+            RETURNING id
+            """,
+            (user["id"],),
+        )
+        job_id = cur.fetchone()[0]
+        cur.execute(
+            """
+            INSERT INTO tailoring_runs (user_id, job_id, status, model, max_steps, completed_at)
+            VALUES (%s, %s, 'completed', 'test-model', 4, now())
+            """,
+            (user["id"], job_id),
+        )
+
+    deleted = []
+    monkeypatch.setattr("routes.resume.delete_resume_file", deleted.append)
+
+    response = client.delete("/api/resume")
+
+    assert response.status_code == 200
+    assert response.get_json() == {"ok": True}
+    assert deleted == [storage_path]
+    assert client.get("/api/resume").status_code == 404
+
+    with _db.cursor() as cur:
+        for table in ("resume_headers", "resume_entries", "resume_bullets"):
+            cur.execute(f"SELECT count(*) FROM {table} WHERE user_id = %s", (user["id"],))
+            assert cur.fetchone()[0] == 0
+        cur.execute("SELECT count(*) FROM tailoring_runs WHERE user_id = %s", (user["id"],))
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT match_score, match_detail FROM jobs WHERE id = %s", (job_id,))
+        score, detail = cur.fetchone()
+        assert float(score) == 0
+        assert detail["matched"] == []
+        assert detail["missing"] == ["Python"]
+
+
+def test_resume_delete_refuses_while_tailoring_is_running(client, monkeypatch, _db):
+    user = login(client)
+    storage_path = f"{user['id']}/source.pdf"
+    with _db.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO resumes (user_id, skills, resume_text, storage_path, original_filename)
+            VALUES (%s, '["Python"]', 'Saved resume text', %s, 'resume.pdf')
+            """,
+            (user["id"], storage_path),
+        )
+        cur.execute(
+            """
+            INSERT INTO jobs (user_id, raw_description, title, skills)
+            VALUES (%s, 'Python developer', 'Developer', '["Python"]') RETURNING id
+            """,
+            (user["id"],),
+        )
+        job_id = cur.fetchone()[0]
+        cur.execute(
+            """
+            INSERT INTO tailoring_runs (user_id, job_id, status, model, max_steps)
+            VALUES (%s, %s, 'running', 'test-model', 4)
+            """,
+            (user["id"], job_id),
+        )
+
+    deleted = []
+    monkeypatch.setattr("routes.resume.delete_resume_file", deleted.append)
+
+    response = client.delete("/api/resume")
+
+    assert response.status_code == 409
+    assert "active tailoring run" in response.get_json()["error"]
+    assert deleted == []
+    assert client.get("/api/resume").status_code == 200

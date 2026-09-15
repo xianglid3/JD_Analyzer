@@ -14,21 +14,19 @@ logger = logging.getLogger(__name__)
 client = OpenAI(max_retries=0)
 
 # bump on every prompt edit — an eval score only means something against the prompt that produced it
-PROMPT_VERSION = "2026-08-31"
+PROMPT_VERSION = "2026-09-14"
 
 # gpt-4o-mini list price, USD per million tokens. Only used for logging, so being a little
 # stale is fine — it turns token counts into a number you can reason about.
 PRICE_PER_MTOK = {"input": 0.15, "output": 0.60}
 
 
-def report_usage(model, usage, latency_ms, on_usage=None):
-    """Log the call, and hand the numbers to whoever knows which user made it."""
+def report_usage(model, usage, latency_ms):
+    """Log the call. Recording it against a user is `usage.Budget`'s job, not this one's."""
     logger.info("llm model=%s prompt_version=%s latency_ms=%.0f prompt=%d completion=%d cost=$%.5f",
                 model, PROMPT_VERSION, latency_ms,
                 usage.prompt_tokens, usage.completion_tokens,
                 usd(usage.prompt_tokens, usage.completion_tokens))
-    if on_usage:
-        on_usage(model, usage.prompt_tokens, usage.completion_tokens, latency_ms)
 
 
 def usd(prompt_tokens, completion_tokens):
@@ -46,13 +44,69 @@ VAGUE_REQUIREMENTS = {
     "software", "technology", "engineering", "programming languages",
 }
 
+MAX_ELIGIBILITY = 6
+# A canonical skill name is a term. Anything longer is a sentence the model failed to reduce,
+# and it poisons everything downstream: it never matches evidence, so it is a permanent gap,
+# and it renders as a paragraph in a list of chips.
+MAX_SKILL_NAME_CHARS = 60
+# the prompt asks for 15; grouped alternatives can push the flat list past it, so it is
+# enforced here too rather than trusted
+MAX_SKILLS = 15
+
+
+def usable_terms(terms):
+    """Trim, drop vague filler, and de-duplicate case-insensitively, keeping first order."""
+    seen, kept = set(), []
+    for term in terms:
+        if not isinstance(term, str) or not term.strip():
+            continue
+        term = " ".join(term.replace("_", " ").split())
+        key = term.casefold()
+        if (
+            key in seen
+            or len(term) > MAX_SKILL_NAME_CHARS
+            or normalize_skill(term) in VAGUE_REQUIREMENTS
+        ):
+            continue
+        seen.add(key)
+        kept.append(term)
+    return kept
+
 #   Declares the structure we expect back from LLM by:
 #       1. field (title, summary ...)
 #       2. its allowed type (Optional[str] -> a str or null)
 #       3. Default ( None -> set to null if AI omits)
+class RequirementCondition(BaseModel):
+    """Alternatives inside one requirement: "one of Java, Python, or C++"."""
+
+    operator: Literal["any_of", "all_of"] = "any_of"
+    minimum: int = 1
+    items: list[str] = []
+
+    @field_validator("operator", mode="before")
+    @classmethod
+    def coerce_operator(cls, v):
+        return v if v in ("any_of", "all_of") else "any_of"
+
+    @field_validator("minimum", mode="before")
+    @classmethod
+    def coerce_minimum(cls, v):
+        # a non-integer minimum shouldn't discard the group; "at least one" is the safe read
+        return v if isinstance(v, int) and not isinstance(v, bool) and v >= 1 else 1
+
+
 class JobRequirement(BaseModel):
-    skill: str
+    # exactly one of these carries the requirement: `skill` for a single term, `condition`
+    # when the posting offered alternatives. Asking for "Java or Python" is ONE requirement —
+    # flattening it to two made the denominator wrong before matching even began.
+    skill: Optional[str] = None
+    condition: Optional[RequirementCondition] = None
+    # the posting's own words, so the review screen can show what was actually written
+    source_text: Optional[str] = None
     importance: Literal["required", "preferred", "nice_to_have"] = "required"
+    # "skill" is scored against the resume; "eligibility" never is — see ELIGIBILITY below.
+    # Rows written before this field existed have no type and read back as "skill".
+    type: Literal["skill", "eligibility"] = "skill"
 
     @field_validator("importance", mode="before")
     @classmethod
@@ -61,12 +115,35 @@ class JobRequirement(BaseModel):
         return v if v in ("required", "preferred", "nice_to_have") else "required"
 
 
-class JobExtraction(BaseModel): 
+class RequirementGroup(BaseModel):
+    """One posting phrase offering alternatives, before it becomes a JobRequirement."""
+
+    items: list[str] = []
+    minimum: int = 1
+    source_text: Optional[str] = None
+    importance: Literal["required", "preferred", "nice_to_have"] = "required"
+
+    @field_validator("importance", mode="before")
+    @classmethod
+    def coerce_importance(cls, v):
+        return v if v in ("required", "preferred", "nice_to_have") else "required"
+
+    @field_validator("minimum", mode="before")
+    @classmethod
+    def coerce_minimum(cls, v):
+        return v if isinstance(v, int) and not isinstance(v, bool) and v >= 1 else 1
+
+
+class JobExtraction(BaseModel):
     title: Optional[str] = None
     summary: Optional[str] = None
     no_bs_translation: Optional[str] = None
     skills: list[str] = []
     requirements: list[JobRequirement] = []
+    # kept separate in the model's output: two flat lists are easier for it to fill
+    # correctly than one list holding two different shapes. Merged in below.
+    requirement_groups: list[RequirementGroup] = []
+    eligibility: list[str] = []
     company_name: Optional[str] = None
     location: Optional[str] = None
     work_type: Optional[Literal["remote", "hybrid", "in_person"]] = None
@@ -85,65 +162,144 @@ SYSTEM_PROMPT = """You are a job description analyst. Extract key information an
   "no_bs_translation": "<see the translation rules below>",
   "skills": ["<skill>", "..."],
   "requirements": [{"skill": "<same skill>", "importance": "<'required' | 'preferred' | 'nice_to_have'>"}, "..."],
+  "requirement_groups": [{"items": ["<skill>", "..."], "minimum": <int>, "source_text": "<the posting's own words>", "importance": "<same values>"}, "..."],
+  "eligibility": ["<hard gate that is not a skill>", "..."],
   "company_name": "<company name or null>",
   "location": "<city/region or null>",
   "work_type": "<'remote' | 'hybrid' | 'in_person' | null>",
 }
-Rules for "skills": concrete technical skills only — named programming languages, tools, frameworks, libraries, platforms, AND technical concepts/engineering practices (e.g. data structures, algorithms, system design, distributed systems, unit testing, integration testing, ci/cd). Output each as its short canonical name ("aws" not "AWS cloud services", "c" not "C programming", "api" not "API development"). EXCLUDE soft skills and generic traits entirely (communication, teamwork, problem-solving, adaptability, leadership, collaboration, organization, etc.). Max 15. Only skills explicitly named in the text — do not infer or generalize. Use [] when the posting names no concrete hard skills.
-Rules for "no_bs_translation": translate the posting into a direct, no-BS explanation of what the job is actually likely to be like. Return only 1-2 short paragraphs.
+Rules for "skills": concrete technical skills only — named programming languages, tools, frameworks, libraries, platforms, AND technical concepts/engineering practices (e.g. data structures, algorithms, system design, distributed systems, unit testing, integration testing, ci/cd). Output each as its short canonical name in lowercase words, never snake_case ("message queue" not "message_queue", "aws" not "AWS cloud services", "c" not "C programming", "api" not "API development"). A skill name is a term, never a sentence or a clause — if it does not fit in a few words it is not a skill. EXCLUDE soft skills and generic traits entirely (communication, teamwork, problem-solving, adaptability, leadership, collaboration, organization, etc.). Max 15. Only skills explicitly named in the text — do not infer or generalize. Use [] when the posting names no concrete hard skills.
+Rules for "no_bs_translation": tell the reader what they would actually be doing all day in this job. Return only 1-2 short paragraphs.
+Write like you are talking to a friend who knows basic software engineering and is asking "okay, but what would I actually be doing if I got this job?" — not like a recruiter and not like an analyst. Do not rewrite the posting back to them. Never use corporate language: no "drive impact", "build scalable solutions", "collaborate cross-functionally", or similar vague filler.
 Explain:
-- what the person will realistically spend most of their time doing
-- which requirements are truly important versus wishlist items
-- what level of independence and knowledge the company probably expects
-- what the role will likely feel like day to day
-- any hidden realities such as maintenance work, legacy systems, internal tooling, customer support, meetings, debugging, or production responsibility
-- how the company's industry, size, product, and engineering environment change the interpretation of the posting
-- whether the expectations make sense for an intern, new grad, or full-time experienced hire
+- what they would actually be building, and what code they would be writing
+- what systems they would work on: where the data comes from, what happens to it, where it goes
+- what a normal ticket looks like, and what kinds of bugs and problems would land on their desk
+- what each technology named in the posting is actually used for here
+- whether this is really backend, data engineering, distributed systems, platform, ML, or a mix
+- which part of the job is probably going to be difficult
+- which lines are corporate fluff, or work a new grad would not actually own
+Be concrete. Instead of "you will develop scalable distributed data platforms", say something like: millions of moderation events come in, you write the service that reads them off a queue, keeps the useful parts in a database and passes the results on — and one day the queue backs up and you have to work out why your consumers cannot keep up.
 Do not repeat or summarize the posting line by line. Translate corporate language into plain English.
-Be willing to say things like "this is mostly backend CRUD work," "this looks more like internal enterprise software than product engineering," "they list AWS, but you probably won't be designing cloud infrastructure," or "the internship posting looks intimidating, but they likely expect fundamentals and the ability to learn rather than mastery of every listed tool."
-Separate reasonable inference from fact, and never invent details about the company. The reader should finish knowing: what am I actually signing up to do, and what will they realistically expect from me?
+Be willing to say things like "this is mostly backend CRUD work," "they list AWS, but you would be deploying to it, not designing it," or "the internship posting looks intimidating, but they likely expect fundamentals and the ability to learn rather than mastery of every listed tool."
+Separate reasonable inference from fact, and never invent details about the company. The reader should finish able to picture themselves at their desk: what they are building, what code they are touching, what breaks, and what people are going to ask them to fix.
 
-"requirements" repeats every skill from "skills" with how the posting framed it: "required" for must-haves and core responsibilities, "preferred" for nice-to-haves and bonuses, "nice_to_have" for passing mentions. Same names, same order, same count as "skills". When the posting does not distinguish, use "required".
+Rules for "eligibility": conditions the candidate either meets or does not, which no resume wording can change — work authorization or visa sponsorship, citizenship or residency, security clearance, willingness to relocate, on-site attendance, a required licence, a background or drug check, a minimum age, a required degree level or field of study, graduation or enrolment timing ("completing or recently completed a Bachelor's"), and any commitment to a start or onboarding date. Quote the posting's own words, briefly. These belong here and NOT in "skills": they cannot be evidenced by experience, so scoring them as skills would report a permanent gap the candidate can do nothing about. A degree requirement is NOT a skill — "computer science" as a field of study belongs here, while "algorithms" as a thing you can do belongs in skills. Use [] when the posting states none.
+
+"requirements" repeats each skill from "skills" that is NOT part of a requirement_group, with how the posting framed it: "required" for must-haves and core responsibilities, "preferred" for nice-to-haves and bonuses, "nice_to_have" for passing mentions. Same names and same order as "skills". When the posting does not distinguish, use "required". Between them, "requirements" and "requirement_groups" must account for every name in "skills" exactly once.
+
+Rules for "requirement_groups": when the posting offers ALTERNATIVES — "experience in one of Java, Python, or C++", "familiarity with React, Vue, or Angular", "at least two of AWS, GCP, or Azure" — that is ONE requirement satisfied by any of the listed options, NOT one requirement per option. Emit it here instead.
+- "items": the alternatives, using the same short canonical names as "skills".
+- "minimum": how many the candidate needs. "one of" → 1. "at least two of" → 2. Default 1.
+- "source_text": the posting's own phrasing, quoted briefly, so the reader recognises it.
+- Every name in "items" must ALSO appear in "skills".
+- Do NOT also repeat those names in "requirements" — a skill belongs either to a group or to "requirements", never both.
+- Only group true alternatives. A list of things the candidate needs ALL of stays in "requirements" as separate entries. When in doubt, do not group.
+Use [] when the posting offers no alternatives.
 For all other fields: use null (not empty string) when unknown; only use facts explicitly in the text; do not guess.
 
 """
 
 
-def analyze_job_description(text, on_usage=None):
-    
-    t0 = time.perf_counter() #get the time
+def _paid(budget, kind, *, model="gpt-4o-mini", timeout=30, **kwargs):
+    """Every paid call in this module goes through here.
 
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
+    `budget` carries who is paying and reserves the call's ceiling before it is made; the
+    ceiling is also sent as `max_tokens`, so the reservation is a real bound rather than a
+    guess. Calls with no budget (tests, scripts) still run — they simply are not metered.
+    """
+    from services.usage import ceiling_for
+
+    max_tokens = budget.max_output_tokens if budget is not None else ceiling_for(kind)
+    t0 = time.perf_counter()
+
+    def make():
+        return client.chat.completions.create(
+            model=model, timeout=timeout, max_tokens=max_tokens, **kwargs
+        )
+
+    if budget is None:
+        response = make()
+        report_usage(model, response.usage, (time.perf_counter() - t0) * 1000)
+        return response
+
+    with budget.paid_call() as record:
+        response = make()
+        record["usage"] = response.usage
+    report_usage(model, response.usage, (time.perf_counter() - t0) * 1000)
+    return response
+
+
+def analyze_job_description(text, budget=None):
+    response = _paid(
+        budget, "job_analysis",
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": text},
         ],
         response_format={"type": "json_object"},
         temperature=0,          # deterministic extraction → reproducible + factual
-        timeout=30,
     )
-
-    latency_ms = (time.perf_counter() - t0) * 1000 #calculate latency
-    report_usage("gpt-4o-mini", response.usage, latency_ms, on_usage)
-
-
 
     content = response.choices[0].message.content
     data = json.loads(content)
 
     job = JobExtraction(**data)
     # normalize first: the model writes software_development as often as software development
-    job.skills = [
-        skill for skill in dict.fromkeys(job.skills)
-        if normalize_skill(skill) not in VAGUE_REQUIREMENTS
-    ]
+    job.skills = usable_terms(job.skills)
+
+    # A group is one requirement however many alternatives it lists. Build them first so the
+    # flat reconciliation below can skip the names they already cover — emitting those twice
+    # would restore the bug this shape exists to fix.
+    groups = []
+    for group in job.requirement_groups:
+        items = usable_terms(group.items)
+        if len(items) < 2:
+            # not actually a choice; fall through and let it become a plain requirement
+            job.skills = usable_terms(job.skills + items)
+            continue
+        groups.append(JobRequirement(
+            condition=RequirementCondition(
+                operator="any_of", minimum=min(group.minimum, len(items)), items=items,
+            ),
+            source_text=group.source_text,
+            importance=group.importance,
+        ))
+
+    # every alternative is a real skill, so it belongs in the flat list the chips render
+    job.skills = usable_terms(job.skills + [
+        item for group in groups for item in group.condition.items
+    ])[:MAX_SKILLS]
+
+    grouped = {}
+    for group in groups:
+        for item in group.condition.items:
+            grouped.setdefault(item.casefold(), group)
 
     # the two lists can drift; skills is the measured one, so it wins
-    by_name = {r.skill.strip().lower(): r for r in job.requirements if r.skill and r.skill.strip()}
-    job.requirements = [
-        by_name.get(skill.strip().lower(), JobRequirement(skill=skill))
-        for skill in job.skills
+    by_name = {
+        r.skill.strip().casefold(): r
+        for r in job.requirements if r.skill and r.skill.strip()
+    }
+    job.requirements, emitted = [], set()
+    for skill in job.skills:
+        group = grouped.get(skill.casefold())
+        if group is None:
+            job.requirements.append(by_name.get(skill.casefold(), JobRequirement(skill=skill)))
+        elif id(group) not in emitted:
+            # the group takes the position of its first alternative
+            emitted.add(id(group))
+            job.requirements.append(group)
+
+    # eligibility rides along in `requirements` so it reaches the job page, but typed so that
+    # scoring and tailoring both skip it: a clearance is not a wording problem
+    job.eligibility = [
+        condition.strip() for condition in dict.fromkeys(job.eligibility)
+        if condition and condition.strip()
+    ][:MAX_ELIGIBILITY]
+    job.requirements += [
+        JobRequirement(skill=condition, type="eligibility", importance="required")
+        for condition in job.eligibility
     ]
     return job
 
@@ -156,22 +312,16 @@ RESUME_PROMPT = """You extract skills from a resume. Return ONLY valid JSON with
 { "skills": ["<skill>", "..."] }
 Rules: hard skills, tools, languages, and frameworks explicitly present in the text. Max 30 skills. No soft-skill fluff. Only skills actually in the text — do not infer."""
 
-def analyze_resume(text, on_usage=None):
-    t0 = time.perf_counter()
-
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
+def analyze_resume(text, budget=None, kind="resume_parse"):
+    response = _paid(
+        budget, kind,
         messages=[
             {"role": "system", "content": RESUME_PROMPT},
             {"role": "user", "content": text},
         ],
         response_format={"type": "json_object"},
         temperature=0,          # deterministic extraction → reproducible + factual
-        timeout=30,
     )
-
-    latency_ms = (time.perf_counter() - t0) * 1000
-    report_usage("gpt-4o-mini", response.usage, latency_ms, on_usage)
 
     content = response.choices[0].message.content
     data = json.loads(content)
@@ -258,23 +408,18 @@ Rules for "header": copy contact details exactly as written, including formattin
 Max 30 entries, ordered as they appear in the resume."""
 
 
-def analyze_resume_structure(text, on_usage=None):
+def analyze_resume_structure(text, budget=None):
     """Extract entries and verbatim bullets — the evidence tailoring cites."""
-    t0 = time.perf_counter()
-
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
+    response = _paid(
+        budget, "resume_structure",
         messages=[
             {"role": "system", "content": STRUCTURE_PROMPT},
             {"role": "user", "content": text},
         ],
         response_format={"type": "json_object"},
         temperature=0,
-        timeout=60,             # a whole resume is a bigger output than one posting
+        timeout=45,             # stay inside the browser's 50-second deadline
     )
-
-    latency_ms = (time.perf_counter() - t0) * 1000
-    report_usage("gpt-4o-mini", response.usage, latency_ms, on_usage)
 
     structure = ResumeStructure(**json.loads(response.choices[0].message.content))
     return enforce_structure_limits(structure)
@@ -297,3 +442,13 @@ def enforce_structure_limits(structure):
         entry.bullets = cleaned[:MAX_BULLETS_PER_ENTRY]
     structure.skills = list(dict.fromkeys(s.strip() for s in structure.skills if s.strip()))[:MAX_STRUCTURE_SKILLS]
     return structure
+
+
+def complete_json(messages, model="gpt-4o-mini", timeout=30, budget=None,
+                  kind="skill_relations"):
+    """One JSON-mode call. Shared by the smaller enrichment callers that need a model but
+    not a whole extraction pipeline."""
+    return _paid(
+        budget, kind, model=model, timeout=timeout, messages=messages,
+        response_format={"type": "json_object"}, temperature=0,
+    )

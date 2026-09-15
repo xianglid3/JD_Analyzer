@@ -119,9 +119,30 @@ ALIASES = {
 }
 
 
+def flatten_punctuation(text):
+    """Hyphens and underscores are punctuation, not meaning.
+
+    "object-oriented design", "object oriented design" and "object_oriented_design" are one
+    concept, and they used to normalize to three different keys. Everything downstream is
+    keyed on this: the alias table, the skill graph, the learned-relation cache. Three keys
+    meant the same term was looked up — and paid for — more than once, and a relation learned
+    under one spelling was invisible to the others.
+    """
+    return " ".join(str(text).replace("_", " ").replace("-", " ").split())
+
+
+# alias lookups have to be punctuation-insensitive too, or "objective-c" would stop resolving
+# the moment the query spelled it "objective c"
+_ALIAS_BY_FLAT = {
+    flatten_punctuation(variant): flatten_punctuation(canonical)
+    for variant, canonical in ALIASES.items()
+}
+
+
 def normalize_skill(skill):
-    s = skill.strip().lower().replace("_", " ").removesuffix(".js")   # model_distillation -> model distillation; React.js -> react
-    return ALIASES.get(s, s)                                           # "js" -> "javascript", else unchanged
+    s = str(skill).strip().lower().removesuffix(".js")   # React.js -> react
+    flat = flatten_punctuation(s)
+    return _ALIAS_BY_FLAT.get(flat, flat)                # "js" -> "javascript", else unchanged
 
 
 def compute_match(job_skills, resume_skills):

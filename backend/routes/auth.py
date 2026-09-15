@@ -15,6 +15,17 @@ auth_bp = Blueprint("auth", __name__, url_prefix="/api/auth")
 JWT_SECRET = os.environ["JWT_SECRET"]
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").lower() == "true"
 
+# Local development runs on plain HTTP, so Secure defaults off — but shipping that way sends
+# the session cookie in clear text on every request. Production has to say so out loud rather
+# than discover it later. (Secure and HttpOnly are different protections: HttpOnly keeps
+# JavaScript out of the cookie, Secure keeps it off unencrypted connections. This is the
+# second one.)
+if os.environ.get("APP_ENV", "").lower() == "production" and not COOKIE_SECURE:
+    raise RuntimeError(
+        "COOKIE_SECURE must be true when APP_ENV=production — auth cookies would be sent "
+        "over plain HTTP"
+    )
+
 #validation limits
 MIN_USERNAME_CHARS = 3
 MAX_USERNAME_CHARS = 50

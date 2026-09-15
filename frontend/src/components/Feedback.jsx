@@ -3,7 +3,7 @@ export function Spinner({ size = 'md' }) {
   return (
     <span
       aria-hidden="true"
-      className={`inline-block rounded-full border-2 border-current border-r-transparent animate-spin ${sizeClass}`}
+      className={`inline-block rounded-full border-2 border-current/25 border-t-current animate-spin ${sizeClass}`}
     />
   )
 }

@@ -2,6 +2,7 @@
 
 import pytest
 
+from db import get_cursor
 from services import usage
 from services.usage import QuotaExceeded, check_quota, record, report, spent_today
 
@@ -50,8 +51,13 @@ def test_quota_blocks_once_the_day_is_spent(_db, user_id, monkeypatch):
 def test_yesterdays_spending_does_not_count(_db, user_id, monkeypatch):
     monkeypatch.setattr(usage, "DAILY_LIMIT_USD", 0.10)
     record(user_id, "job_analysis", "gpt-4o-mini", 1_000_000, 0, 100)
+    # the ledger is keyed by date, so an older day is a different row rather than an older
+    # timestamp — this is what "per day" means now that the cap is enforced on a row
     with _db.cursor() as cur:
-        cur.execute("UPDATE llm_calls SET created_at = now() - interval '2 days' WHERE user_id = %s", (user_id,))
+        cur.execute(
+            "UPDATE llm_daily_budgets SET budget_date = current_date - 2 WHERE user_id = %s",
+            (user_id,),
+        )
     _db.commit()
 
     check_quota(user_id)                       # the cap is per day, not forever
@@ -109,3 +115,62 @@ def test_report_gives_percentiles_per_kind(_db, user_id):
     assert kind["p50_ms"] == 300
     assert kind["p95_ms"] == pytest.approx(880, abs=1)
     assert data["by_user"][0]["username"] == USER["username"]
+
+
+# ── the reservation ledger (AE-10) ───────────────────────────────────────────
+
+def test_a_reservation_is_charged_before_the_call_not_after(_db, user_id):
+    """Read-then-spend let two requests both see room and both spend. The ceiling is claimed
+    up front, so the second one sees the first one's reservation."""
+    reservation = usage.reserve(user_id, "job_analysis", "gpt-4o-mini")
+
+    with _db.cursor() as cur:
+        assert usage.spent_today(cur, user_id) == pytest.approx(usage.ceiling_cost("job_analysis"))
+        cur.execute("SELECT outcome FROM llm_calls WHERE id = %s", (reservation["id"],))
+        assert cur.fetchone()[0] == "reserved"
+
+
+def test_finalizing_releases_what_the_call_did_not_use(_db, user_id):
+    reservation = usage.reserve(user_id, "job_analysis", "gpt-4o-mini")
+    usage.finalize(reservation, 1_000_000, 0, 120)      # $0.15 of a much larger ceiling
+
+    with _db.cursor() as cur:
+        assert usage.spent_today(cur, user_id) == pytest.approx(0.15)
+        cur.execute("SELECT outcome, cost_usd FROM llm_calls WHERE id = %s", (reservation["id"],))
+        outcome, cost = cur.fetchone()
+    assert outcome == "ok" and float(cost) == pytest.approx(0.15)
+
+
+def test_two_concurrent_reservations_cannot_both_fit(_db, user_id, monkeypatch):
+    """The race the old SUM() could not stop."""
+    monkeypatch.setattr(usage, "DAILY_LIMIT_USD", usage.ceiling_cost("job_analysis") * 1.5)
+
+    usage.reserve(user_id, "job_analysis", "gpt-4o-mini")
+    with pytest.raises(QuotaExceeded):
+        usage.reserve(user_id, "job_analysis", "gpt-4o-mini")
+
+
+def test_a_failed_call_is_charged_rather_than_forgiven(_db, user_id):
+    """The prompt went out. Pretending a timeout was free is how a budget is overrun."""
+    reservation = usage.reserve(user_id, "tailoring_step", "gpt-4o-mini")
+    usage.finalize(reservation, 0, 0, 60_000, outcome="timeout")
+
+    with _db.cursor() as cur:
+        assert usage.spent_today(cur, user_id) == pytest.approx(reservation["reserved"])
+
+
+def test_a_reservation_whose_caller_died_is_reconciled(_db, user_id):
+    reservation = usage.reserve(user_id, "job_analysis", "gpt-4o-mini")
+    with _db.cursor() as cur:
+        cur.execute("UPDATE llm_calls SET created_at = now() - interval '1 hour' WHERE id = %s",
+                    (reservation["id"],))
+    _db.commit()
+
+    with get_cursor(commit=True) as cur:
+        settled = usage.release_stale_reservations(cur)
+
+    assert str(reservation["id"]) in settled
+    with _db.cursor() as cur:
+        cur.execute("SELECT outcome FROM llm_calls WHERE id = %s", (reservation["id"],))
+        assert cur.fetchone()[0] == "unknown"
+        assert usage.spent_today(cur, user_id) == pytest.approx(reservation["reserved"])

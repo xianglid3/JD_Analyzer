@@ -11,7 +11,7 @@ import pytest
 
 SCHEMA_SQL = (pathlib.Path(__file__).resolve().parent.parent / "schema.sql").read_text()
 DSN = os.environ["SUPABASE_URL"]
-TABLES = "llm_calls, evidence_links, gaps, proposed_edits, tool_calls, tailoring_runs, resume_bullets, resume_entries, resume_headers, idempotency_requests, job_analysis_drafts, refresh_tokens, jobs, resumes, users"
+TABLES = "skill_relations, skill_relation_lookups, llm_calls, tailoring_edit_details, tailoring_detail_requests, evidence_links, tailoring_edit_bullets, proposed_edits, tool_calls, tailoring_runs, resume_bullets, resume_entries, resume_headers, idempotency_requests, job_analysis_drafts, refresh_tokens, jobs, resumes, users"
 
 
 def _looks_like_test_db(dsn):
@@ -99,3 +99,27 @@ def insert_job(_db):
             )
             return str(cur.fetchone()[0])
     return _insert
+
+
+@pytest.fixture(autouse=True)
+def _run_tailoring_inline(monkeypatch):
+    """Drive tailoring runs in-process for the whole suite.
+
+    Production hands a run to a separate worker, so the route only writes the row. A test
+    that asserts on what a run produced has to be the worker too — this is the same
+    execution path, lease and fencing token included, in one process.
+    """
+    monkeypatch.setenv("TAILORING_INLINE", "1")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_skill_relations():
+    """The learned skill graph is cached process-wide, because a relation is a fact about the
+    world rather than about one user. That makes it leak between tests, so it is dropped
+    around each one — a stray edge learned in one test would silently change another's score.
+    """
+    from services import skill_relations
+
+    skill_relations.reset()
+    yield
+    skill_relations.reset()

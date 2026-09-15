@@ -4,6 +4,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import Dialog from '../components/Dialog'
 import { ButtonLabel, InlineAlert, PageLoader, Spinner } from '../components/Feedback'
 import NavBar from '../components/NavBar'
+import SelectMenu from '../components/SelectMenu'
 import { apiFetch } from '../lib/api'
 
 const sortOptions = [
@@ -87,8 +88,8 @@ export default function DashboardPage() {
   const updateStatus = useMutation({
     mutationFn: ({ id, status }) =>
       apiFetch(`/jobs/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) }),
-    onSuccess: () => setNotice({ tone: 'success', message: 'Application status updated.' }),
-    onError: (error) => setNotice({ tone: 'error', message: error.message }),
+    onSuccess: (_data, variables) => setNotice({ jobId: variables.id, tone: 'success', message: 'Status updated.' }),
+    onError: (error, variables) => setNotice({ jobId: variables.id, tone: 'error', message: error.message }),
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['jobs'] })
       queryClient.invalidateQueries({ queryKey: ['jobs-stats'] })
@@ -167,8 +168,6 @@ export default function DashboardPage() {
           </button>
         </header>
 
-        {notice && <InlineAlert tone={notice.tone} className="mb-4">{notice.message}</InlineAlert>}
-
         <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_240px]">
           <section aria-labelledby="jobs-table-title" className="min-w-0">
             <div className="mb-3 flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
@@ -194,23 +193,17 @@ export default function DashboardPage() {
                     className="control min-h-11 py-2.5 pl-9 pr-3 text-sm"
                   />
                 </label>
-                <label>
-                  <span className="sr-only">Sort applications</span>
-                  <select
-                    className="control min-h-11 px-3 py-2.5 text-sm"
-                    value={`${sortKey}:${sortDir}`}
-                    onChange={(event) => {
-                      const [nextKey, nextDirection] = event.target.value.split(':')
+                <SelectMenu
+                  ariaLabel="Sort applications"
+                  value={`${sortKey}:${sortDir}`}
+                  options={sortOptions.map(([label, key, direction]) => ({ label, value: `${key}:${direction}` }))}
+                  onChange={(nextValue) => {
+                      const [nextKey, nextDirection] = nextValue.split(':')
                       setSortKey(nextKey)
                       setSortDir(nextDirection)
                       setPage(1)
-                    }}
-                  >
-                    {sortOptions.map(([label, key, direction]) => (
-                      <option key={`${key}:${direction}`} value={`${key}:${direction}`}>{label}</option>
-                    ))}
-                  </select>
-                </label>
+                  }}
+                />
               </div>
             </div>
 
@@ -253,15 +246,27 @@ export default function DashboardPage() {
                         </div>
                       </div>
 
-                      <select
-                        value={job.status}
-                        onChange={(event) => updateStatus.mutate({ id: job.id, status: event.target.value })}
-                        disabled={updateStatus.isPending && updateStatus.variables?.id === job.id}
-                        aria-label={`Status for ${job.title || 'job'}`}
-                        className="control min-h-11 px-3 py-2 text-sm text-ink"
-                      >
-                        {statusOptions.map(([label, value]) => <option key={value} value={value}>{label}</option>)}
-                      </select>
+                      <div>
+                        <SelectMenu
+                          value={job.status}
+                          onChange={(nextStatus) => {
+                            setNotice(null)
+                            updateStatus.mutate({ id: job.id, status: nextStatus })
+                          }}
+                          disabled={updateStatus.isPending && updateStatus.variables?.id === job.id}
+                          ariaLabel={`Status for ${job.title || 'job'}`}
+                          options={statusOptions.map(([label, value]) => ({ label, value }))}
+                        />
+                        {notice?.jobId === job.id && (
+                          <p
+                            role={notice.tone === 'error' ? 'alert' : 'status'}
+                            className={`mt-1.5 text-xs ${notice.tone === 'error' ? 'text-red-700' : 'text-terminal-green'}`}
+                          >
+                            {notice.tone === 'success' && <span aria-hidden="true">✓ </span>}
+                            {notice.message}
+                          </p>
+                        )}
+                      </div>
                     </div>
                   </li>
                 ))}

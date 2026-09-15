@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { apiFetch, apiUpload } from '../../src/lib/api'
@@ -15,6 +15,22 @@ describe('ResumePage', () => {
     apiUpload.mockReset()
     apiFetch.mockImplementation((path, options) => {
       if (path === '/resume' && options?.method === 'PUT') return Promise.resolve({})
+      if (path === '/resume/evidence' && options?.method === 'PUT') {
+        return Promise.resolve({ header: {}, entries: [] })
+      }
+      if (path === '/resume/evidence') {
+        return Promise.resolve({
+          header: {},
+          entries: [{ id: 'old-entry', kind: 'project', bullets: [{ id: 'old-bullet', text: 'Old evidence' }] }],
+        })
+      }
+      if (path === '/resume/structure') {
+        return Promise.resolve({
+          header: { full_name: 'Shawn Li', links: [] },
+          entries: [{ kind: 'project', title: 'Tracker', bullets: ['Built the tracker'] }],
+          source_hash: 'new-source-hash',
+        })
+      }
       if (path === '/resume') return Promise.resolve({ skills: ['Python'], resume_text: 'Saved resume text', source_file: null })
       return Promise.resolve({ skills: [] })
     })
@@ -45,7 +61,30 @@ describe('ResumePage', () => {
     }))
   })
 
-  it('saves an analyzed file automatically as the multipart commit', async () => {
+  it('clears all extracted skills only after the staged change is saved', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(<ResumePage />, { route: '/resume' })
+
+    expect(await screen.findByText('Python')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Clear all' }))
+
+    expect(screen.queryByText('Python')).not.toBeInTheDocument()
+    expect(screen.getByText('No skills saved yet')).toBeInTheDocument()
+    expect(apiFetch).not.toHaveBeenCalledWith('/resume', {
+      method: 'PUT',
+      body: JSON.stringify({ skills: [] }),
+    })
+
+    await user.click(screen.getByRole('button', { name: 'Save skill changes' }))
+
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/resume', {
+      method: 'PUT',
+      body: JSON.stringify({ skills: [] }),
+    }))
+  })
+
+  it('saves an analyzed file, opens extraction, and waits for confirmation', async () => {
+    const user = userEvent.setup()
     renderWithProviders(<ResumePage />, { route: '/resume' })
 
     await screen.findByText('Python')
@@ -55,6 +94,23 @@ describe('ResumePage', () => {
     })
 
     expect(await screen.findByText(/Resume saved.*backend-resume.txt/i)).toBeInTheDocument()
+    const dialog = await screen.findByRole('dialog', { name: 'Review extracted experience' })
+    expect(await within(dialog).findByDisplayValue('Built the tracker')).toBeInTheDocument()
+    expect(apiFetch.mock.calls.filter(([path, options]) => (
+      path === '/resume/evidence' && options?.method === 'PUT'
+    ))).toHaveLength(0)
+
+    await user.clear(within(dialog).getByDisplayValue('Built the tracker'))
+    await user.type(within(dialog).getByLabelText('Entry 1 bullet 1'), 'Built and shipped the tracker')
+    await user.click(within(dialog).getByRole('button', { name: 'Confirm experience' }))
+
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Review extracted experience' })).not.toBeInTheDocument())
+    const evidenceSave = apiFetch.mock.calls.find(([path, options]) => (
+      path === '/resume/evidence' && options?.method === 'PUT'
+    ))
+    expect(JSON.parse(evidenceSave[1].body).entries[0].bullets).toEqual([
+      { id: null, text: 'Built and shipped the tracker' },
+    ])
     expect(screen.getByPlaceholderText('Paste your resume text here…')).toHaveValue('')
     expect(apiUpload).toHaveBeenCalledWith('/resume/upload', expect.any(FormData), expect.any(Function))
     await waitFor(() => {
@@ -71,10 +127,16 @@ describe('ResumePage', () => {
     })
   })
 
-  it('requires confirmation before removing only the saved source file', async () => {
+  it('requires confirmation before removing the resume and all extracted data', async () => {
     const user = userEvent.setup()
     apiFetch.mockImplementation((path, options) => {
-      if (path === '/resume/file' && options?.method === 'DELETE') return Promise.resolve({ ok: true })
+      if (path === '/resume' && options?.method === 'DELETE') return Promise.resolve({ ok: true })
+      if (path === '/resume/evidence') {
+        return Promise.resolve({
+          header: {},
+          entries: [{ id: 'entry-1', kind: 'project', bullets: [{ id: 'bullet-1', text: 'Built it' }] }],
+        })
+      }
       if (path === '/resume') {
         return Promise.resolve({
           skills: ['Python'],
@@ -87,18 +149,21 @@ describe('ResumePage', () => {
     renderWithProviders(<ResumePage />, { route: '/resume' })
 
     expect(await screen.findByText('backend-resume.pdf')).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Remove file' }))
+    expect(screen.getAllByText('✓ done')).toHaveLength(3)
+    await user.click(screen.getByRole('button', { name: 'Remove resume' }))
 
-    expect(screen.getByRole('dialog', { name: 'Remove stored resume file?' })).toBeInTheDocument()
-    expect(screen.getByText(/extracted skills and resume text will stay saved/i)).toBeInTheDocument()
-    expect(apiFetch).not.toHaveBeenCalledWith('/resume/file', { method: 'DELETE' })
+    const dialog = screen.getByRole('dialog', { name: 'Remove your resume?' })
+    expect(dialog).toBeInTheDocument()
+    expect(screen.getByText(/original file, extracted text, skills, experience evidence, and tailoring history/i)).toBeInTheDocument()
+    expect(apiFetch).not.toHaveBeenCalledWith('/resume', { method: 'DELETE' })
 
-    await user.click(screen.getByRole('button', { name: 'Remove stored file' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Remove resume' }))
 
-    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/resume/file', { method: 'DELETE' }))
-    expect(await screen.findByText(/stored resume file removed/i)).toBeInTheDocument()
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/resume', { method: 'DELETE' }))
+    expect(await screen.findByText(/resume and all extracted data removed/i)).toBeInTheDocument()
     expect(screen.queryByText('backend-resume.pdf')).not.toBeInTheDocument()
-    expect(screen.getByText('Python')).toBeInTheDocument()
+    expect(screen.queryByText('Python')).not.toBeInTheDocument()
+    expect(screen.queryAllByText('✓ done')).toHaveLength(0)
   })
 })
 
@@ -161,6 +226,10 @@ describe('ResumePage guidance', () => {
     expect(screen.getByText('Check your skills')).toBeInTheDocument()
     expect(screen.getByText('Pull out your experience')).toBeInTheDocument()
     expect(screen.getAllByText(/step \d/)).toHaveLength(3)
+    expect(screen.getAllByTestId(/readiness-connector/)).toHaveLength(2)
+    expect(screen.getAllByTestId(/readiness-connector/).every((line) => (
+      line.dataset.complete === 'false'
+    ))).toBe(true)
   })
 
   it('ticks off the steps that are done', async () => {
@@ -172,15 +241,19 @@ describe('ResumePage guidance', () => {
     renderWithProviders(<ResumePage />, { route: '/resume' })
 
     await waitFor(() => expect(screen.getAllByText('✓ done')).toHaveLength(3))
+    expect(screen.getAllByTestId(/readiness-connector/).every((line) => (
+      line.dataset.complete === 'true'
+    ))).toBe(true)
   })
 
-  it('explains why experience matters when there is none', async () => {
+  it('asks for a resume and nothing else when there is none', async () => {
     mockResume()
 
     renderWithProviders(<ResumePage />, { route: '/resume' })
 
-    expect(await screen.findByText(/Add a resume first.*extract experience here/i)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Extract experience' })).toBeDisabled()
+    expect(await screen.findByRole('heading', { name: 'No resume yet' })).toBeInTheDocument()
+    // reading is a system step, so there is no button here for the user to miss
+    expect(screen.queryByRole('button', { name: /Extract experience/ })).not.toBeInTheDocument()
   })
 
   it('keeps file upload primary and reveals pasted-text controls on request', async () => {
@@ -201,6 +274,7 @@ describe('ResumePage guidance', () => {
 
   it('counts the evidence once it exists', async () => {
     mockResume({
+      resume: { skills: ['Python'], resume_text: 'saved resume text' },
       evidence: {
         entries: [
           { id: 'e1', kind: 'project', bullets: [{ id: 'b1', text: 'a' }, { id: 'b2', text: 'b' }] },
@@ -211,12 +285,13 @@ describe('ResumePage guidance', () => {
 
     renderWithProviders(<ResumePage />, { route: '/resume' })
 
-    expect(await screen.findByText(/3 bullets across 2 entries/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Review experience' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Resume ready' })).toBeInTheDocument()
+    expect(screen.getByText(/2 entries · 3 bullets/)).toBeInTheDocument()
+    // reviewing is offered, not required
+    expect(screen.getByRole('button', { name: 'Review extracted info' })).toBeInTheDocument()
   })
 
-  it('extracts experience from the card without a second button click', async () => {
-    const user = userEvent.setup()
+  it('opens a confirmation draft for a resume saved before automatic extraction', async () => {
     apiFetch.mockImplementation((path, options) => {
       if (path === '/resume/evidence') return Promise.resolve({ header: {}, entries: [] })
       if (path === '/resume/structure' && options?.method === 'POST') {
@@ -233,13 +308,57 @@ describe('ResumePage guidance', () => {
 
     renderWithProviders(<ResumePage />, { route: '/resume' })
 
-    await user.click(await screen.findByRole('button', { name: 'Extract experience' }))
-
-    expect(await screen.findByDisplayValue('Built the tracker')).toBeInTheDocument()
-    expect(apiFetch).toHaveBeenCalledWith('/resume/structure', {
+    expect(await screen.findByRole('dialog', { name: 'Review extracted experience' })).toBeInTheDocument()
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/resume/structure', expect.objectContaining({
       method: 'POST',
       body: JSON.stringify({}),
-      timeoutMs: 70000,
+      timeoutMs: 50000,
+    })))
+
+    expect(await screen.findByDisplayValue('Built the tracker')).toBeInTheDocument()
+    expect(apiFetch.mock.calls.filter(([path, options]) => (
+      path === '/resume/evidence' && options?.method === 'PUT'
+    ))).toHaveLength(0)
+  })
+
+  it('takes upload straight through to the confirm step, with no button to find', async () => {
+    const user = userEvent.setup()
+    let evidence = { header: {}, entries: [] }
+    apiFetch.mockImplementation((path, options) => {
+      if (path === '/resume/evidence' && !options) return Promise.resolve(evidence)
+      if (path === '/resume/evidence' && options?.method === 'PUT') {
+        evidence = { header: {}, entries: [{ id: 'e1', kind: 'project', bullets: [{ id: 'b1', text: 'Built the tracker' }] }] }
+        return Promise.resolve(evidence)
+      }
+      if (path === '/resume/structure' && options?.method === 'POST') {
+        return Promise.resolve({
+          header: { full_name: 'Shawn Li', links: [] },
+          entries: [{ kind: 'project', title: 'Tracker', bullets: ['Built the tracker'] }],
+          skills: ['Python'],
+          source_hash: 'hash-1',
+        })
+      }
+      if (path === '/resume/parse') {
+        return Promise.resolve({ skills: ['Python'], resume_text: extractedText })
+      }
+      if (path === '/resume' && options?.method === 'PUT') return Promise.resolve({})
+      if (path === '/resume') return Promise.resolve({ skills: [], resume_text: null, source_file: null })
+      return Promise.resolve({})
     })
+
+    renderWithProviders(<ResumePage />, { route: '/resume' })
+
+    await user.click(await screen.findByRole('button', { name: 'Paste text' }))
+    await user.type(screen.getByPlaceholderText('Paste your resume text here…'), extractedText)
+    await user.click(screen.getByRole('button', { name: /Analyze and save/i }))
+
+    // the review opens by itself, already extracting — the old flow needed a second button
+    // nobody knew existed, and tailoring then claimed there was no resume at all
+    const dialog = await screen.findByRole('dialog', { name: /Review extracted experience/ })
+    expect(await within(dialog).findByDisplayValue('Built the tracker')).toBeInTheDocument()
+
+    // and nothing is evidence until it is confirmed
+    await user.click(within(dialog).getByRole('button', { name: /Confirm/i }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   })
 })

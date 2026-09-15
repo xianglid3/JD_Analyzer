@@ -4,7 +4,19 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import Dialog from '../components/Dialog'
 import { ButtonLabel, InlineAlert, PageLoader } from '../components/Feedback'
 import NavBar from '../components/NavBar'
+import SelectMenu from '../components/SelectMenu'
 import { apiFetch } from '../lib/api'
+
+// These two were called capability/communication until the rename. `match_detail` is stored
+// JSONB, so jobs scored before it still carry the old keys and only pick up the new ones the
+// next time the resume is saved. Reading both means nobody sees a blank score in between.
+function fitScore(detail) {
+  return detail?.fit_score ?? detail?.capability_score ?? null
+}
+
+function visibilityScore(detail) {
+  return detail?.visibility_score ?? detail?.communication_score ?? null
+}
 
 const statusOptions = [
   ['Saved', 'saved'],
@@ -29,6 +41,18 @@ function ChevronIcon() {
     <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" strokeWidth="1.5">
       <path d="m6 8 4 4 4-4" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
+  )
+}
+
+function TailorError({ error, className = '' }) {
+  if (!error) return null
+  return (
+    <InlineAlert className={className}>
+      {error.message}
+      {error.reason === 'needs_confirmation' && (
+        <Link className="ml-2 underline underline-offset-4" to="/resume">Review resume</Link>
+      )}
+    </InlineAlert>
   )
 }
 
@@ -150,15 +174,12 @@ export default function JobDetailPage() {
           </div>
           <div className="flex flex-wrap items-center gap-3 lg:hidden">
             <span className="text-sm font-medium text-ink">{job.match_score != null ? `${job.match_score}% match` : 'Not scored'}</span>
-            <button className="primary-button" disabled={tailorJob.isPending} onClick={() => tailorJob.mutate()}>
+            <button className="primary-button" disabled={tailorJob.isPending} onClick={() => { tailorJob.reset(); tailorJob.mutate() }}>
               <ButtonLabel pending={tailorJob.isPending} pendingText="Starting…">Tailor resume</ButtonLabel>
             </button>
+            <TailorError error={tailorJob.error} className="w-full" />
           </div>
         </header>
-
-        {notice && <InlineAlert tone={notice.tone} className="mb-4">{notice.message}</InlineAlert>}
-        {saveTracking.error && <InlineAlert className="mb-4">{saveTracking.error.message}</InlineAlert>}
-        {tailorJob.error && <InlineAlert className="mb-4">{tailorJob.error.message}</InlineAlert>}
 
         <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
           <div className="space-y-6">
@@ -184,16 +205,20 @@ export default function JobDetailPage() {
                       <p className="eyebrow">Resume evidence</p>
                       <h2 className="mt-2 text-base font-medium text-ink">Requirement breakdown</h2>
                     </div>
-                    {job.match_detail.capability_score != null && (
+                    {fitScore(job.match_detail) != null && (
                       <p className="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">
-                        capability {job.match_detail.capability_score}% · keywords {job.match_detail.keyword_score}%
+                        fit {fitScore(job.match_detail)}%
+                        {visibilityScore(job.match_detail) != null && (
+                          <> · visible {visibilityScore(job.match_detail)}%</>
+                        )}
                       </p>
                     )}
                   </div>
-                  {job.match_detail.capability_score != null && (
+                  {fitScore(job.match_detail) != null && (
                     <p className="mt-2 max-w-2xl text-xs leading-5 text-muted">
-                      Capability reflects what your experience demonstrates. Keyword coverage reflects what
-                      an automated screen can literally find in your resume.
+                      Two separate things. Fit is how much of this job you can actually do — only new
+                      experience moves it. Visibility is how much of that your resume states plainly —
+                      that is the part tailoring can change.
                     </p>
                   )}
                 </div>
@@ -275,23 +300,50 @@ export default function JobDetailPage() {
                   <div className="match-fill h-full rounded-full bg-primary" style={{ width: `${job.match_score || 0}%` }} />
                 </div>
 
-                {job.match_detail?.capability_score != null && (
+                {fitScore(job.match_detail) != null && (
                   <div className="mt-4 grid grid-cols-2 gap-2">
                     <div className="rounded-md border border-border bg-surface p-3">
-                      <p className="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Capability</p>
-                      <p className="mt-1 text-sm font-medium text-ink">{job.match_detail.capability_score}%</p>
+                      <p className="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Fit</p>
+                      <p className="mt-1 text-sm font-medium text-ink">{fitScore(job.match_detail)}%</p>
                     </div>
                     <div className="rounded-md border border-border bg-surface p-3">
-                      <p className="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Keywords</p>
-                      <p className="mt-1 text-sm font-medium text-ink">{job.match_detail.keyword_score}%</p>
+                      <p className="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Visible</p>
+                      <p className="mt-1 text-sm font-medium text-ink">
+                        {visibilityScore(job.match_detail) != null
+                          ? `${visibilityScore(job.match_detail)}%`
+                          : '—'}
+                      </p>
                     </div>
                   </div>
                 )}
 
-                <button className="primary-button mt-5 hidden w-full lg:inline-flex" disabled={tailorJob.isPending} onClick={() => tailorJob.mutate()}>
+                {job.match_detail?.eligibility?.length > 0 && (
+                  <div className="mt-4 rounded-md border border-border bg-surface p-3">
+                    <p className="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Eligibility</p>
+                    <ul className="mt-1 space-y-1 text-xs leading-5 text-ink">
+                      {job.match_detail.eligibility.map((condition) => (
+                        <li key={condition}>{condition}</li>
+                      ))}
+                    </ul>
+                    <p className="mt-2 text-xs leading-5 text-muted">
+                      Not scored and not tailored — these are gates you either meet or you don't.
+                    </p>
+                  </div>
+                )}
+
+                {job.match_detail?.hidden?.length > 0 && (
+                  <p className="mt-3 text-xs leading-5 text-muted">
+                    Your experience covers{' '}
+                    <span className="text-ink">{job.match_detail.hidden.join(', ')}</span>, but the resume
+                    never says so outright.
+                  </p>
+                )}
+
+                <button className="primary-button mt-5 hidden w-full lg:inline-flex" disabled={tailorJob.isPending} onClick={() => { tailorJob.reset(); tailorJob.mutate() }}>
                   <ButtonLabel pending={tailorJob.isPending} pendingText="Starting…">Tailor resume</ButtonLabel>
                 </button>
                 <p className="mt-2 hidden text-xs leading-5 text-muted lg:block">Uses your saved resume evidence to suggest edits. Review every suggestion before accepting it.</p>
+                <TailorError error={tailorJob.error} className="mt-3 hidden lg:block" />
               </div>
 
               {runsQuery.data?.runs?.length > 0 && (
@@ -329,16 +381,20 @@ export default function JobDetailPage() {
               <p className="eyebrow">Application</p>
               <h2 className="mt-2 text-base font-medium text-ink">Tracking</h2>
               <div className="mt-4 space-y-4">
-              <label className="block text-sm text-ink">
-                Status
-                <select value={status} onChange={(event) => { setStatus(event.target.value); setNotice(null) }} className="control mt-2 px-3 py-2.5 text-sm">
-                  {statusOptions.map(([label, value]) => <option key={value} value={value}>{label}</option>)}
-                </select>
-              </label>
+              <div className="text-sm text-ink">
+                <p>Status</p>
+                <SelectMenu
+                  className="mt-2"
+                  ariaLabel="Status"
+                  value={status}
+                  options={statusOptions.map(([label, optionValue]) => ({ label, value: optionValue }))}
+                  onChange={(nextStatus) => { setStatus(nextStatus); setNotice(null); if (saveTracking.isError) saveTracking.reset() }}
+                />
+              </div>
 
               <label className="block text-sm text-ink">
                 Deadline
-                <input type="date" value={deadline} onChange={(event) => { setDeadline(event.target.value); setNotice(null) }} className="control mt-2 px-3 py-2.5 text-sm" />
+                <input type="date" value={deadline} onChange={(event) => { setDeadline(event.target.value); setNotice(null); if (saveTracking.isError) saveTracking.reset() }} className="control mt-2 px-3 py-2.5 text-sm" />
               </label>
 
               <label className="block text-sm text-ink">
@@ -347,7 +403,7 @@ export default function JobDetailPage() {
                   type="url"
                   maxLength={2048}
                   value={sourceUrl}
-                  onChange={(event) => { setSourceUrl(event.target.value); setNotice(null) }}
+                  onChange={(event) => { setSourceUrl(event.target.value); setNotice(null); if (saveTracking.isError) saveTracking.reset() }}
                   placeholder="https://company.com/jobs/role"
                   className="control mt-2 px-3 py-2.5 text-sm"
                 />
@@ -358,7 +414,7 @@ export default function JobDetailPage() {
                 <textarea
                   value={notes}
                   maxLength={5100}
-                  onChange={(event) => { setNotes(event.target.value); setNotice(null) }}
+                  onChange={(event) => { setNotes(event.target.value); setNotice(null); if (saveTracking.isError) saveTracking.reset() }}
                   placeholder="Interview dates, recruiter contact, next steps…"
                   className="control mt-2 h-36 resize-y p-3 text-sm leading-5"
                 />
@@ -372,7 +428,8 @@ export default function JobDetailPage() {
               >
                 <ButtonLabel pending={saveTracking.isPending} pendingText="Saving…">Save changes</ButtonLabel>
               </button>
-              {!isDirty && !saveTracking.isPending && <p className="text-center text-xs text-muted">All changes saved</p>}
+              {saveTracking.error && <InlineAlert>{saveTracking.error.message}</InlineAlert>}
+              {notice && <InlineAlert tone={notice.tone}>{notice.message}</InlineAlert>}
 
               <div className="border-t border-border pt-4 text-center">
                 <button className="text-sm text-muted underline-offset-4 hover:text-ink hover:underline" onClick={() => { deleteJob.reset(); setShowDeleteDialog(true) }}>Delete job</button>

@@ -9,10 +9,10 @@ from middleware import require_auth
 from extensions import authenticated_user_key, limiter
 from services.jd_preprocess import preprocess_text
 from services.openai_services import analyze_job_description
-from services.skill_evidence import detail_for, match_for_job
+from services.skill_evidence import as_condition, detail_for, match_for_job, warm_relations
 from routes.analysis_errors import analysis_error_response
 from routes.request_validation import get_json_object, normalize_optional_http_url
-from services.usage import QuotaExceeded, check_quota, recorder
+from services.usage import QuotaExceeded, budget, check_quota
 
 
 jobs_bp = Blueprint("jobs", __name__, url_prefix = "/api/jobs")
@@ -24,9 +24,17 @@ IDEMPOTENCY_STALE_AFTER = "10 minutes"
 IDEMPOTENCY_COMPLETED_TTL = "7 days"
 MAX_NOTES_CHARS = 5000
 MAX_SKILL_CHARS = 100
+# An eligibility condition is the posting's own sentence, quoted — "must commit to an
+# onboarding date by the end of the year". It is never matched against evidence, so the short
+# canonical-name rule that keeps skills usable does not apply to it.
+MAX_ELIGIBILITY_CHARS = 300
 MAX_REVIEW_TEXT_CHARS = 300
 MAX_REQUIREMENTS = 30
 VALID_IMPORTANCE = {"required", "preferred", "nice_to_have"}
+VALID_REQUIREMENT_TYPES = {"skill", "eligibility"}
+VALID_OPERATORS = {"any_of", "all_of"}
+MAX_ALTERNATIVES = 12
+MAX_SOURCE_TEXT_CHARS = 300
 
 
 def release_idempotency_key(user_id, idempotency_key, request_hash):
@@ -87,24 +95,84 @@ def normalize_requirements(value):
     seen = set()
     for item in value:
         if isinstance(item, str):
-            skill, importance = item, "required"
-        elif isinstance(item, dict):
-            skill, importance = item.get("skill"), item.get("importance", "required")
-        else:
+            item = {"skill": item}
+        elif not isinstance(item, dict):
             return None, "each requirement must be an object"
 
-        if not isinstance(skill, str) or not skill.strip():
-            return None, "each requirement needs a skill"
-        skill = skill.strip()
-        if len(skill) > MAX_SKILL_CHARS:
-            return None, f"each skill must be {MAX_SKILL_CHARS} characters or fewer"
+        importance = item.get("importance", "required")
+        # absent on everything written before eligibility existed, and those are all skills
+        kind = item.get("type", "skill")
         if importance not in VALID_IMPORTANCE:
             return None, "importance must be required, preferred, or nice_to_have"
+        if kind not in VALID_REQUIREMENT_TYPES:
+            return None, "type must be skill or eligibility"
 
-        key = skill.casefold()
+        condition = item.get("condition")
+        if condition is None:
+            # a plain skill: one requirement with one alternative
+            skill = item.get("skill")
+            if not isinstance(skill, str) or not skill.strip():
+                return None, "each requirement needs a skill"
+            skill = skill.strip()
+            limit = MAX_ELIGIBILITY_CHARS if kind == "eligibility" else MAX_SKILL_CHARS
+            if len(skill) > limit:
+                return None, (
+                    f"each eligibility condition must be {limit} characters or fewer"
+                    if kind == "eligibility"
+                    else f"each skill must be {limit} characters or fewer"
+                )
+
+            key = skill.casefold()
+            if key not in seen:
+                seen.add(key)
+                cleaned.append({"skill": skill, "importance": importance, "type": kind})
+            continue
+
+        # "one of Java, Python, C++" is ONE requirement. Flattening it made the denominator
+        # wrong before matching started, so the shape has to survive validation intact.
+        if not isinstance(condition, dict):
+            return None, "condition must be an object"
+        operator = condition.get("operator", "any_of")
+        if operator not in VALID_OPERATORS:
+            return None, "operator must be any_of or all_of"
+
+        items = condition.get("items")
+        if not isinstance(items, list) or not items:
+            return None, "condition needs at least one item"
+        if len(items) > MAX_ALTERNATIVES:
+            return None, f"a condition may list {MAX_ALTERNATIVES} items or fewer"
+
+        alternatives = []
+        for alternative in items:
+            if not isinstance(alternative, str) or not alternative.strip():
+                return None, "each condition item must be non-empty text"
+            alternative = alternative.strip()
+            if len(alternative) > MAX_SKILL_CHARS:
+                return None, f"each skill must be {MAX_SKILL_CHARS} characters or fewer"
+            if alternative.casefold() not in {a.casefold() for a in alternatives}:
+                alternatives.append(alternative)
+
+        minimum = condition.get("minimum", 1)
+        if not isinstance(minimum, int) or isinstance(minimum, bool) or minimum < 1:
+            return None, "minimum must be a positive integer"
+        if minimum > len(alternatives):
+            return None, "minimum cannot exceed the number of items"
+
+        source_text = item.get("source_text")
+        if source_text is not None:
+            if not isinstance(source_text, str):
+                return None, "source_text must be text or null"
+            source_text = source_text.strip()[:MAX_SOURCE_TEXT_CHARS] or None
+
+        key = (operator, minimum, tuple(sorted(a.casefold() for a in alternatives)))
         if key not in seen:
             seen.add(key)
-            cleaned.append({"skill": skill, "importance": importance})
+            cleaned.append({
+                "importance": importance,
+                "type": kind,
+                "source_text": source_text,
+                "condition": {"operator": operator, "minimum": minimum, "items": alternatives},
+            })
 
     return cleaned, None
 
@@ -248,7 +316,13 @@ def create_job_draft():
 
     # AI call stays OUTSIDE the db connection — don't hold a connection open for 3-8s
     try:
-        job = analyze_job_description(cleaned_description, on_usage=recorder(g.user_id, "job_analysis"))
+        job = analyze_job_description(cleaned_description,
+                                      budget=budget(g.user_id, "job_analysis"))
+    except QuotaExceeded as exc:
+        # the reservation refused: the check above is advisory, and another request can take
+        # the last of the day's budget between the two
+        release_idempotency_key(g.user_id, idempotency_key, request_hash)
+        return jsonify({"error": f"daily AI budget reached ({exc})"}), 429
     except Exception as exc:
         release_idempotency_key(g.user_id, idempotency_key, request_hash)
         return analysis_error_response(exc, logger)
@@ -360,6 +434,11 @@ def confirm_job_draft(draft_id):
     if error:
         return error
 
+    # Before the transaction, never inside it: this can make a 30-second model call, and the
+    # confirm below holds a FOR UPDATE lock on the draft row for its whole duration.
+    if isinstance(data.get("requirements"), list):
+        warm_relations(data["requirements"], user_id=g.user_id)
+
     with get_cursor(commit=True) as cur:
         cur.execute(
             """
@@ -410,8 +489,13 @@ def confirm_job_draft(draft_id):
             if requirement_error:
                 return jsonify({"error": requirement_error}), 400
             # skills is the flat view of the same list; regenerating it here stops the two
-            # from disagreeing after an edit
-            skills = [item["skill"] for item in requirements]
+            # from disagreeing after an edit. Eligibility is deliberately left out: it is not
+            # a skill, and the flat list is what older scoring paths fall back to.
+            skills = [
+                name
+                for item in requirements if item["type"] == "skill"
+                for name in as_condition(item)["items"]
+            ]
 
         status = data.get("status", "saved")
         if not isinstance(status, str) or status not in VALID_STATUSES:

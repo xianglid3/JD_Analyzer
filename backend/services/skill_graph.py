@@ -5,7 +5,7 @@ only ever points from the specific to the general: Tailwind is evidence of CSS, 
 reverse. Hand-written so every inferred match can be explained to the user.
 """
 
-from services.match import ALIASES
+from services.match import ALIASES, flatten_punctuation
 
 # specific → the general skills it demonstrates
 IMPLIES = {
@@ -133,57 +133,155 @@ IMPLIES = {
     "spring": ["java", "backend"],
 }
 
-# Targets that describe a discipline rather than a thing you used. Fine for scoring —
-# Kubernetes work is evidence of devops — but too strong to assert in a rewrite, where
-# "DevOps experience" reads as a claim about the role you held.
-DISCIPLINE_CLAIMS = {
-    "devops", "ai", "machine learning", "deep learning", "programming",
-    "cloud", "fullstack", "embedded", "computer vision",
-    "natural language processing", "database", "testing",
+# A scoring implication is not automatically permission to write a claim. Matching can be
+# generous and transitive; authorship must be narrow and explicit. These one-hop relations
+# are the small set of phrases that can be surfaced without changing the underlying fact.
+# Deliberately absent: TypeScript/React -> JavaScript and C++/Java -> OOP.
+REWRITE_IMPLIES = {
+    "tailwind": ["css"],
+    "bootstrap": ["css"],
+    "scss": ["css"],
+    "sass": ["css"],
+    "postgresql": ["sql"],
+    "mysql": ["sql"],
+    "sqlite": ["sql"],
+    "sql server": ["sql"],
+    "pytest": ["unit testing"],
+    "vitest": ["unit testing"],
+    "jest": ["unit testing"],
+    "google test": ["unit testing"],
+    "junit": ["unit testing"],
+    "rest": ["api"],
+    "flask": ["backend"],
+    "fastapi": ["backend"],
+    "django": ["backend"],
+    "express": ["backend"],
+    "spring": ["backend"],
+}
+
+# Flattened views of the tables above. The literals keep their readable spelling; every
+# lookup goes through these, so "styled-components" and "styled components" are one key.
+_IMPLIES_FLAT = {
+    flatten_punctuation(specific): [flatten_punctuation(g) for g in generals]
+    for specific, generals in IMPLIES.items()
+}
+_REWRITE_FLAT = {
+    flatten_punctuation(specific): [flatten_punctuation(g) for g in generals]
+    for specific, generals in REWRITE_IMPLIES.items()
 }
 
 MAX_DEPTH = 3
 
+# The tables above are the seed. Everything the model has been asked about since lives in
+# `skill_relations` and is merged in here, so the graph grows past what someone typed by
+# hand without any call site needing to know. Import is deferred: skill_relations imports
+# match.py, and a module-level import both ways would be a cycle.
 
-def implied_by(skill, for_rewrite=False):
-    """Everything this skill is evidence of. Transitive (supabase → postgresql → sql),
-    depth-capped so a bad edge can't loop forever.
 
-    for_rewrite drops the discipline-level claims: scoring may count Kubernetes as devops
-    experience, a rewritten bullet may not say so.
+def _learned(direction, skill):
+    from services import skill_relations
+
+    if direction == "implies":
+        return skill_relations.cached_implies(skill)
+    if direction == "rewrite":
+        return skill_relations.cached_rewrite_implies(skill)
+    return skill_relations.cached_evidenced_by(skill)
+
+
+def _parents(skill):
+    """Seed edges first, then anything learned. Order is stable so scoring is reproducible."""
+    parents = list(_IMPLIES_FLAT.get(flatten_punctuation(skill), ()))
+    for general in _learned("implies", skill):
+        if general not in parents:
+            parents.append(general)
+    return parents
+
+
+def implied_by(skill):
+    """Everything this skill is evidence of for matching. Transitive
+    (supabase → postgresql → sql), depth-capped so a bad edge can't loop forever.
+
+    Normalizes its own input. Every caller already did, but a function that silently returns
+    nothing for "sklearn" while working for "scikit learn" is a trap, and the cost is one
+    dictionary lookup.
     """
+    from services.match import normalize_skill
+
+    skill = normalize_skill(skill)
     seen = []
     frontier = [skill]
     for _ in range(MAX_DEPTH):
         nxt = []
         for item in frontier:
-            for parent in IMPLIES.get(item, ()):
+            for parent in _parents(item):
                 if parent not in seen and parent != skill:
                     seen.append(parent)
                     nxt.append(parent)
         if not nxt:
             break
         frontier = nxt
-    if for_rewrite:
-        return [s for s in seen if s not in DISCIPLINE_CLAIMS]
     return seen
+
+
+def rewrite_implied_by(skill, approved=frozenset()):
+    """Claims a rewrite may surface from an explicitly named technology.
+
+    Unlike ``implied_by``, this never traverses. A two-hop path such as
+    Google Test -> C++ -> OOP is useful for search/scoring and unsafe for authorship.
+
+    Only the hand-written table is authority here. A model-learned edge has to arrive in
+    `approved` — the set of (specific, general) pairs this particular user has agreed to —
+    because one wrong model answer would otherwise become every user's permission to write a
+    claim they never made (AE-03). Scoring keeps using learned edges freely; that is a number,
+    not a sentence in somebody's resume.
+    """
+    from services.match import normalize_skill
+
+    canonical = normalize_skill(skill)
+    allowed = list(_REWRITE_FLAT.get(canonical, ()))
+    for general in _learned("rewrite", canonical):
+        if general not in allowed and (canonical, general) in approved:
+            allowed.append(general)
+    return allowed
+
+
+def proposed_rewrite_edges(skill):
+    """Learned edges the model thinks are writeable but nobody has approved yet."""
+    from services.match import normalize_skill
+
+    canonical = normalize_skill(skill)
+    seeded = set(_REWRITE_FLAT.get(canonical, ()))
+    return [general for general in _learned("rewrite", canonical) if general not in seeded]
+
+
+def seed_vocabulary():
+    """Only the hand-written names. Used to decide what still needs asking about."""
+    known = set(_IMPLIES_FLAT)
+    for parents in _IMPLIES_FLAT.values():
+        known.update(parents)
+    known.update(flatten_punctuation(name) for name in ALIASES)
+    known.update(flatten_punctuation(name) for name in ALIASES.values())
+    return known
 
 
 def vocabulary():
     """Every skill name the graph and alias table know, longest first so multi-word terms
     match before their pieces ("machine learning" before "learning")."""
-    known = set(IMPLIES)
-    for parents in IMPLIES.values():
-        known.update(parents)
-    known.update(ALIASES)
-    known.update(ALIASES.values())
+    from services import skill_relations
+
+    known = seed_vocabulary()
+    known.update(skill_relations.every_known_name())
     return sorted(known, key=len, reverse=True)
 
 
 def evidence_for(skill):
     """Which specific skills would count as evidence of this one. A search for CSS uses this
     to reach a Tailwind bullet."""
-    return sorted(
-        specific for specific, parents in IMPLIES.items()
+    skill = flatten_punctuation(skill)
+    found = {
+        specific for specific, parents in _IMPLIES_FLAT.items()
         if skill in parents or skill in implied_by(specific)
-    )
+    }
+    found.update(_learned("evidenced_by", skill))
+    found.discard(skill)
+    return sorted(found)

@@ -1,19 +1,25 @@
-from flask import Blueprint, Response, jsonify, g
+from flask import Blueprint, Response, jsonify, g, request
 
 import logging
+import os
 import re
 import threading
 
 from db import get_cursor
+from services.resume_evidence import stale_edit_ids
 from extensions import authenticated_user_key, limiter
 from middleware import require_auth
 from routes.request_validation import get_json_object
 from services.resume_render import build_document, render_html, render_latex
 from services.tailoring_agent import (
     DEFAULT_MAX_STEPS,
+    claim_run,
     execute_run,
+    load_job_context,
     load_run,
     reap_abandoned_run,
+    resolve_detail_request,
+    resume_run,
     start_run,
 )
 
@@ -21,7 +27,25 @@ from services.tailoring_agent import (
 tailoring_bp = Blueprint("tailoring", __name__, url_prefix="/api")
 logger = logging.getLogger(__name__)
 
+
+def inline_worker():
+    """Whether this process drives runs itself.
+
+    Production runs `flask --app app tailoring-worker` as its own process, so a deploy cannot
+    take a run down with the web server. That would mean a second terminal for every local
+    session, so TAILORING_INLINE=1 drives the run in a thread here instead — same code, same
+    lease, same fencing token; only the process differs. Read per call, not at import, so a
+    test can turn it on.
+    """
+    return os.environ.get("TAILORING_INLINE", "").lower() in ("1", "true", "yes")
+
+
 VALID_EDIT_DECISIONS = {"accepted", "rejected"}
+MAX_DETAIL_ANSWER_CHARS = 500
+
+
+class StaleEvidence(Exception):
+    """Raised inside the accept transaction so the UPDATE rolls back with it."""
 
 
 @tailoring_bp.route("/jobs/<job_id>/tailor", methods=["POST"])
@@ -34,35 +58,96 @@ def start_tailoring_run(job_id):
 
     if started is None:
         return jsonify({"error": "job not found"}), 404
+    # Extraction is automatic after upload, but the user must confirm the draft before it is
+    # trusted as tailoring evidence. The reason code lets the client link to that review.
     if isinstance(started, dict) and started.get("error") == "no_evidence":
         return jsonify({
-            "error": "no resume evidence yet — build your structured resume first",
+            "error": "review and confirm your resume experience before tailoring",
+            "reason": "needs_confirmation",
         }), 409
     if isinstance(started, dict) and started.get("error") == "stale_evidence":
         return jsonify({
-            "error": "your resume changed after this experience was extracted — re-extract it first",
+            "error": "your resume changed — re-read and confirm its experience before tailoring",
+            "reason": "needs_confirmation",
         }), 409
     if isinstance(started, dict) and started.get("error") == "quota_exceeded":
         return jsonify({"error": f"daily AI budget reached ({started['detail']})"}), 429
 
-    user_id, run_id = g.user_id, started
-    worker = threading.Thread(
+    if isinstance(started, dict) and started.get("error") == "start_conflict":
+        return jsonify({"error": "a tailoring run for this job is already starting"}), 409
+
+    run_id = started["run_id"]
+    if started["created"]:
+        _hand_to_worker(g.user_id, job_id, run_id)
+    # A repeat of a request that is already running is that request, not a new one. Returning
+    # the run that exists is what a double-clicked button and a retried POST both want.
+    return jsonify({"id": str(run_id), "status": "running"}), 202 if started["created"] else 200
+
+
+def _hand_to_worker(user_id, job_id, run_id, resume_from=0):
+    """Make the run available to a worker.
+
+    In production that is all this does: the row is `running` with no lease, so the worker
+    process claims it on its next poll. Inline mode claims it here and drives it in a thread.
+    """
+    if not inline_worker():
+        return
+    with get_cursor(commit=True) as cur:
+        claimed = claim_run(cur)
+    if claimed is None or str(claimed["run_id"]) != str(run_id):
+        # somebody else took it, or it is not claimable — either way it is not ours to drive
+        return
+    threading.Thread(
         target=_drive_run,
         args=(user_id, job_id, run_id),
+        kwargs={"resume_from": resume_from, "token": claimed["token"]},
         name=f"tailoring-{run_id}",
         daemon=True,
-    )
-    worker.start()
-
-    return jsonify({"id": str(run_id), "status": "running"}), 202
+    ).start()
 
 
-def _drive_run(user_id, job_id, run_id):
-    """The worker. Touches no request state — the ids were read before the thread started."""
+def _drive_run(user_id, job_id, run_id, resume_from=0, token=None):
+    """The inline worker. Touches no request state — the ids were read before the thread
+    started."""
     try:
-        execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS)
+        execute_run(get_cursor, user_id, job_id, run_id,
+                    max_steps=DEFAULT_MAX_STEPS, resume_from=resume_from, token=token)
     except Exception:
         logger.exception("tailoring worker crashed run_id=%s", run_id)
+
+
+RESUME_REFUSALS = {
+    "still_running": ("a worker is still driving this run", 409),
+    "awaiting_input": ("answer or skip the pending question before resuming", 409),
+    "already_finished": ("this run already finished", 409),
+    "not_resumable": ("this run did not stop in a resumable state", 409),
+}
+
+
+@tailoring_bp.route("/tailoring/runs/<run_id>/resume", methods=["POST"])
+@require_auth
+@limiter.limit("6 per minute; 40 per day", key_func=authenticated_user_key)
+def resume_tailoring_run(run_id):
+    """Pick a stranded run back up from the step it reached.
+
+    A deploy kills the worker thread mid-run. Every step is already on disk, so the model
+    calls that were paid for are not repeated — the conversation is rebuilt from `tool_calls`
+    and the loop carries on from `steps_used + 1`.
+    """
+    outcome = resume_run(get_cursor, g.user_id, run_id)
+
+    if outcome is None:
+        return jsonify({"error": "run not found"}), 404
+    if isinstance(outcome, dict):
+        if outcome["error"] == "quota_exceeded":
+            return jsonify({"error": f"daily AI budget reached ({outcome['detail']})"}), 429
+        message, code = RESUME_REFUSALS[outcome["error"]]
+        return jsonify({"error": message}), code
+
+    job_id, steps_used = outcome
+    _hand_to_worker(g.user_id, job_id, run_id, resume_from=steps_used)
+
+    return jsonify({"id": str(run_id), "status": "running", "resumed_from": steps_used}), 202
 
 
 @tailoring_bp.route("/tailoring/runs/<run_id>", methods=["GET"])
@@ -84,10 +169,9 @@ def list_job_tailoring_runs(job_id):
         cur.execute(
             """
             SELECT r.id, r.status, r.steps_used, r.started_at, r.completed_at,
-                   count(DISTINCT e.id), count(DISTINCT gp.id)
+                   count(DISTINCT e.id), r.gap_count
             FROM tailoring_runs AS r
             LEFT JOIN proposed_edits AS e ON e.run_id = r.id
-            LEFT JOIN gaps AS gp ON gp.run_id = r.id
             WHERE r.job_id = %s AND r.user_id = %s
             GROUP BY r.id
             ORDER BY r.started_at DESC
@@ -114,6 +198,16 @@ def list_job_tailoring_runs(job_id):
 @tailoring_bp.route("/tailoring/edits/<edit_id>", methods=["PATCH"])
 @require_auth
 def decide_proposed_edit(edit_id):
+    try:
+        return _decide_proposed_edit(edit_id)
+    except StaleEvidence:
+        return jsonify({
+            "error": "the evidence behind this edit changed after it was proposed — "
+                     "run tailoring again against your current resume",
+        }), 409
+
+
+def _decide_proposed_edit(edit_id):
     """Accept or reject a proposal. Accepting records the decision without touching the
     bullet — the wording is for this job, the bullet is shared by all of them."""
     data, error = get_json_object()
@@ -133,17 +227,38 @@ def decide_proposed_edit(edit_id):
         if target is None:
             return jsonify({"error": "proposed edit not found"}), 404
 
+        # Serialize every decision in this run. The partial unique index only covers each
+        # edit's primary bullet; a merge also consumes secondary bullets.
+        cur.execute("SELECT id FROM tailoring_runs WHERE id = %s FOR UPDATE", (target[0],))
+
         # one accepted rewrite per bullet: two would leave the renderer choosing silently,
         # so accepting this one rejects the other in the same transaction
         if status == "accepted" and target[1] is not None:
             cur.execute(
                 """
+                WITH target_bullets AS (
+                    SELECT bullet_id FROM proposed_edits WHERE id = %s
+                    UNION
+                    SELECT bullet_id FROM tailoring_edit_bullets WHERE edit_id = %s
+                ), conflicting_edits AS (
+                    SELECT candidate.id
+                    FROM proposed_edits AS candidate
+                    WHERE candidate.run_id = %s AND candidate.user_id = %s
+                      AND candidate.id <> %s AND candidate.status = 'accepted'
+                      AND (
+                          candidate.bullet_id IN (SELECT bullet_id FROM target_bullets)
+                          OR EXISTS (
+                              SELECT 1 FROM tailoring_edit_bullets AS source
+                              WHERE source.edit_id = candidate.id
+                                AND source.bullet_id IN (SELECT bullet_id FROM target_bullets)
+                          )
+                      )
+                )
                 UPDATE proposed_edits
                 SET status = 'rejected'
-                WHERE run_id = %s AND bullet_id = %s AND user_id = %s
-                  AND id <> %s AND status = 'accepted'
+                WHERE id IN (SELECT id FROM conflicting_edits)
                 """,
-                (target[0], target[1], g.user_id, edit_id),
+                (edit_id, edit_id, target[0], g.user_id, edit_id),
             )
 
         cur.execute(
@@ -157,9 +272,57 @@ def decide_proposed_edit(edit_id):
         )
         row = cur.fetchone()
 
+        # Accepting is the moment a proposal becomes the user's own claim, so the evidence
+        # behind it has to still say what it said when the model read it. Bullet ids survive
+        # a reword on purpose, so nothing else would notice (AE-01).
+        if status == "accepted" and row is not None:
+            if stale_edit_ids(cur, g.user_id, edit_id=edit_id):
+                raise StaleEvidence()
+
     if row is None:
         return jsonify({"error": "proposed edit not found"}), 404
     return jsonify({"id": str(row[0]), "status": row[1]}), 200
+
+
+@tailoring_bp.route("/tailoring/questions/<question_id>", methods=["PATCH"])
+@require_auth
+@limiter.limit("12 per minute; 100 per day", key_func=authenticated_user_key)
+def resolve_tailoring_question(question_id):
+    """Record a fact the user supplied, or let them skip it, then continue the same run."""
+    data, error = get_json_object()
+    if error:
+        return error
+
+    action = data.get("action", "answer")
+    if action not in {"answer", "dismiss"}:
+        return jsonify({"error": "action must be answer or dismiss"}), 400
+    answer = data.get("answer")
+    if action == "answer":
+        if not isinstance(answer, str) or not answer.strip():
+            return jsonify({"error": "answer is required"}), 400
+        answer = answer.strip()
+        if len(answer) > MAX_DETAIL_ANSWER_CHARS:
+            return jsonify({"error": f"answer must be {MAX_DETAIL_ANSWER_CHARS} characters or fewer"}), 400
+        if any(ord(character) < 32 and character not in "\n\t" for character in answer):
+            return jsonify({"error": "answer contains invalid control characters"}), 400
+
+    outcome = resolve_detail_request(
+        get_cursor, g.user_id, question_id,
+        answer=answer if action == "answer" else None,
+        dismiss=action == "dismiss",
+    )
+    if outcome is None:
+        return jsonify({"error": "question not found"}), 404
+    if outcome.get("error") == "already_resolved":
+        return jsonify({"error": "question was already answered or skipped"}), 409
+    if outcome.get("error") == "run_not_waiting":
+        return jsonify({"error": "tailoring run is not waiting for an answer"}), 409
+
+    if outcome.get("resume"):
+        _hand_to_worker(g.user_id, outcome["job_id"], outcome["run_id"],
+                        resume_from=outcome["steps_used"])
+        return jsonify({"run_id": outcome["run_id"], "status": "running"}), 202
+    return jsonify({"run_id": outcome["run_id"], "status": outcome["status"]}), 200
 
 
 FORMATS = {
@@ -181,12 +344,23 @@ def download_tailored_resume(run_id, fmt):
     holds user text, and serving it inline from our origin would be stored XSS."""
     if fmt not in FORMATS:
         return jsonify({"error": "format must be html or tex"}), 400
+    ordering = request.args.get("ordering", "tailored")
+    if ordering not in {"original", "tailored"}:
+        return jsonify({"error": "ordering must be original or tailored"}), 400
 
     with get_cursor() as cur:
         run = load_run(cur, g.user_id, run_id)
         if run is None:
             return jsonify({"error": "run not found"}), 404
-        document = build_document(cur, g.user_id, run_id)
+        # Raw requirements rescore every source bullet. The public fit explanation intentionally
+        # shows only three citations, so it is too small to drive a complete ordering plan.
+        _job, _assessment, requirements = load_job_context(cur, g.user_id, run["job_id"])
+        document = build_document(
+            cur,
+            g.user_id,
+            run_id,
+            requirements=requirements if ordering == "tailored" else None,
+        )
 
     if not document["sections"] and not document["skills"]:
         return jsonify({"error": "no structured resume to render — build one first"}), 409

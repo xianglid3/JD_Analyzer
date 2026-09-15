@@ -7,8 +7,17 @@ from routes.jobs import jobs_bp
 from routes.resume import resume_bp
 from routes.tailoring import tailoring_bp
 from extensions import limiter
-from commands import register_commands, register_run_sweep, register_usage_report
+from commands import (
+    register_commands,
+    register_grounding_report,
+    register_run_sweep,
+    register_relation_maintenance,
+    register_rewrite_approvals,
+    register_skill_relations,
+    register_usage_report,
+)
 from db import check_schema
+from services.maintenance import start as start_maintenance
 import logging
 
 logging.basicConfig(
@@ -45,8 +54,15 @@ app.register_blueprint(tailoring_bp)
 register_commands(app)
 register_usage_report(app)
 register_run_sweep(app)
+register_skill_relations(app)
+register_rewrite_approvals(app)
+register_relation_maintenance(app)
+register_grounding_report(app)
 
 check_schema()
+
+# abandoned runs are otherwise only noticed when someone opens that run's page
+start_maintenance(app)
 
 @app.before_request
 def start_request():
@@ -68,7 +84,29 @@ def log_request(response):
 
 @app.route("/api/health")
 def health():
+    """Liveness: is this process running. Deliberately touches nothing else.
+
+    A liveness probe that checks a dependency restarts healthy processes in a loop whenever
+    that dependency has a bad minute. Whether this server should receive traffic is a
+    different question, and it is `/api/ready`'s.
+    """
     return jsonify({"status": "alive"})
+
+
+@app.route("/api/ready")
+def ready():
+    """Readiness: should this process receive traffic.
+
+    503 for either failure, because both mean requests will break: the database is
+    unreachable, or it is behind the schema this code expects. A deploy that half-applied its
+    DDL used to pass its health check and serve 500s; this is what stops that.
+    """
+    state = check_schema()
+    if not state.reachable:
+        return jsonify({"status": "unreachable", "detail": "database is not reachable"}), 503
+    if state.missing:
+        return jsonify({"status": "behind", "missing": state.missing}), 503
+    return jsonify({"status": "ready"})
 
 
 @app.errorhandler(413)

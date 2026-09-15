@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ButtonLabel, InlineAlert, Spinner } from './Feedback'
+import SelectMenu from './SelectMenu'
 import { apiFetch } from '../lib/api'
 
 const kindOptions = [
@@ -32,7 +33,7 @@ const emptyEntry = () => ({
 
 // saved bullets arrive as {id, text}, freshly extracted ones as strings. The id rides along
 // so an edited bullet keeps its identity; the server checks it belongs to this user.
-const toEditable = (entries) => entries.map((entry) => ({
+const toEditable = (entries = []) => entries.map((entry) => ({
   kind: entry.kind || 'experience',
   organization: entry.organization || '',
   title: entry.title || '',
@@ -53,6 +54,15 @@ export default function ResumeStructureEditor({ autoExtract = false, onClose, on
   // stamped by the extraction this evidence came from, so saving can't bless stale text
   const [sourceHash, setSourceHash] = useState(null)
   const autoExtractStarted = useRef(false)
+  const extractController = useRef(null)
+  const extractRequestId = useRef(0)
+  // Automatic extraction owns the first view of the modal, so there is no flash of the old
+  // evidence form between the evidence query resolving and the extraction effect starting.
+  const [extracting, setExtracting] = useState(autoExtract)
+  const [extractError, setExtractError] = useState(null)
+  // Cancel invalidates the active request and clears its error, so its confirmation is
+  // held separately from the request state.
+  const [canceled, setCanceled] = useState(false)
 
   const evidenceQuery = useQuery({
     queryKey: ['resume-evidence'],
@@ -69,28 +79,68 @@ export default function ResumeStructureEditor({ autoExtract = false, onClose, on
     setSourceHash(evidenceQuery.data.source_hash || null)
   }, [evidenceQuery.data, dirty])
 
-  const extractMutation = useMutation({
-    mutationFn: () => apiFetch('/resume/structure', {
-      method: 'POST',
-      body: JSON.stringify({}),
-      timeoutMs: 70000,
-    }),
-    onSuccess: (data) => {
+  const runExtraction = useCallback(async () => {
+    const requestId = extractRequestId.current + 1
+    extractRequestId.current = requestId
+    extractController.current?.abort()
+
+    const controller = new AbortController()
+    extractController.current = controller
+    setCanceled(false)
+    setExtractError(null)
+    setExtracting(true)
+
+    try {
+      const data = await apiFetch('/resume/structure', {
+        method: 'POST',
+        body: JSON.stringify({}),
+        timeoutMs: 50000,
+        signal: controller.signal,
+      })
+
+      // A canceled or superseded request is no longer allowed to write into the editor,
+      // even if its promise finishes afterward.
+      if (extractRequestId.current !== requestId) return
       setEntries(toEditable(data.entries))
       setHeader(toEditableHeader(data.header))
       setSourceHash(data.source_hash || null)
       setDirty(true)
       setSaved(false)
-    },
-  })
+    } catch (error) {
+      if (extractRequestId.current === requestId) setExtractError(error)
+    } finally {
+      // The same request that turned the spinner on is responsible for turning it off.
+      // This no longer depends on React Query's mutation observer surviving a live HMR,
+      // StrictMode replay, or component lifecycle transition.
+      if (extractRequestId.current === requestId) {
+        extractController.current = null
+        setExtracting(false)
+      }
+    }
+  }, [])
+
+  const cancelExtraction = useCallback(() => {
+    // Invalidate the request before aborting so a late response cannot write stale data or
+    // turn a newer request's spinner off.
+    extractRequestId.current += 1
+    extractController.current?.abort()
+    extractController.current = null
+    setExtracting(false)
+    setExtractError(null)
+    setCanceled(true)
+  }, [])
+
+  // Deliberately no abort-on-unmount. The model call is already paid for by the time the
+  // component goes away, so cancelling only throws away a result we bought — and in dev
+  // StrictMode, where React mounts, unmounts and remounts, it aborted the very request
+  // auto-extract had just started, leaving the UI waiting on a request nobody was running.
+  // Cancelling stays an explicit user action.
 
   useEffect(() => {
     if (!autoExtract || evidenceQuery.isLoading || autoExtractStarted.current) return
     autoExtractStarted.current = true
-    extractMutation.mutate()
-    // `mutate` is stable; depending on the mutation object would restart this one-shot action.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoExtract, evidenceQuery.isLoading])
+    runExtraction()
+  }, [autoExtract, evidenceQuery.isLoading, runExtraction])
 
   const saveMutation = useMutation({
     mutationFn: () => apiFetch('/resume/evidence', {
@@ -175,23 +225,56 @@ export default function ResumeStructureEditor({ autoExtract = false, onClose, on
     )
   }
 
-  const busy = extractMutation.isPending || saveMutation.isPending
-  const extractionError = extractMutation.error || evidenceQuery.error
+  const busy = extracting || saveMutation.isPending
+  const extractionError = extractError || evidenceQuery.error
   const bulletCount = entries.reduce((total, entry) => total + entry.bullets.filter((b) => b.text.trim()).length, 0)
 
+  if (extracting) {
+    return (
+      <div className="grid min-h-64 place-items-center text-center">
+        <div>
+          <span className="inline-flex items-center gap-3 text-sm text-ink" role="status">
+            <Spinner /> Reading your resume…
+          </span>
+          <p className="mt-3 text-xs text-muted">Pulling out your jobs, projects, education, and bullets.</p>
+          {extracting && (
+            <button
+              type="button"
+              className="mt-4 min-h-11 px-3 text-xs text-muted underline-offset-4 hover:text-ink hover:underline"
+              onClick={cancelExtraction}
+            >
+              Cancel
+            </button>
+          )}
+        </div>
+      </div>
+    )
+  }
+
   return (
-    <div className="space-y-4">
+    <div className="resume-structure-editor space-y-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-sm text-muted">
           {entries.length
             ? `${entries.length} ${entries.length === 1 ? 'entry' : 'entries'} · ${bulletCount} ${bulletCount === 1 ? 'bullet' : 'bullets'}`
             : 'Nothing structured yet.'}
         </p>
-        <button className="secondary-button whitespace-nowrap" disabled={busy} onClick={() => extractMutation.mutate()}>
-          <ButtonLabel pending={extractMutation.isPending} pendingText="Reading your resume…">
-            {entries.length ? 'Re-extract from resume' : 'Extract from resume'}
-          </ButtonLabel>
-        </button>
+        <div className="flex items-center gap-2">
+          <button className="secondary-button whitespace-nowrap" disabled={busy} onClick={runExtraction}>
+            <ButtonLabel pending={extracting} pendingText="Reading your resume…">
+              {entries.length ? 'Re-extract from resume' : 'Extract from resume'}
+            </ButtonLabel>
+          </button>
+          {extracting && (
+            <button
+              type="button"
+              className="min-h-11 px-2 text-xs text-muted underline-offset-4 hover:text-ink hover:underline"
+              onClick={cancelExtraction}
+            >
+              Cancel
+            </button>
+          )}
+        </div>
       </div>
 
       {evidenceQuery.data?.stale && !dirty && (
@@ -200,9 +283,10 @@ export default function ResumeStructureEditor({ autoExtract = false, onClose, on
           have — until then it will refuse to run.
         </InlineAlert>
       )}
+      {canceled && <InlineAlert>Extraction canceled.</InlineAlert>}
       {extractionError && <InlineAlert>{extractionError.message}</InlineAlert>}
-      {extractMutation.isPending && (
-        <p className="text-xs text-muted" role="status">This usually finishes within a minute.</p>
+      {extracting && (
+        <p className="text-xs text-muted" role="status">This can take up to 50 seconds. You can cancel and retry safely.</p>
       )}
 
       <section className="rounded-md border border-border bg-pure-white p-4">
@@ -273,16 +357,16 @@ export default function ResumeStructureEditor({ autoExtract = false, onClose, on
           <section key={entryIndex} className="rounded-md border border-border bg-pure-white p-4">
             <div className="flex items-start justify-between gap-3">
               <div className="grid flex-1 gap-3 sm:grid-cols-2">
-                <label className="block text-xs text-muted">
-                  Type
-                  <select
+                <div className="text-xs text-muted">
+                  <p>Type</p>
+                  <SelectMenu
+                    className="mt-1.5"
+                    ariaLabel={`Type for entry ${entryIndex + 1}`}
                     value={entry.kind}
-                    onChange={(event) => updateEntry(entryIndex, { kind: event.target.value })}
-                    className="control mt-1.5 px-3 py-2 text-sm text-ink"
-                  >
-                    {kindOptions.map(([label, value]) => <option key={value} value={value}>{label}</option>)}
-                  </select>
-                </label>
+                    onChange={(nextKind) => updateEntry(entryIndex, { kind: nextKind })}
+                    options={kindOptions.map(([label, optionValue]) => ({ label, value: optionValue }))}
+                  />
+                </div>
                 <label className="block text-xs text-muted">
                   Organization
                   <input
@@ -379,9 +463,11 @@ export default function ResumeStructureEditor({ autoExtract = false, onClose, on
       <div className="sticky -bottom-5 z-10 -mx-5 flex flex-col-reverse gap-2 border-t border-border bg-soft-paper px-5 pb-1 pt-4 sm:flex-row sm:justify-between">
         <button className="secondary-button" disabled={busy} onClick={addEntry}>Add entry</button>
         <div className="flex flex-col-reverse gap-2 sm:flex-row">
-          <button className="secondary-button" disabled={busy} onClick={onClose}>Close</button>
+          <button className="secondary-button" disabled={busy} onClick={onClose}>{autoExtract ? 'Cancel' : 'Close'}</button>
           <button className="primary-button min-w-36" disabled={busy || !dirty} onClick={() => saveMutation.mutate()}>
-            <ButtonLabel pending={saveMutation.isPending} pendingText="Saving…">Save experience</ButtonLabel>
+            <ButtonLabel pending={saveMutation.isPending} pendingText="Saving…">
+              {autoExtract ? 'Confirm experience' : 'Save experience'}
+            </ButtonLabel>
           </button>
         </div>
       </div>

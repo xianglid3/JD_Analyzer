@@ -68,6 +68,32 @@ describe('apiFetch', () => {
       vi.useRealTimers()
     }
   })
+
+  it('keeps the deadline when a caller also supplies a cancellation signal', async () => {
+    vi.useFakeTimers()
+    const caller = new AbortController()
+    fetch.mockImplementation((_path, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => {
+        const error = new Error('aborted')
+        error.name = 'AbortError'
+        reject(error)
+      })
+    }))
+
+    try {
+      const assertion = expect(apiFetch('/resume/structure', {
+        timeoutMs: 1000,
+        signal: caller.signal,
+      })).rejects.toMatchObject({
+        message: 'Request timed out. Please try again.',
+        status: 408,
+      })
+      await vi.advanceTimersByTimeAsync(1000)
+      await assertion
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('apiUpload', () => {

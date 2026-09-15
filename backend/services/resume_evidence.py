@@ -252,3 +252,105 @@ def list_resume_evidence(cur, user_id):
             entry["bullets"].append({"id": str(bullet_id), "text": text})
 
     return entries
+
+
+# ── evidence versioning (AE-01) ──────────────────────────────────────────────
+
+STALE_EDIT_CONDITION = """
+    e.cited_count <> (
+        SELECT count(*)
+        FROM evidence_links AS l
+        JOIN resume_bullets AS b ON b.id = l.bullet_id
+        WHERE l.edit_id = e.id AND b.text = l.bullet_text
+    )
+"""
+
+
+def stale_edit_ids(cur, user_id, run_id=None, edit_id=None):
+    """Accepted edits whose evidence no longer says what it said when they were made.
+
+    Bullet ids survive a reword on purpose, so an id alone proves nothing about the text
+    behind it. Counting citations that still match their snapshot catches both halves of the
+    problem at once: an edited bullet stops matching, and a deleted one stops existing.
+    """
+    scope, params = "", [user_id]
+    if run_id is not None:
+        scope += " AND e.run_id = %s"
+        params.append(run_id)
+    if edit_id is not None:
+        scope += " AND e.id = %s"
+        params.append(edit_id)
+
+    cur.execute(
+        f"""
+        SELECT e.id FROM proposed_edits AS e
+        WHERE e.user_id = %s{scope} AND e.status = 'accepted' AND {STALE_EDIT_CONDITION}
+        """,
+        params,
+    )
+    return [str(row[0]) for row in cur.fetchall()]
+
+
+# ── skills the user attached to an entry themselves ──────────────────────────
+# The resume is a lossy artefact: it is what someone typed in one sitting, not the whole truth
+# about them. When the fit engine reports a gap the user does not have, or a skill proven only
+# by a keyword list, the missing piece is a fact only they hold — which project it belongs to.
+
+def save_entry_skills(cur, user_id, skill, entry_ids):
+    """Record that this user used `skill` on these entries. Replaces any previous answer for
+    that skill, so unticking a project actually removes it."""
+    from services.match import normalize_skill
+
+    normalized = normalize_skill(skill)
+    if not normalized:
+        return 0
+
+    cur.execute(
+        "DELETE FROM resume_entry_skills WHERE user_id = %s AND normalized = %s",
+        (user_id, normalized),
+    )
+    if not entry_ids:
+        return 0
+
+    cur.execute(
+        """
+        INSERT INTO resume_entry_skills (entry_id, user_id, skill, normalized)
+        SELECT e.id, %s, %s, %s FROM resume_entries AS e
+        WHERE e.user_id = %s AND e.id = ANY(%s::uuid[])
+        ON CONFLICT (entry_id, normalized) DO NOTHING
+        """,
+        (user_id, skill.strip(), normalized, user_id, list(entry_ids)),
+    )
+    return cur.rowcount
+
+
+def entry_skills(cur, user_id):
+    """{entry_id: {normalized skill, ...}} for one user."""
+    cur.execute(
+        "SELECT entry_id, normalized FROM resume_entry_skills WHERE user_id = %s",
+        (user_id,),
+    )
+    affirmed = {}
+    for entry_id, normalized in cur.fetchall():
+        affirmed.setdefault(str(entry_id), set()).add(normalized)
+    return affirmed
+
+
+def skills_affirmed_for_bullets(cur, user_id, bullet_ids):
+    """Skills the user attached to the entries these bullets belong to.
+
+    This is what lets a rewrite of one of those bullets name the skill: the claim traces to
+    something the user asserted, which is the same authority the resume itself carries.
+    """
+    if not bullet_ids:
+        return set()
+    cur.execute(
+        """
+        SELECT DISTINCT s.normalized
+        FROM resume_bullets AS b
+        JOIN resume_entry_skills AS s ON s.entry_id = b.entry_id
+        WHERE b.user_id = %s AND b.id = ANY(%s::uuid[])
+        """,
+        (user_id, [str(b) for b in bullet_ids]),
+    )
+    return {row[0] for row in cur.fetchall()}

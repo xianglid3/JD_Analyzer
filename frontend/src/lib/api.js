@@ -21,7 +21,16 @@ export async function apiFetch(path, options = {}, retry = true) {
         signal: optionSignal,
         ...fetchOptions
     } = options
-    const timeoutController = timeoutMs && !optionSignal ? new AbortController() : null
+    // Use one controller as a combined signal when the caller supplies both a manual
+    // cancellation signal and a deadline. Previously, adding a caller signal silently
+    // disabled timeoutMs.
+    const timeoutController = timeoutMs ? new AbortController() : null
+    let optionAbortHandler = null
+    if (timeoutController && optionSignal) {
+        optionAbortHandler = () => timeoutController.abort(optionSignal.reason)
+        if (optionSignal.aborted) optionAbortHandler()
+        else optionSignal.addEventListener('abort', optionAbortHandler, { once: true })
+    }
     const timeoutId = timeoutController
         ? window.setTimeout(() => timeoutController.abort(), timeoutMs)
         : null
@@ -31,21 +40,27 @@ export async function apiFetch(path, options = {}, retry = true) {
         res = await fetch('/api' + path, {
             ...fetchOptions,
             credentials: 'include',
-            signal: optionSignal || timeoutController?.signal,
+            signal: timeoutController?.signal || optionSignal,
             headers: {
                 ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
                 ...optionHeaders,
             },
         })
     } catch (error) {
-        if (timeoutController?.signal.aborted && error?.name === 'AbortError') {
+        if (timeoutController?.signal.aborted && error?.name === 'AbortError' && !optionSignal?.aborted) {
             const timeoutError = new Error('Request timed out. Please try again.')
             timeoutError.status = 408
             throw timeoutError
         }
+        if (optionSignal?.aborted && error?.name === 'AbortError') {
+            const canceledError = new Error('Extraction canceled.')
+            canceledError.status = 499
+            throw canceledError
+        }
         throw error
     } finally {
         if (timeoutId !== null) window.clearTimeout(timeoutId)
+        if (optionAbortHandler) optionSignal.removeEventListener('abort', optionAbortHandler)
     }
         
     if (res.status === 401 && retry && path !== '/auth/refresh') {
@@ -60,6 +75,9 @@ export async function apiFetch(path, options = {}, retry = true) {
     if (!res.ok) {
         const error = new Error(data?.error || 'Request failed')
         error.status = res.status
+        // machine-readable code when the server sends one, so a caller can recover rather
+        // than only display the sentence
+        error.reason = data?.reason || null
         throw error
     }
 

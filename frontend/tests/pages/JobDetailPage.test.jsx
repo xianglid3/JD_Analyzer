@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -52,7 +52,8 @@ describe('JobDetailPage', () => {
     expect(await screen.findByText('Platform Engineer')).toBeInTheDocument()
     expect(screen.getByText('No-BS translation').closest('section')).toHaveClass('inverted-card')
     expect(screen.getByRole('link', { name: 'Open posting ↗' })).toHaveAttribute('href', job.source_url)
-    await user.selectOptions(screen.getByLabelText('Status'), 'interview')
+    await user.click(screen.getByRole('combobox', { name: 'Status' }))
+    await user.click(screen.getByRole('option', { name: 'Interview' }))
     await user.type(screen.getByLabelText(/^Notes/), 'Recruiter call Friday')
     await user.click(screen.getByRole('button', { name: 'Save changes' }))
 
@@ -65,6 +66,8 @@ describe('JobDetailPage', () => {
         source_url: job.source_url,
       }),
     }))
+    const tracking = screen.getByRole('heading', { name: 'Tracking' }).closest('section')
+    expect(await within(tracking).findByText('Tracking details saved.')).toBeInTheDocument()
   })
 
   it('requires confirmation before deleting a job', async () => {
@@ -80,6 +83,26 @@ describe('JobDetailPage', () => {
     await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/jobs/42', { method: 'DELETE' }))
     expect(await screen.findByText('Dashboard destination')).toBeInTheDocument()
   })
+
+  it('sends unconfirmed resume evidence to review instead of silently saving it', async () => {
+    const user = userEvent.setup()
+    const error = new Error('review and confirm your resume experience before tailoring')
+    error.reason = 'needs_confirmation'
+    apiFetch.mockImplementation((path, options) => {
+      if (path === '/jobs/42' && !options) return Promise.resolve(job)
+      if (path === '/jobs/42/tailor' && options?.method === 'POST') return Promise.reject(error)
+      return Promise.resolve({})
+    })
+
+    renderPage()
+    await screen.findByText('Platform Engineer')
+    await user.click(screen.getAllByRole('button', { name: 'Tailor resume' })[0])
+
+    const reviewLinks = await screen.findAllByRole('link', { name: 'Review resume' })
+    expect(reviewLinks.every((link) => link.getAttribute('href') === '/resume')).toBe(true)
+    expect(apiFetch).not.toHaveBeenCalledWith('/resume/structure', expect.anything())
+    expect(apiFetch).not.toHaveBeenCalledWith('/resume/evidence', expect.anything())
+  })
 })
 
 describe('JobDetailPage match breakdown', () => {
@@ -92,8 +115,10 @@ describe('JobDetailPage match breakdown', () => {
       match_detail: {
         matched: ['CSS', 'JavaScript'],
         missing: ['Kubernetes'],
-        capability_score: 86,
-        keyword_score: 40,
+        fit_score: 86,
+        visibility_score: 40,
+        hidden: ['JavaScript'],
+        eligibility: ['US citizenship required'],
         requirements: [
           {
             requirement: 'CSS', state: 'INFERRED', importance: 'required', inferred_from: ['tailwind'],
@@ -109,7 +134,39 @@ describe('JobDetailPage match breakdown', () => {
     expect(await screen.findByText('inferred')).toBeInTheDocument()
     expect(screen.getByText('via tailwind')).toBeInTheDocument()
     expect(screen.getByText(/Built responsive interfaces using Tailwind CSS/)).toBeInTheDocument()
-    expect(screen.getByText(/capability 86% · keywords 40%/)).toBeInTheDocument()
+    expect(screen.getByText(/fit 86%/)).toBeInTheDocument()
+    expect(screen.getByText(/visible 40%/)).toBeInTheDocument()
+    // fit and visibility are never blended into one number
+    expect(screen.queryByText(/keywords/i)).not.toBeInTheDocument()
+    expect(screen.getByText(/never says so outright/)).toBeInTheDocument()
+    // eligibility is shown but explicitly excluded from both numbers
+    expect(screen.getByText('US citizenship required')).toBeInTheDocument()
+    expect(screen.getByText(/gates you either meet or you don't/)).toBeInTheDocument()
+  })
+
+  it('still renders jobs scored before the fit/visibility rename', async () => {
+    // match_detail is stored JSONB, so rows written before the rename keep the old keys
+    // until the resume is next saved. Reading both is what stops the score going blank.
+    apiFetch.mockResolvedValue({
+      id: 'job-1',
+      title: 'Frontend Engineer',
+      skills: ['CSS'],
+      match_score: 72,
+      match_detail: {
+        matched: ['CSS'],
+        missing: [],
+        capability_score: 86,
+        communication_score: 40,
+        requirements: [
+          { requirement: 'CSS', state: 'EXPLICIT', importance: 'required', inferred_from: [], evidence: [] },
+        ],
+      },
+    })
+
+    renderWithProviders(<JobDetailPage />)
+
+    expect(await screen.findByText(/fit 86%/)).toBeInTheDocument()
+    expect(screen.getByText(/visible 40%/)).toBeInTheDocument()
   })
 
   it('falls back to chips for jobs scored before the states existed', async () => {

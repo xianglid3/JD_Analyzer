@@ -17,7 +17,13 @@ from services.openai_services import (
 )
 from services.jd_preprocess import preprocess_text
 from services.file_extract import extract_text_from_file, validate_resume_file
-from services.skill_evidence import recompute_user_matches
+from services.match import normalize_skill
+from services.resume_evidence import entry_skills, save_entry_skills
+from services.skill_evidence import recompute_user_matches, warm_relations_for_user
+from uuid import UUID
+
+MAX_ENTRY_SKILL_CHARS = 100
+MAX_AFFIRMED_ENTRIES = 40
 from services.resume_evidence import (
     evidence_is_stale,
     list_resume_evidence,
@@ -35,7 +41,7 @@ from services.supabase_storage import (
 from extensions import authenticated_user_key, limiter
 from routes.analysis_errors import analysis_error_response
 from routes.request_validation import get_json_object
-from services.usage import QuotaExceeded, check_quota, recorder
+from services.usage import QuotaExceeded, budget, check_quota
 
 
 resume_bp = Blueprint("resume", __name__, url_prefix="/api/resume") #why __name__
@@ -192,6 +198,10 @@ def upsert_resume():
             logger.exception("resume file upload failed")
             return jsonify({"error": "could not store resume file"}), 502
 
+    # Before the transaction: rescoring warms the relation cache, which can make a model
+    # call, and holding this write transaction across it starves the pool.
+    warm_relations_for_user(g.user_id, get_cursor)
+
     old_storage_path = None
     try:
         with get_cursor(commit=True) as cur:
@@ -265,6 +275,50 @@ def upsert_resume():
     return jsonify({"ok": True, "file_saved": new_storage_path is not None}), 200
 
 
+@resume_bp.route("", methods=["DELETE"])
+@require_auth
+def delete_saved_resume():
+    """Remove the user's resume and everything derived from it.
+
+    Postgres is committed first and remains the source of truth. The private Storage object
+    is removed afterward; the reconciliation command handles a temporary Storage failure.
+    """
+    storage_path = None
+    with get_cursor(commit=True) as cur:
+        cur.execute(
+            "SELECT storage_path FROM resumes WHERE user_id = %s FOR UPDATE",
+            (g.user_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return jsonify({"error": "no resume found"}), 404
+
+        cur.execute(
+            "SELECT 1 FROM tailoring_runs WHERE user_id = %s AND status = 'running' LIMIT 1",
+            (g.user_id,),
+        )
+        if cur.fetchone() is not None:
+            return jsonify({
+                "error": "finish or recover the active tailoring run before removing your resume"
+            }), 409
+
+        storage_path = row[0]
+
+        # A tailoring run is derived from the current one-resume profile. Keeping it after
+        # its cited bullets are deleted would leave broken, misleading history.
+        cur.execute("DELETE FROM tailoring_runs WHERE user_id = %s", (g.user_id,))
+        cur.execute("DELETE FROM resume_headers WHERE user_id = %s", (g.user_id,))
+        # Entries cascade to bullets; bullets cascade to their evidence links.
+        cur.execute("DELETE FROM resume_entries WHERE user_id = %s", (g.user_id,))
+        cur.execute("DELETE FROM resumes WHERE user_id = %s", (g.user_id,))
+
+        # Jobs remain tracked, but no longer claim a fit based on deleted resume data.
+        recompute_user_matches(cur, g.user_id)
+
+    delete_storage_file_quietly(storage_path)
+    return jsonify({"ok": True}), 200
+
+
 @resume_bp.route("/parse", methods = ["POST"])
 @require_auth
 @limiter.limit("5 per minute; 10 per day", key_func=authenticated_user_key)
@@ -289,7 +343,8 @@ def parse_resume():
 
     try:
         check_quota(g.user_id)
-        resume = analyze_resume(cleaned, on_usage=recorder(g.user_id, "resume_parse"))
+        resume = analyze_resume(cleaned, budget=budget(g.user_id, "resume_parse"),
+                                kind="resume_parse")
     except QuotaExceeded as exc:
         return jsonify({"error": f"daily AI budget reached ({exc})"}), 429
     except Exception as exc:
@@ -325,7 +380,8 @@ def upload_resume():
 
     try:
         check_quota(g.user_id)
-        resume = analyze_resume(cleaned, on_usage=recorder(g.user_id, "resume_upload"))
+        resume = analyze_resume(cleaned, budget=budget(g.user_id, "resume_upload"),
+                                kind="resume_upload")
     except QuotaExceeded as exc:
         return jsonify({"error": f"daily AI budget reached ({exc})"}), 429
     except Exception as exc:
@@ -507,8 +563,11 @@ def extract_resume_structure():
     cleaned = preprocess_text(text)
 
     try:
+        logger.info("resume structure extraction started chars=%d", len(cleaned))
         check_quota(g.user_id)
-        structure = analyze_resume_structure(cleaned, on_usage=recorder(g.user_id, "resume_structure"))
+        structure = analyze_resume_structure(
+            cleaned, budget=budget(g.user_id, "resume_structure"))
+        logger.info("resume structure extraction completed entries=%d", len(structure.entries))
     except QuotaExceeded as exc:
         return jsonify({"error": f"daily AI budget reached ({exc})"}), 429
     except Exception as exc:
@@ -562,6 +621,10 @@ def upsert_resume_evidence():
     if submitted_hash is not None and not isinstance(submitted_hash, str):
         return jsonify({"error": "source_hash must be text"}), 400
 
+    # Before the transaction: rescoring warms the relation cache, which can make a model
+    # call, and holding this write transaction across it starves the pool.
+    warm_relations_for_user(g.user_id, get_cursor)
+
     with get_cursor(commit=True) as cur:
         save_resume_header(cur, g.user_id, structure.header)
         stats = save_resume_evidence(cur, g.user_id, structure)
@@ -595,3 +658,44 @@ def upsert_resume_evidence():
         stats["entries"], stats["bullets"], stats["reused_bullets"],
     )
     return jsonify({"header": header, "entries": entries, "saved": stats, "stale": stale}), 200
+
+
+@resume_bp.route("/entry-skills", methods=["PUT"])
+@require_auth
+def upsert_entry_skills():
+    """Record that the user used one skill on particular entries.
+
+    This is how a wrong gap gets corrected and how a keyword-only skill earns a place in a
+    bullet. It is first-party evidence — the resume was only ever a record of what the user
+    says about their own work, and this is the same claim made directly. Sending an empty
+    list withdraws the claim.
+    """
+    data, error = get_json_object()
+    if error:
+        return error
+
+    skill = data.get("skill")
+    if not isinstance(skill, str) or not skill.strip():
+        return jsonify({"error": "skill is required"}), 400
+    skill = skill.strip()
+    if len(skill) > MAX_ENTRY_SKILL_CHARS:
+        return jsonify({"error": f"skill must be {MAX_ENTRY_SKILL_CHARS} characters or fewer"}), 400
+
+    entry_ids = data.get("entry_ids", [])
+    if not isinstance(entry_ids, list) or len(entry_ids) > MAX_AFFIRMED_ENTRIES:
+        return jsonify({"error": f"entry_ids must be a list of {MAX_AFFIRMED_ENTRIES} or fewer"}), 400
+    try:
+        entry_ids = [str(UUID(str(value))) for value in entry_ids]
+    except (TypeError, ValueError, AttributeError):
+        return jsonify({"error": "each entry id must be a valid UUID"}), 400
+
+    with get_cursor(commit=True) as cur:
+        save_entry_skills(cur, g.user_id, skill, entry_ids)
+        # the correction is only worth anything once the scores reflect it
+        recompute_user_matches(cur, g.user_id)
+        affirmed = entry_skills(cur, g.user_id)
+
+    return jsonify({
+        "skill": skill,
+        "entries": [entry for entry, skills in affirmed.items() if normalize_skill(skill) in skills],
+    }), 200

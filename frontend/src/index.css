@@ -16,6 +16,19 @@
   --color-obsidian: #171717;
   --color-carbon: #000000;
   --color-terminal-green: #297a3a;
+
+  /* Evidence strength — an ORDINAL ramp, not a categorical palette: one hue, monotone
+     lightness, strongest = darkest, so the order is visible in the colour itself. Stepped
+     down from the documented blue ramp until the light end cleared 2:1 on #fafafa (2.4:1);
+     the paler documented steps read as grey on a near-white surface. Every use is paired
+     with its text label, so colour never carries the meaning alone. The rest of the product
+     stays monochrome — this ramp exists only where a magnitude is being explained. */
+  --color-evidence-strong: #104281;
+  --color-evidence-medium: #2a78d6;
+  --color-evidence-weak: #6da7ec;
+  --color-evidence-none: #c9c9c9;
+  --color-evidence-track: #ebebeb;
+
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
@@ -119,6 +132,14 @@ button:disabled { cursor: not-allowed; }
   box-shadow: 0 0 0 1px #171717;
 }
 
+/* Every editable value in the resume review uses one type scale. Textareas otherwise pick
+   up browser-specific metrics that can make bullet copy look larger than adjacent inputs. */
+.resume-structure-editor .control {
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.25rem;
+}
+
 .primary-button,
 .secondary-button,
 .danger-button {
@@ -190,6 +211,10 @@ button:disabled { cursor: not-allowed; }
 
 .animate-page-in { animation: page-in 240ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
 .animate-soft-in { animation: soft-in 170ms ease-out both; }
+.select-menu-panel {
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 8%), 0 0 0 2px #fafafa;
+  animation: select-menu-in 160ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
 .dialog-backdrop { animation: backdrop-in 150ms ease-out both; }
 .dialog-panel {
   box-shadow: 0 0 0 1px rgb(0 0 0 / 8%), 0 0 0 2px #fafafa;
@@ -207,6 +232,10 @@ button:disabled { cursor: not-allowed; }
 @keyframes soft-in {
   from { opacity: 0; transform: translateY(2px); }
   to { opacity: 1; transform: translateY(0); }
+}
+@keyframes select-menu-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 @keyframes backdrop-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes dialog-in {

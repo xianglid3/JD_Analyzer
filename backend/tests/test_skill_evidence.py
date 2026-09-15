@@ -7,6 +7,7 @@ from services.skill_evidence import (
     INFERRED,
     NONE,
     PARTIAL,
+    as_condition,
     evaluate_requirement,
     evaluate_requirements,
 )
@@ -94,17 +95,48 @@ def test_backwards_inference_is_capped_at_partial():
 
 def test_score_is_deterministic_from_the_states():
     result = evaluate_requirements(["React", "Kubernetes"], RESUME)
-    # (1.0 + 0.0) / 2 capability, (1 + 0) / 2 keyword → 0.7*50 + 0.3*50
-    assert result["capability_score"] == 50.0
-    assert result["keyword_score"] == 50.0
+    # React EXPLICIT (1.0), Kubernetes NONE (0.0) → capability 50%
+    assert result["fit_score"] == 50.0
+    # and of the one requirement there IS evidence for, it is stated outright
+    assert result["visibility_score"] == 100.0
+    # the headline is capability, unblended
     assert result["score"] == 50.0
 
 
-def test_capability_and_keyword_scores_diverge_on_inferred_evidence():
-    """The point of two numbers: he can do it, but an ATS will not see it."""
-    result = evaluate_requirements(["JavaScript"], RESUME)
-    assert result["capability_score"] == 80.0
-    assert result["keyword_score"] == 0.0
+def test_capability_and_communication_measure_different_things():
+    """The point of two numbers: he can do it, but the resume does not say so.
+
+    Communication is conditional on capability — it asks "of what you can demonstrably do,
+    how much is stated plainly", so a gap cannot drag it down and a keyword cannot lift
+    capability.
+    """
+    inferred = evaluate_requirements(["JavaScript"], RESUME)      # React implies it
+    assert inferred["fit_score"] == 80.0
+    assert inferred["visibility_score"] == 0.0                 # nothing says "JavaScript"
+    assert inferred["hidden"] == ["JavaScript"]                   # exactly what tailoring is for
+
+    # a requirement with no evidence at all changes capability, never communication
+    with_gap = evaluate_requirements(["JavaScript", "Kubernetes"], RESUME)
+    assert with_gap["fit_score"] == 40.0                   # halved by the gap
+    assert with_gap["visibility_score"] == 0.0                 # unchanged
+
+
+def test_communication_is_none_when_there_is_nothing_to_communicate():
+    result = evaluate_requirements(["Kubernetes"], RESUME)
+    assert result["fit_score"] == 0.0
+    assert result["visibility_score"] is None
+    assert result["hidden"] == []
+
+
+def test_wording_moves_communication_and_capability_stays_put():
+    """The incentive the split exists to remove: naming the skill outright must not look
+    like the candidate became more capable."""
+    inferred = evaluate_requirements(["JavaScript"], RESUME)
+    explicit = evaluate_requirements(["JavaScript"], RESUME + [skill("JavaScript")])
+
+    assert explicit["visibility_score"] > inferred["visibility_score"]
+    assert explicit["fit_score"] >= inferred["fit_score"]
+    assert explicit["hidden"] == []
 
 
 def test_importance_weights_the_score():
@@ -116,7 +148,7 @@ def test_importance_weights_the_score():
         [{"skill": "React", "importance": "nice_to_have"}, {"skill": "Kubernetes", "importance": "required"}],
         RESUME,
     )
-    assert required_only["capability_score"] > flipped["capability_score"]
+    assert required_only["fit_score"] > flipped["fit_score"]
 
 
 def test_unknown_importance_falls_back_to_required():
@@ -133,7 +165,7 @@ def test_partial_is_not_counted_as_matched():
     """PARTIAL is a question for the user, not a claim the agent may make."""
     result = evaluate_requirements(["AWS"], RESUME)
     assert result["matched"] == [] and result["missing"] == []
-    assert result["capability_score"] == 40.0
+    assert result["fit_score"] == 40.0
 
 
 def test_no_requirements_returns_nothing():
@@ -269,3 +301,122 @@ def test_ai_is_inferred_from_machine_learning_work():
 def test_artificial_intelligence_normalizes_to_ai():
     result = evaluate_requirement("Artificial Intelligence", [skill("Machine Learning")])
     assert result["state"] == INFERRED
+
+
+# ── the entry header is evidence too ────────────────────────────────────────
+
+def test_a_technology_named_only_in_the_entry_header_counts(_db):
+    """A project header saying "(C++, Google Test)" names skills no bullet repeats. The
+    resume does state them, so scoring must see them — but with no bullet id, because no
+    single bullet demonstrates them."""
+    from services.openai_services import ResumeEntryExtraction, ResumeStructure
+    from services.resume_evidence import save_resume_evidence
+    from services.skill_evidence import load_evidence_bullets
+
+    with _db.cursor() as cur:
+        cur.execute("TRUNCATE resume_bullets, resume_entries, resumes, users CASCADE")
+        cur.execute("INSERT INTO users (username, password_hash) VALUES ('headeruser', 'x') RETURNING id")
+        user_id = cur.fetchone()[0]
+        save_resume_evidence(cur, user_id, ResumeStructure(entries=[
+            ResumeEntryExtraction(
+                kind="project",
+                title="Motor Control System (C++, Google Test)",
+                bullets=["Implemented fault handling for the drive controller"],
+            )
+        ]))
+        evidence = load_evidence_bullets(cur, user_id)
+
+    header = [e for e in evidence if e.get("source") == "entry_header"]
+    assert header and "Google Test" in header[0]["text"]
+    assert header[0]["bullet_id"] is None          # states it; does not demonstrate it
+
+    assert evaluate_requirement("Google Test", evidence)["state"] == EXPLICIT
+    assert evaluate_requirement("Terraform", evidence)["state"] == NONE
+
+
+# ── requirement conditions: "one of Java, Python, C++" is ONE requirement ────
+
+def any_of(*items, minimum=1, importance="required", source_text=None):
+    return {"importance": importance, "type": "skill", "source_text": source_text,
+            "condition": {"operator": "any_of", "minimum": minimum, "items": list(items)}}
+
+
+def all_of(*items, importance="required"):
+    return {"importance": importance, "type": "skill", "source_text": None,
+            "condition": {"operator": "all_of", "items": list(items)}}
+
+
+CPP = [{"bullet_id": "b1", "kind": "project",
+        "text": "Built a motor controller in C++ with Google Test"}]
+
+
+def test_one_alternative_satisfies_the_whole_requirement():
+    """The bug this exists for: flattened, six alternatives scored 1/6 = 17%."""
+    grouped = evaluate_requirements([any_of("Java", "Python", "JavaScript", "HTML", "SQL", "C++")], CPP)
+    flattened = evaluate_requirements([{"skill": s} for s in
+                                       ["Java", "Python", "JavaScript", "HTML", "SQL", "C++"]], CPP)
+
+    assert grouped["fit_score"] == 100.0
+    assert flattened["fit_score"] < 20.0        # the old, wrong denominator
+
+
+def test_unmet_alternatives_are_not_gaps():
+    """Being asked for "Java or Python" and knowing Python is not a Java gap — and Java must
+    never reach tailoring as something to close."""
+    result = evaluate_requirements([any_of("Java", "C++")], CPP)
+
+    assert result["missing"] == []
+    assert result["hidden"] == []
+    assert result["requirements"][0]["satisfied_by"] == ["C++"]
+
+
+def test_all_of_is_only_as_strong_as_its_weakest_item():
+    result = evaluate_requirements([all_of("C++", "Terraform")], CPP)
+
+    assert result["requirements"][0]["state"] == NONE
+    assert result["missing"] == ["C++ and Terraform"]
+
+
+def test_any_of_with_a_minimum_needs_that_many():
+    one = evaluate_requirements([any_of("Java", "Python", "C++", minimum=1)], CPP)
+    two = evaluate_requirements([any_of("Java", "Python", "C++", minimum=2)], CPP)
+
+    assert one["requirements"][0]["state"] == EXPLICIT
+    assert two["requirements"][0]["state"] == NONE     # only C++ is there
+
+
+def test_a_group_carries_one_weight_however_many_alternatives():
+    """Six alternatives must not outvote a single-skill requirement."""
+    result = evaluate_requirements(
+        [any_of("Java", "Python", "JavaScript", "HTML", "SQL", "C++"), {"skill": "Terraform"}],
+        CPP,
+    )
+    assert result["fit_score"] == 50.0          # one satisfied, one not
+
+
+def test_the_postings_own_words_are_the_label_when_we_have_them():
+    listed = evaluate_requirements([any_of("Java", "C++")], CPP)["requirements"][0]
+    quoted = evaluate_requirements(
+        [any_of("Java", "C++", source_text="experience in one of Java or C++")], CPP
+    )["requirements"][0]
+
+    assert listed["requirement"] == "Java or C++"
+    assert quoted["requirement"] == "experience in one of Java or C++"
+
+
+def test_legacy_and_tree_shapes_run_through_the_same_resolver():
+    assert as_condition({"skill": "C++"}) == {"operator": "any_of", "minimum": 1, "items": ["C++"]}
+    assert as_condition("C++")["items"] == ["C++"]
+    assert evaluate_requirements([{"skill": "C++"}], CPP)["fit_score"] == \
+           evaluate_requirements([any_of("C++")], CPP)["fit_score"]
+
+
+def test_a_satisfied_group_can_still_be_hidden():
+    """An inferred alternative satisfies the requirement but is not stated — which is
+    exactly the case tailoring exists for."""
+    react = [{"bullet_id": "b1", "kind": "project", "text": "Built the frontend in React"}]
+    result = evaluate_requirements([any_of("JavaScript", "Ruby")], react)
+
+    assert result["requirements"][0]["state"] == INFERRED
+    assert result["hidden"] == ["JavaScript or Ruby"]
+    assert result["visibility_score"] == 0.0

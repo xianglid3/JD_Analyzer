@@ -41,3 +41,136 @@ def test_invalid_work_type(monkeypatch):
     job = svc.analyze_job_description("any text")
     assert job.work_type is None
     assert job.title == "X"
+
+
+# ── requirement groups ───────────────────────────────────────────────────────
+# "one of Java, Python, or C++" is ONE requirement. Flattening it made the
+# denominator wrong before matching started, so the shape has to survive extraction.
+
+def _extract(monkeypatch, payload):
+    monkeypatch.setattr(svc.client.chat.completions, "create",
+                        lambda *a, **k: fake_response(json.dumps(payload)))
+    return svc.analyze_job_description("any text")
+
+
+def test_alternatives_become_one_grouped_requirement(monkeypatch):
+    job = _extract(monkeypatch, {
+        "title": "SWE",
+        "skills": ["java", "python", "cpp", "git"],
+        "requirements": [{"skill": "git", "importance": "required"}],
+        "requirement_groups": [{
+            "items": ["java", "python", "cpp"],
+            "minimum": 1,
+            "source_text": "experience in one of Java, Python, or C++",
+            "importance": "required",
+        }],
+    })
+
+    # four skills, but only two requirements: the group plus git
+    assert len(job.requirements) == 2
+    group = next(r for r in job.requirements if r.condition)
+    assert group.condition.items == ["java", "python", "cpp"]
+    assert group.condition.minimum == 1
+    assert group.source_text == "experience in one of Java, Python, or C++"
+    # the alternatives are not ALSO emitted as standalone requirements
+    assert [r.skill for r in job.requirements if r.skill] == ["git"]
+
+
+def test_group_alternatives_are_added_to_the_flat_skill_list(monkeypatch):
+    # the chips render `skills`; an alternative the model forgot to list there
+    # would otherwise be scored but never shown
+    job = _extract(monkeypatch, {
+        "skills": ["java"],
+        "requirement_groups": [{"items": ["java", "python"], "minimum": 1}],
+    })
+
+    assert job.skills == ["java", "python"]
+
+
+def test_a_group_with_one_usable_item_is_not_a_choice(monkeypatch):
+    # "one of Python" is just Python; a condition here would render as a fake choice
+    job = _extract(monkeypatch, {
+        "skills": [],
+        "requirement_groups": [{"items": ["python", "programming"], "minimum": 1}],
+    })
+
+    assert job.skills == ["python"]
+    assert [r.skill for r in job.requirements] == ["python"]
+    assert all(r.condition is None for r in job.requirements)
+
+
+def test_minimum_cannot_exceed_the_alternatives_offered(monkeypatch):
+    job = _extract(monkeypatch, {
+        "skills": ["aws", "gcp"],
+        "requirement_groups": [{"items": ["aws", "gcp"], "minimum": 9}],
+    })
+
+    assert job.requirements[0].condition.minimum == 2
+
+
+def test_a_grouped_skill_is_never_emitted_twice(monkeypatch):
+    # the model repeating an alternative in `requirements` is the exact drift that
+    # would restore the flattening bug
+    job = _extract(monkeypatch, {
+        "skills": ["java", "python"],
+        "requirements": [
+            {"skill": "java", "importance": "required"},
+            {"skill": "python", "importance": "required"},
+        ],
+        "requirement_groups": [{"items": ["java", "python"], "minimum": 1}],
+    })
+
+    assert len(job.requirements) == 1
+    assert job.requirements[0].condition.items == ["java", "python"]
+
+
+def test_extraction_without_groups_is_unchanged(monkeypatch):
+    job = _extract(monkeypatch, {
+        "skills": ["python", "sql"],
+        "requirements": [{"skill": "python", "importance": "preferred"}],
+    })
+
+    assert [r.skill for r in job.requirements] == ["python", "sql"]
+    assert job.requirements[0].importance == "preferred"
+    assert all(r.condition is None for r in job.requirements)
+
+
+def test_a_sentence_is_not_a_skill(monkeypatch):
+    """A clause the model failed to reduce poisons everything downstream: it can never match
+    evidence, so it is a permanent gap, and it renders as a paragraph among skill chips."""
+    job = _extract(monkeypatch, {
+        "skills": [
+            "python",
+            "Individuals who are completing or have recently completed a Bachelor's or "
+            "above degree in computer science or a related discipline",
+        ],
+    })
+
+    assert job.skills == ["python"]
+    assert [r.skill for r in job.requirements] == ["python"]
+
+
+def test_snake_case_skill_names_are_written_as_words(monkeypatch):
+    # the model emits message_queue as often as "message queue"; matching normalizes both,
+    # but only one of them is readable on screen
+    job = _extract(monkeypatch, {"skills": ["message_queue", "data_governance"]})
+
+    assert job.skills == ["message queue", "data governance"]
+
+
+def test_a_long_alternative_does_not_survive_inside_a_group(monkeypatch):
+    job = _extract(monkeypatch, {
+        "skills": ["spark"],
+        "requirement_groups": [{
+            "items": [
+                "spark",
+                "Experience with big data systems and related technologies across a very "
+                "large distributed production environment",
+            ],
+            "minimum": 1,
+        }],
+    })
+
+    # one usable alternative left, so it is no longer a choice
+    assert job.skills == ["spark"]
+    assert all(r.condition is None for r in job.requirements)

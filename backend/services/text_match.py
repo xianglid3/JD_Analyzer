@@ -32,11 +32,17 @@ def _clean(raw):
 
 
 def index(text):
-    """Two token sequences (compounds whole and split) plus a set for single words."""
-    if not text:
-        return {"whole": [], "split": [], "terms": set()}
+    """Two token sequences (compounds whole and split) plus a set for single words.
 
-    whole, split, terms = [], [], set()
+    `origin` maps each split piece back to the whole token it came from, so a caller doing
+    longest-match can claim a phrase in one coordinate system. Without it, "object-oriented
+    programming" claims the phrase in `whole` while "programming" is still free to match the
+    same words in `split`.
+    """
+    if not text:
+        return {"whole": [], "split": [], "terms": set(), "origin": []}
+
+    whole, split, origin, terms = [], [], [], set()
     for raw in SEPARATORS.split(text.lower().translate(CURLY)):
         token = _clean(raw)
         if not token:
@@ -50,13 +56,54 @@ def index(text):
         pieces = [piece for piece in pieces if piece]
         if len(pieces) > 1:
             split.extend(pieces)              # machine-learning → machine, learning
+            origin.extend([len(whole) - 1] * len(pieces))
             for piece in pieces:
                 terms.add(piece)
                 terms.add(normalize_skill(piece))
         else:
             split.append(token)
+            origin.append(len(whole) - 1)
 
-    return {"whole": whole, "split": split, "terms": terms}
+    return {"whole": whole, "split": split, "terms": terms, "origin": origin}
+
+
+def _wanted(term):
+    return [t for t in (_clean(w) for w in SEPARATORS.split(term.lower().translate(CURLY))) if t]
+
+
+def covered_tokens(indexed, term):
+    """Which whole-token positions this term occupies, or an empty set if it isn't there.
+
+    Everything is reported in `whole` coordinates — a split match reports the compound token
+    it came out of — so a caller can tell that "programming" and "object-oriented
+    programming" are competing for the same words.
+    """
+    wanted = _wanted(term)
+    if not wanted:
+        return set()
+
+    covered = set()
+    span = len(wanted)
+
+    for i, token in enumerate(indexed["whole"]):
+        if span == 1 and (token == wanted[0] or normalize_skill(token) == normalize_skill(wanted[0])):
+            covered.add(i)
+    if span > 1:
+        for i in range(len(indexed["whole"]) - span + 1):
+            if indexed["whole"][i:i + span] == wanted:
+                covered.update(range(i, i + span))
+
+    origin = indexed["origin"]
+    pieces = indexed["split"]
+    for i in range(len(pieces) - span + 1):
+        if pieces[i:i + span] == wanted:
+            covered.update(origin[i:i + span])
+    if span == 1:
+        for i, piece in enumerate(pieces):
+            if normalize_skill(piece) == normalize_skill(wanted[0]):
+                covered.add(origin[i])
+
+    return covered
 
 
 def mentions(indexed, term):

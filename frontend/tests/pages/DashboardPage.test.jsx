@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { apiFetch } from '../../src/lib/api'
@@ -79,5 +79,17 @@ describe('DashboardPage', () => {
       body: JSON.stringify({ description: 'A'.repeat(60), source_url: 'https://example.com/jobs/42' }),
     }))
     expect(screen.queryByText('Analysis saved to your dashboard.')).not.toBeInTheDocument()
+  })
+
+  it('shows status-save feedback beside the status that changed', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(<DashboardPage />, { route: '/dashboard' })
+
+    const title = await screen.findByText('Frontend Engineer')
+    const row = title.closest('li')
+    await user.click(within(row).getByRole('combobox', { name: /Status for/ }))
+    await user.click(screen.getByRole('option', { name: 'Applied' }))
+
+    expect(await within(row).findByText('Status updated.')).toBeInTheDocument()
   })
 })

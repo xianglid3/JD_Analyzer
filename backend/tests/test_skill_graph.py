@@ -5,7 +5,7 @@ system starts claiming skills the candidate never showed.
 """
 
 from services.resume_search import expand_query
-from services.skill_graph import IMPLIES, MAX_DEPTH, evidence_for, implied_by
+from services.skill_graph import IMPLIES, MAX_DEPTH, evidence_for, implied_by, rewrite_implied_by
 
 
 def test_specific_implies_general():
@@ -61,3 +61,11 @@ def test_every_edge_target_is_a_lowercase_bare_name():
 
 def test_depth_cap_is_respected():
     assert MAX_DEPTH >= 2       # supabase → postgresql → sql needs at least two hops
+
+
+def test_rewrite_permissions_are_strict_and_one_hop():
+    assert "css" in rewrite_implied_by("tailwind")
+    assert "sql" in rewrite_implied_by("postgresql")
+    assert "javascript" not in rewrite_implied_by("typescript")
+    assert "oop" not in rewrite_implied_by("cpp")
+    assert "oop" not in rewrite_implied_by("google test")
