@@ -52,10 +52,19 @@ body,
   background: #fafafa;
 }
 
-button,
-input,
-select,
-textarea { font: inherit; }
+/* In @layer base on purpose. Tailwind v4 puts its utilities in a cascade layer, and
+   unlayered CSS beats layered CSS whatever the specificity — so this rule, written outside
+   any layer, silently overrode every `text-xs` / `text-sm` on a button, input, select or
+   textarea in the app. They all inherited body size instead, which is why two links styled
+   `text-xs` rendered larger than the paragraph above them. Layering it puts the utilities
+   back in charge and leaves the reset doing its actual job: making form controls inherit
+   the page font rather than the browser's. */
+@layer base {
+  button,
+  input,
+  select,
+  textarea { font: inherit; }
+}
 
 button,
 a,
