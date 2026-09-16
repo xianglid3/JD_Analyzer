@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, NavLink, useNavigate } from 'react-router-dom'
 import { apiFetch } from '../lib/api'
 import { Spinner } from './Feedback'
-import TranslateMark from './TranslateMark'
+import MatchaMark from './MatchaMark'
 
 export default function NavBar() {
   const navigate = useNavigate()
@@ -52,9 +52,9 @@ export default function NavBar() {
     <header className="sticky top-0 z-40 h-16 bg-surface/90 backdrop-blur-xl">
       <div className="mx-auto flex h-full max-w-7xl items-center gap-4 px-4 sm:px-6 lg:px-12">
         <Link to="/dashboard" className="flex min-h-11 shrink-0 items-center gap-2 text-sm font-medium text-ink">
-          <TranslateMark className="h-[18px] w-[18px] text-carbon" />
-          <span className="hidden sm:inline">JD Translator</span>
-          <span className="sm:hidden">JD</span>
+          <MatchaMark className="h-[18px] w-[18px] text-carbon" />
+          <span className="hidden sm:inline">JobMatcha</span>
+          <span className="sm:hidden">Matcha</span>
         </Link>
 
         <nav className="ml-2 flex items-center gap-1" aria-label="Main navigation">
