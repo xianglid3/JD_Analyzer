@@ -186,8 +186,15 @@ def reserve(user_id, kind, model, run_id=None):
 
         cur.execute(
             """
-            INSERT INTO llm_calls (user_id, kind, run_id, model, outcome, reserved_usd, cost_usd)
-            VALUES (%s, %s, %s, %s, 'reserved', %s, 0)
+            INSERT INTO llm_calls (
+                user_id, kind, run_id, model, outcome, reserved_usd, cost_usd,
+                -- written out rather than left to the column defaults: the live database was
+                -- hand-built and does not carry them, so omitting these inserted NULL into
+                -- NOT NULL columns and every paid call 500'd. A default that only exists in
+                -- schema.sql is not a default.
+                prompt_tokens, completion_tokens, latency_ms
+            )
+            VALUES (%s, %s, %s, %s, 'reserved', %s, 0, 0, 0, 0)
             RETURNING id
             """,
             (user_id, kind, run_id, model, price),

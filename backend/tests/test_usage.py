@@ -223,3 +223,33 @@ def test_the_first_call_of_the_day_is_not_exempt(_db, user_id, monkeypatch):
 
     with pytest.raises(usage.SystemQuotaExceeded):
         usage.reserve(user_id, "job_analysis", "gpt-4o-mini")
+
+
+def test_a_reservation_does_not_depend_on_column_defaults(_db, user_id):
+    """The live database was hand-built and lacks the DEFAULT 0 that `schema.sql` declares, so
+    a reservation that omitted these columns inserted NULL and every paid call 500'd. The test
+    database has the defaults, which is exactly why nothing caught it — so this drops them for
+    the duration and reproduces production."""
+    with _db.cursor() as cur:
+        cur.execute("""
+            ALTER TABLE llm_calls ALTER COLUMN prompt_tokens DROP DEFAULT,
+                                  ALTER COLUMN completion_tokens DROP DEFAULT,
+                                  ALTER COLUMN latency_ms DROP DEFAULT
+        """)
+    _db.commit()
+    try:
+        reservation = usage.reserve(user_id, "resume_upload", "gpt-4o-mini")
+        with _db.cursor() as cur:
+            cur.execute(
+                "SELECT prompt_tokens, completion_tokens, latency_ms FROM llm_calls WHERE id = %s",
+                (reservation["id"],),
+            )
+            assert cur.fetchone() == (0, 0, 0)
+    finally:
+        with _db.cursor() as cur:
+            cur.execute("""
+                ALTER TABLE llm_calls ALTER COLUMN prompt_tokens SET DEFAULT 0,
+                                      ALTER COLUMN completion_tokens SET DEFAULT 0,
+                                      ALTER COLUMN latency_ms SET DEFAULT 0
+            """)
+        _db.commit()
