@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef } from 'react'
+import { createPortal } from 'react-dom'
 
 export default function Dialog({
   open,
@@ -52,7 +53,12 @@ export default function Dialog({
 
   if (!open) return null
 
-  return (
+  // Rendered into <body>, not where it is written. `.animate-page-in` keeps a transform after
+  // it finishes (`both`), and a transformed ancestor becomes the containing block for
+  // `position: fixed` — so inside the page column this backdrop covered the column instead of
+  // the viewport (the nav stayed undimmed) and `max-h-full` measured the column's height, letting
+  // the panel grow past the window with the body scroll locked behind it. A portal escapes both.
+  return createPortal((
     <div
       className="dialog-backdrop fixed inset-0 z-50 grid place-items-center bg-black/35 px-4 py-6"
       onMouseDown={(event) => {
@@ -91,5 +97,5 @@ export default function Dialog({
         {footer && <footer className="flex flex-wrap justify-end gap-2 border-t border-border px-5 py-4">{footer}</footer>}
       </section>
     </div>
-  )
+  ), document.body)
 }
