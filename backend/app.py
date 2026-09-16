@@ -12,6 +12,7 @@ from commands import (
     register_grounding_report,
     register_run_sweep,
     register_relation_maintenance,
+    register_tailoring_worker,
     register_rewrite_approvals,
     register_skill_relations,
     register_usage_report,
@@ -73,6 +74,7 @@ app.register_blueprint(tailoring_bp)
 register_commands(app)
 register_usage_report(app)
 register_run_sweep(app)
+register_tailoring_worker(app)     # the worker service's entire entry point
 register_skill_relations(app)
 register_rewrite_approvals(app)
 register_relation_maintenance(app)
