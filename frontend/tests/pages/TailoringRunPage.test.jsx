@@ -510,4 +510,24 @@ describe('TailoringRunPage', () => {
     // "I have this skill" with no project behind it is the keyword list again
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
   })
+
+  it('keeps the run on screen when a background poll fails', async () => {
+    // Tab away during a question, come back, and the token refresh plus reconnect can fail one
+    // poll. That used to replace the whole run with "Run unavailable" until the next poll
+    // succeeded — the work looked lost at the exact moment the user was answering.
+    apiFetch.mockImplementation((path, options) => {
+      if (path === '/resume/evidence' && !options) return Promise.resolve({ entries: [] })
+      return Promise.resolve(finished)
+    })
+
+    const { queryClient } = renderWithProviders(<TailoringRunPage />)
+    expect(await screen.findByText('Proposed changes')).toBeInTheDocument()
+
+    apiFetch.mockRejectedValueOnce(new Error('Failed to fetch'))
+    await queryClient.refetchQueries({ queryKey: ['tailoring-run', 'run-1'] })
+
+    await waitFor(() => expect(screen.getByText(/Lost contact with the server/)).toBeInTheDocument())
+    expect(screen.getByText('Proposed changes')).toBeInTheDocument()
+    expect(screen.queryByText('Run unavailable')).not.toBeInTheDocument()
+  })
 })

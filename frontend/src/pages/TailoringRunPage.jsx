@@ -867,7 +867,8 @@ export default function TailoringRunPage() {
   const runQuery = useQuery({
     queryKey: ['tailoring-run', id],
     queryFn: () => apiFetch(`/tailoring/runs/${id}`),
-    retry: false,
+    // No retry override: the app's QueryClient already retries, and pinning a number here
+    // would quietly lower it and fight the test client, which turns retries off on purpose.
     // the run continues on the server after the request returns
     refetchInterval: (query) => (query.state.data?.status === 'running' ? 1500 : false),
   })
@@ -912,7 +913,10 @@ export default function TailoringRunPage() {
 
   if (runQuery.isLoading) return <PageLoader label="Loading tailoring run…" />
 
-  if (runQuery.isError) {
+  // Only when there is nothing to show. A failed *background* poll used to replace a run the
+  // user was in the middle of answering with a full-page error — tab away, come back, and the
+  // work appeared to be gone until the next poll succeeded.
+  if (runQuery.isError && !runQuery.data) {
     return (
       <div className="app-main min-h-screen bg-surface">
         <NavBar />
@@ -971,6 +975,11 @@ export default function TailoringRunPage() {
     <div className="app-main min-h-screen bg-surface">
       <NavBar />
       <main className="page-container animate-page-in">
+        {runQuery.isError && (
+          <InlineAlert className="mb-4">
+            Lost contact with the server for a moment — still showing the last update. Retrying.
+          </InlineAlert>
+        )}
         {/* no way back out mid-run: the user is being asked to finish something */}
         {!running && !waiting && (
           <Link to={`/jobs/${run.job_id}`} className="mb-6 inline-block text-sm text-muted hover:text-ink">← Back to job</Link>
