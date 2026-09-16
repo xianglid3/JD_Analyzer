@@ -3,9 +3,14 @@ import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from '../helpers/render'
 import TailoringRunPage from '../../src/pages/TailoringRunPage'
-import { apiFetch } from '../../src/lib/api'
+import { apiFetch, apiUrl } from '../../src/lib/api'
 
-vi.mock('../../src/lib/api', () => ({ apiFetch: vi.fn() }))
+// apiUrl is real, not a stub: the download link is the one place that builds a URL itself,
+// and a mock that returns undefined would hide exactly the bug this covers
+vi.mock('../../src/lib/api', async (importOriginal) => ({
+  ...(await importOriginal()),
+  apiFetch: vi.fn(),
+}))
 vi.mock('react-router-dom', async () => ({
   ...(await vi.importActual('react-router-dom')),
   useParams: () => ({ id: 'run-1' }),
@@ -530,6 +535,16 @@ describe('TailoringRunPage', () => {
     expect(screen.getByRole('button', { name: 'Add to my resume' })).toBeDisabled()
     await userEvent.type(screen.getByLabelText(/What you actually did with it/), 'yes')
     expect(screen.getByRole('button', { name: 'Add to my resume' })).toBeDisabled()
+  })
+
+  it('points the download at the API host, not the page it is served from', async () => {
+    // a bare "/api/..." href resolves against the frontend's own domain, 404s there, and never
+    // reaches the backend — so it does not even appear in the API logs
+    apiFetch.mockResolvedValue(finished)
+    renderWithProviders(<TailoringRunPage />)
+
+    const link = await screen.findByRole('link', { name: 'Download HTML' })
+    expect(link).toHaveAttribute('href', apiUrl('/tailoring/runs/run-1/resume.html?ordering=tailored'))
   })
 
   it('keeps the run on screen when a background poll fails', async () => {

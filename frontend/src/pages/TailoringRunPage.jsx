@@ -4,7 +4,7 @@ import { Link, useParams } from 'react-router-dom'
 import Dialog from '../components/Dialog'
 import { ButtonLabel, InlineAlert, PageLoader, Spinner } from '../components/Feedback'
 import NavBar from '../components/NavBar'
-import { apiFetch } from '../lib/api'
+import { apiFetch, apiUrl } from '../lib/api'
 
 // only the first line is generic; after that each one describes a tool call that ran
 const OPENING_LINES = ['Reading the job posting…', 'Reading your resume evidence…', 'Planning what to look for…']
@@ -62,10 +62,14 @@ function DownloadActions({ runId, ordering }) {
     <div className="mt-5 border-t border-border pt-4">
       <p className="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Download</p>
       <div className="mt-2 grid grid-cols-2 gap-2">
+        {/* apiUrl, not a bare path: the frontend and the API are different hosts, so
+            "/api/..." resolves against the frontend and 404s there without ever reaching the
+            backend. Every other request goes through apiFetch, which already handles this — a
+            plain anchor is the one place that has to remember. */}
         {formats.map(([extension, label, hint]) => (
           <a
             key={extension}
-            href={`/api/tailoring/runs/${runId}/resume.${extension}?ordering=${ordering}`}
+            href={apiUrl(`/tailoring/runs/${runId}/resume.${extension}?ordering=${ordering}`)}
             aria-label={`Download ${label}`}
             className="flex min-h-11 flex-col justify-center rounded-md border border-border bg-pure-white px-3 py-2 transition-colors duration-150 hover:border-obsidian focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-obsidian"
           >
