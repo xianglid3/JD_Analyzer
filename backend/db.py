@@ -190,7 +190,11 @@ def check_schema(schema_path=None):
             cur.execute("SELECT indexname FROM pg_indexes WHERE schemaname = 'public'")
             present_indexes = {row[0] for row in cur.fetchall()}
     except Exception as exc:
-        logger.warning("could not check the schema — database unreachable at startup")
+        # The reason matters more than the fact. "unreachable" covers a wrong host, a paused
+        # project, a rejected password and a firewall, and without the driver's own message
+        # the only way to tell them apart is guesswork. It names no password: psycopg2 reports
+        # the host and the failure, not the credentials.
+        logger.warning("could not reach the database at startup: %s", exc)
         return SchemaState(reachable=False, error=str(exc))
 
     missing = []
