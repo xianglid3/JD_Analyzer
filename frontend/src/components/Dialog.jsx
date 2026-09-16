@@ -83,7 +83,11 @@ export default function Dialog({
             </button>
           )}
         </header>
-        <div className="overflow-y-auto px-5 py-5">{children}</div>
+        {/* `min-h-0` and `flex-1` are both load-bearing: a flex child's default min-height is
+            its content, so without them this never shrinks, `overflow-y-auto` has nothing to
+            scroll, and the panel's own `overflow-hidden` simply clips whatever does not fit —
+            a dialog taller than the window becomes unusable with no scrollbar to say so. */}
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">{children}</div>
         {footer && <footer className="flex flex-wrap justify-end gap-2 border-t border-border px-5 py-4">{footer}</footer>}
       </section>
     </div>
