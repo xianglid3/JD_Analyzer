@@ -335,6 +335,15 @@ CREATE TABLE llm_daily_budgets (
   PRIMARY KEY (user_id, budget_date)
 );
 
+-- The system-wide ceiling. Per-user caps bound one account; accounts are free, so they do
+-- not bound the bill. This is the row that does.
+CREATE TABLE llm_global_budget (
+  budget_date  date          PRIMARY KEY,
+  reserved_usd numeric(10,6) NOT NULL DEFAULT 0 CHECK (reserved_usd >= 0),
+  spent_usd    numeric(10,6) NOT NULL DEFAULT 0 CHECK (spent_usd >= 0),
+  updated_at   timestamptz   NOT NULL DEFAULT now()
+);
+
 CREATE TABLE llm_calls (
   id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id           uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,

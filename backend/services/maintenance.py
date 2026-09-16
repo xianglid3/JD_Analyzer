@@ -15,14 +15,15 @@ worst case is one of them updating nothing.
 
 import logging
 import os
+from config import env_flag, env_int
 import threading
 
 logger = logging.getLogger(__name__)
 
 # a run is abandoned after 3 minutes of silence, so checking every few minutes is enough to
 # keep the wait short without waking up constantly
-SWEEP_INTERVAL_SECONDS = int(os.environ.get("MAINTENANCE_SWEEP_SECONDS", "300"))
-SWEEP_ENABLED = os.environ.get("MAINTENANCE_SWEEP", "1") not in ("0", "false", "False")
+SWEEP_INTERVAL_SECONDS = env_int("MAINTENANCE_SWEEP_SECONDS", 300)
+SWEEP_ENABLED = env_flag("MAINTENANCE_SWEEP", default=True)
 
 _started = False
 _lock = threading.Lock()

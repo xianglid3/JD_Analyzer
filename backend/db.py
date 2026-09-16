@@ -4,6 +4,7 @@ import pathlib
 import re
 import threading
 
+from config import env_int
 import psycopg2
 from psycopg2 import pool as psycopg2_pool
 from dotenv import load_dotenv
@@ -16,14 +17,14 @@ SUPABASE_URL = os.environ["SUPABASE_URL"]
 # A tailoring run touches the database ~25 times (a heartbeat and a tool write per step).
 # Connecting per use meant ~25 TLS handshakes to the pooler for one run; these are borrowed
 # instead. Threaded, because the tailoring worker runs off the request thread.
-POOL_MIN = int(os.environ.get("DB_POOL_MIN", "1"))
-POOL_MAX = int(os.environ.get("DB_POOL_MAX", "10"))
+POOL_MIN = env_int("DB_POOL_MIN", 1)
+POOL_MAX = env_int("DB_POOL_MAX", 10)
 
 # A query with no ceiling holds its pooled connection for as long as it runs, so a handful of
 # stuck ones can starve every other request of a connection. Nothing here should take
 # anywhere near this long; it only fires when something is already wrong, and it turns a
 # silent hang into a normal error the caller can report.
-STATEMENT_TIMEOUT_MS = int(os.environ.get("DB_STATEMENT_TIMEOUT_MS", "15000"))
+STATEMENT_TIMEOUT_MS = env_int("DB_STATEMENT_TIMEOUT_MS", 15000)
 
 _pool = None
 _pool_lock = threading.Lock()

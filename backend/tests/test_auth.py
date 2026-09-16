@@ -3,6 +3,7 @@ import hashlib
 
 import pytest
 
+from routes import auth
 from routes.auth import validate_credentials
 
 
@@ -115,3 +116,49 @@ def test_login_cleans_all_expired_refresh_tokens(client, _db):
             (expired_hash,),
         )
         assert cur.fetchone() is None
+
+
+# ── signup friction (an account has to cost more than an HTTP request) ───────
+
+def test_signup_requires_the_invite_code_when_one_is_set(client, monkeypatch):
+    monkeypatch.setattr(auth, "SIGNUP_INVITE_CODE", "let-me-in")
+
+    refused = client.post("/api/auth/signup",
+                          json={"username": "uninvited", "password": "pw123456"})
+    assert refused.status_code == 403
+
+    accepted = client.post("/api/auth/signup", json={
+        "username": "invited", "password": "pw123456", "invite_code": "let-me-in",
+    })
+    assert accepted.status_code == 201
+
+
+def test_signups_stop_at_the_daily_ceiling(client, monkeypatch, _db):
+    monkeypatch.setattr(auth, "MAX_SIGNUPS_PER_DAY", 1)
+
+    first = client.post("/api/auth/signup", json={"username": "firstone", "password": "pw123456"})
+    second = client.post("/api/auth/signup", json={"username": "secondone", "password": "pw123456"})
+
+    assert first.status_code == 201
+    assert second.status_code == 503
+    # and it says nothing a script could use to time its next attempt
+    assert "tomorrow" not in second.get_json()["error"]
+
+
+def test_no_friction_is_configured_by_default(client):
+    """Local development and the test suite must not need a code."""
+    assert client.post("/api/auth/signup",
+                       json={"username": "ordinary", "password": "pw123456"}).status_code == 201
+
+
+def test_the_form_is_told_whether_a_code_is_needed_but_never_what_it_is(client, monkeypatch):
+    monkeypatch.setattr(auth, "SIGNUP_INVITE_CODE", "let-me-in")
+
+    body = client.get("/api/auth/config").get_json()
+
+    assert body == {"invite_required": True}
+    assert "let-me-in" not in str(body)
+
+
+def test_an_open_instance_asks_for_no_code(client):
+    assert client.get("/api/auth/config").get_json() == {"invite_required": False}

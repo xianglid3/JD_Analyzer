@@ -174,3 +174,52 @@ def test_a_reservation_whose_caller_died_is_reconciled(_db, user_id):
         cur.execute("SELECT outcome FROM llm_calls WHERE id = %s", (reservation["id"],))
         assert cur.fetchone()[0] == "unknown"
         assert usage.spent_today(cur, user_id) == pytest.approx(reservation["reserved"])
+
+
+# ── the system-wide ceiling ──────────────────────────────────────────────────
+
+def test_the_global_cap_stops_a_user_who_is_under_their_own(_db, user_id, monkeypatch):
+    """Per-user caps bound one account. Accounts are free, so only this bounds the bill."""
+    monkeypatch.setattr(usage, "GLOBAL_DAILY_LIMIT_USD", usage.ceiling_cost("job_analysis") * 0.5)
+
+    with pytest.raises(usage.SystemQuotaExceeded):
+        usage.reserve(user_id, "job_analysis", "gpt-4o-mini")
+
+    with _db.cursor() as cur:
+        # the user was never charged for a call that did not happen: the global refusal has to
+        # roll back its own reservation too
+        assert usage.spent_today(cur, user_id) == 0
+
+
+def test_one_account_cannot_be_dodged_by_making_another(_db, user_id, client, monkeypatch):
+    monkeypatch.setattr(usage, "GLOBAL_DAILY_LIMIT_USD", usage.ceiling_cost("job_analysis") * 1.2)
+    usage.reserve(user_id, "job_analysis", "gpt-4o-mini")      # the day's global room, used
+
+    client.post("/api/auth/logout")
+    client.post("/api/auth/signup", json={"username": "freshaccount", "password": "pw123456"})
+    client.post("/api/auth/login", json={"username": "freshaccount", "password": "pw123456"})
+    other_id = client.get("/api/auth/me").get_json()["id"]
+
+    with pytest.raises(usage.SystemQuotaExceeded):
+        usage.reserve(other_id, "job_analysis", "gpt-4o-mini")
+
+
+def test_the_system_refusal_does_not_blame_the_user(_db, user_id, monkeypatch):
+    monkeypatch.setattr(usage, "GLOBAL_DAILY_LIMIT_USD", 0.0001)
+    with pytest.raises(usage.QuotaExceeded) as exc:      # still a QuotaExceeded for callers
+        usage.reserve(user_id, "job_analysis", "gpt-4o-mini")
+    assert "the service" in str(exc.value)
+    assert "used today" not in str(exc.value)     # that message is about their own spending
+
+
+def test_the_first_call_of_the_day_is_not_exempt(_db, user_id, monkeypatch):
+    """The INSERT branch has no ON CONFLICT guard, so a cap below one call's ceiling would
+    otherwise let exactly one call through every morning."""
+    monkeypatch.setattr(usage, "GLOBAL_DAILY_LIMIT_USD", 0.0001)
+
+    with _db.cursor() as cur:
+        cur.execute("SELECT count(*) FROM llm_global_budget WHERE budget_date = current_date")
+        assert cur.fetchone()[0] == 0, "this test only means something on an empty day"
+
+    with pytest.raises(usage.SystemQuotaExceeded):
+        usage.reserve(user_id, "job_analysis", "gpt-4o-mini")

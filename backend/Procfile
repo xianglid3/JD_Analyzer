@@ -1,0 +1,11 @@
+# Railway runs one process per service, so these are two services off this same repo rather
+# than two processes of one. Both need the same environment variables.
+#
+#   web    — the API. One replica on purpose: flask-limiter's counters live in this process's
+#            memory, so a second replica doubles every limit. Raising it means Redis first
+#            (RATELIMIT_STORAGE_URI).
+#   worker — drives tailoring runs. Separate so a deploy restarts the API without killing a
+#            run in flight; a killed worker loses nothing, because its lease expires and the
+#            next one resumes from the last step on disk.
+web: gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120 app:app
+worker: flask --app app tailoring-worker

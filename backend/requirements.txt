@@ -8,3 +8,5 @@ openai==2.45.0
 pydantic==2.13.4
 pypdf==6.16.1
 supabase==2.31.0
+gunicorn==23.0.0
+sentry-sdk[flask]==2.48.0

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { apiFetch, apiUpload } from '../../src/lib/api'
+import { apiFetch, apiUpload, apiUrl } from '../../src/lib/api'
 
 function response(status, data = {}) {
   return {
@@ -135,5 +135,12 @@ describe('apiUpload', () => {
     expect(request.withCredentials).toBe(true)
     expect(request.send).toHaveBeenCalledWith(form)
     expect(onProgress).toHaveBeenCalledWith(75)
+  })
+})
+
+describe('apiUrl', () => {
+  it('stays same-origin when no API host is configured', () => {
+    // development: the Vite proxy forwards /api to Flask
+    expect(apiUrl('/jobs')).toBe('/api/jobs')
   })
 })

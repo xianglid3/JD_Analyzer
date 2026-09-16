@@ -1,9 +1,17 @@
 
+// Where the API lives. Empty in development, where the Vite proxy forwards /api to the local
+// Flask server and everything is same-origin. In production the frontend is served by Vercel
+// and the API by Railway, so a bare '/api' would resolve to Vercel and 404 — VITE_API_URL is
+// what points it at the real origin. Trailing slashes are trimmed so the join stays exact.
+const API_BASE = (import.meta.env?.VITE_API_URL || '').replace(/\/+$/, '')
+
+export const apiUrl = (path) => `${API_BASE}/api${path}`
+
 let refreshPromise = null
 
 function refreshOnce(){
     if(!refreshPromise){
-        refreshPromise = fetch('/api/auth/refresh', { method: 'POST', credentials: 'include' })
+        refreshPromise = fetch(apiUrl('/auth/refresh'), { method: 'POST', credentials: 'include' })
         .finally(() => { refreshPromise = null })   
     }
     return refreshPromise
@@ -37,7 +45,7 @@ export async function apiFetch(path, options = {}, retry = true) {
 
     let res
     try {
-        res = await fetch('/api' + path, {
+        res = await fetch(apiUrl(path), {
             ...fetchOptions,
             credentials: 'include',
             signal: timeoutController?.signal || optionSignal,
@@ -87,7 +95,7 @@ export async function apiFetch(path, options = {}, retry = true) {
 export function apiUpload(path, formData, onProgress, retry = true) {
     return new Promise((resolve, reject) => {
         const request = new XMLHttpRequest()
-        request.open('POST', '/api' + path)
+        request.open('POST', apiUrl(path))
         request.withCredentials = true
 
         request.upload.addEventListener('progress', (event) => {

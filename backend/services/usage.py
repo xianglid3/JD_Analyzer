@@ -25,12 +25,18 @@ import os
 import time
 from contextlib import contextmanager
 
+from config import env_float
 from db import get_cursor
 from services.openai_services import PRICE_PER_MTOK, usd
 
 logger = logging.getLogger(__name__)
 
-DAILY_LIMIT_USD = float(os.environ.get("LLM_DAILY_USD", "1.00"))
+DAILY_LIMIT_USD = env_float("LLM_DAILY_USD", 1.00)
+# The per-user cap bounds one account. Accounts are free and signup is open, so it does not
+# bound the bill — a thousand accounts is a thousand times the per-user cap. This is the
+# number that protects the card, and it is deliberately not a multiple of anything: it is what
+# you are willing to lose in a day.
+GLOBAL_DAILY_LIMIT_USD = env_float("LLM_GLOBAL_DAILY_USD", 10.00)
 
 # What one call of each kind may generate. This is the reservation price, so it has to be a
 # real ceiling passed to the provider — not an estimate of the typical case.
@@ -50,6 +56,15 @@ MAX_PROMPT_TOKENS = 40_000
 
 class QuotaExceeded(Exception):
     """The user has spent their allowance for the day."""
+
+
+class SystemQuotaExceeded(QuotaExceeded):
+    """Everyone together has spent the day's allowance.
+
+    A subclass so every existing handler keeps working: callers that refuse on QuotaExceeded
+    refuse on this too. It is separate because the user did nothing wrong and the message
+    should not blame them.
+    """
 
 
 def ceiling_for(kind):
@@ -74,6 +89,17 @@ def spent_today(cur, user_id):
     return float(row[0]) if row else 0.0
 
 
+def spent_today_globally(cur):
+    cur.execute(
+        """
+        SELECT COALESCE(spent_usd, 0) + COALESCE(reserved_usd, 0)
+        FROM llm_global_budget WHERE budget_date = current_date
+        """,
+    )
+    row = cur.fetchone()
+    return float(row[0]) if row else 0.0
+
+
 def check_quota(user_id):
     """A cheap look before doing expensive setup. Not the enforcement point — `reserve` is.
 
@@ -83,6 +109,11 @@ def check_quota(user_id):
     """
     with get_cursor() as cur:
         spent = spent_today(cur, user_id)
+        system = spent_today_globally(cur)
+    if system >= GLOBAL_DAILY_LIMIT_USD:
+        raise SystemQuotaExceeded(
+            "the service has reached its daily AI budget — try again tomorrow"
+        )
     if spent >= DAILY_LIMIT_USD:
         raise QuotaExceeded(f"${spent:.2f} of ${DAILY_LIMIT_USD:.2f} used today")
     return spent
@@ -97,6 +128,13 @@ def reserve(user_id, kind, model, run_id=None):
     """
     price = ceiling_cost(kind)
 
+    # Checked here rather than left to the guards below, because the first call of a day takes
+    # the INSERT branch — which has no ON CONFLICT clause and therefore no guard on it. Without
+    # this, a cap smaller than one call would let exactly one call through each morning.
+    if price > GLOBAL_DAILY_LIMIT_USD:
+        raise SystemQuotaExceeded(
+            "the service has reached its daily AI budget — try again tomorrow"
+        )
     if price > DAILY_LIMIT_USD:
         # nothing could ever satisfy this, and silently letting it through would make the cap
         # meaningless for exactly the most expensive call type
@@ -105,6 +143,28 @@ def reserve(user_id, kind, model, run_id=None):
         )
 
     with get_cursor(commit=True) as cur:
+        # Global first, always, so two reservations can never take these two row locks in
+        # opposite orders and deadlock. If the user guard fails below, raising rolls the whole
+        # transaction back and the global reservation goes with it.
+        cur.execute(
+            """
+            INSERT INTO llm_global_budget (budget_date, reserved_usd, spent_usd)
+            VALUES (current_date, %s, 0)
+            ON CONFLICT (budget_date) DO UPDATE
+               SET reserved_usd = llm_global_budget.reserved_usd + EXCLUDED.reserved_usd,
+                   updated_at = now()
+             WHERE llm_global_budget.reserved_usd
+                 + llm_global_budget.spent_usd
+                 + EXCLUDED.reserved_usd <= %s
+            RETURNING reserved_usd
+            """,
+            (price, GLOBAL_DAILY_LIMIT_USD),
+        )
+        if cur.fetchone() is None:
+            raise SystemQuotaExceeded(
+                "the service has reached its daily AI budget — try again tomorrow"
+            )
+
         cur.execute(
             """
             INSERT INTO llm_daily_budgets (user_id, budget_date, reserved_usd, spent_usd)
@@ -168,8 +228,11 @@ def finalize(reservation, prompt_tokens, completion_tokens, latency_ms, outcome=
 
 
 def _settle(cur, reservation, cost):
-    """Move money from reserved to spent. Clamped at zero: a reservation released twice must
-    not drive the day's total negative and hand out free calls."""
+    """Move money from reserved to spent, on both ledgers.
+
+    Clamped at zero: a reservation released twice must not drive a total negative and hand out
+    free calls.
+    """
     cur.execute(
         """
         UPDATE llm_daily_budgets
@@ -179,6 +242,16 @@ def _settle(cur, reservation, cost):
          WHERE user_id = %s AND budget_date = current_date
         """,
         (reservation["reserved"], cost, reservation["user_id"]),
+    )
+    cur.execute(
+        """
+        UPDATE llm_global_budget
+           SET reserved_usd = GREATEST(reserved_usd - %s, 0),
+               spent_usd = spent_usd + %s,
+               updated_at = now()
+         WHERE budget_date = current_date
+        """,
+        (reservation["reserved"], cost),
     )
 
 

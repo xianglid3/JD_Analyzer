@@ -16,9 +16,11 @@ from commands import (
     register_skill_relations,
     register_usage_report,
 )
+from config import env_str
 from db import check_schema
 from services.maintenance import start as start_maintenance
 import logging
+import os
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,6 +40,23 @@ def _with_request_id(*args, **kwargs):
 
 
 logging.setLogRecordFactory(_with_request_id)
+# Errors have to land somewhere a person will look. Without this a 500 in production exists
+# only in whatever the platform kept of stdout, and the first signal is a user complaining.
+# No DSN set (local, CI) means the SDK is never initialised and nothing is sent.
+SENTRY_DSN = env_str("SENTRY_DSN")
+if SENTRY_DSN:
+    import sentry_sdk
+
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        environment=env_str("APP_ENV", "development"),
+        # exception reports only. Traces are a paid-plan concern and this is a free tier.
+        traces_sample_rate=0,
+        # resumes, job descriptions and answers are the user's own writing, and none of it
+        # belongs in a third-party error tracker
+        send_default_pii=False,
+    )
+
 app = Flask(__name__)
 
 # Match the private resume bucket limit; Flask rejects larger bodies first.
@@ -64,10 +83,52 @@ check_schema()
 # abandoned runs are otherwise only noticed when someone opens that run's page
 start_maintenance(app)
 
+# Who may call this API from a browser. Empty locally: the Vite proxy makes the frontend
+# same-origin, so no CORS headers are needed and none are sent. In production the frontend is
+# a different host (app.* on Vercel, api.* on Railway) and every authenticated request fails
+# without these — a blank page and a console error, with nothing in the server log.
+CORS_ORIGINS = {
+    origin.strip() for origin in env_str("CORS_ORIGINS").split(",")
+    if origin.strip()
+}
+
+
+@app.before_request
+def preflight():
+    """Answer the browser's OPTIONS probe before auth can reject it.
+
+    A preflight carries no cookies, so letting it reach a @require_auth route would 401 the
+    check that decides whether the real request is allowed to happen.
+    """
+    if request.method == "OPTIONS" and request.headers.get("Access-Control-Request-Method"):
+        return _allow(app.make_default_options_response(), request.headers.get("Origin"))
+
+
+def _allow(response, origin):
+    """Grant one specific origin, never a wildcard.
+
+    `Allow-Credentials` and `Allow-Origin: *` are mutually exclusive by spec — cookies need a
+    named origin. `Vary: Origin` so a cache never serves one origin's grant to another.
+    """
+    if origin and origin in CORS_ORIGINS:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Idempotency-Key"
+        response.headers["Access-Control-Max-Age"] = "600"
+    response.headers.add("Vary", "Origin")
+    return response
+
+
 @app.before_request
 def start_request():
     g.request_id = uuid4().hex[:8]
     g.started_at = time.perf_counter()
+
+
+@app.after_request
+def allow_origin(response):
+    return _allow(response, request.headers.get("Origin"))
 
 
 @app.after_request

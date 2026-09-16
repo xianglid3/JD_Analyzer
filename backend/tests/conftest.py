@@ -5,13 +5,30 @@ os.environ.setdefault("OPENAI_API_KEY", "test-dummy-key")
 os.environ.setdefault("SUPABASE_URL", "postgresql://postgres:postgres@localhost:5432/jd_test")
 os.environ.setdefault("JWT_SECRET", "test-jwt-secret-for-pytest-only-not-a-real-key")  # ≥32 bytes → no InsecureKeyLength warning
 
+# Not setdefault: the suite is never a production deployment, whatever the developer's .env
+# says. Without this, a .env carrying the production flags makes the app refuse to import and
+# the whole suite fails to collect — which is the guard working, in the wrong place.
+os.environ["APP_ENV"] = "test"
+os.environ["COOKIE_SECURE"] = "false"
+os.environ["COOKIE_DOMAIN"] = ""
+os.environ["SENTRY_DSN"] = ""          # test runs must never report to a real project
+# Signup friction is deployment policy, not application behaviour. Inheriting it from a
+# developer's .env makes every test that creates an account fail, which is how one variable
+# turned into a hundred red tests. The tests that care set these on the module themselves.
+os.environ["SIGNUP_INVITE_CODE"] = ""
+os.environ["MAX_SIGNUPS_PER_DAY"] = "0"
+# and the caps: a local .env is free to carry a tiny ceiling for testing without the whole
+# suite refusing to spend
+os.environ["LLM_DAILY_USD"] = "1.00"
+os.environ["LLM_GLOBAL_DAILY_USD"] = "10.00"
+
 import pathlib
 import psycopg2
 import pytest
 
 SCHEMA_SQL = (pathlib.Path(__file__).resolve().parent.parent / "schema.sql").read_text()
 DSN = os.environ["SUPABASE_URL"]
-TABLES = "skill_relations, skill_relation_lookups, llm_calls, tailoring_edit_details, tailoring_detail_requests, evidence_links, tailoring_edit_bullets, proposed_edits, tool_calls, tailoring_runs, resume_bullets, resume_entries, resume_headers, idempotency_requests, job_analysis_drafts, refresh_tokens, jobs, resumes, users"
+TABLES = "skill_relations, skill_relation_lookups, llm_calls, llm_daily_budgets, llm_global_budget, tailoring_edit_details, tailoring_detail_requests, evidence_links, tailoring_edit_bullets, proposed_edits, tool_calls, tailoring_runs, resume_bullets, resume_entries, resume_headers, idempotency_requests, job_analysis_drafts, refresh_tokens, jobs, resumes, users"
 
 
 def _looks_like_test_db(dsn):

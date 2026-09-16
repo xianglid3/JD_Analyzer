@@ -4,12 +4,14 @@ from flask import g, request
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
+from config import env_str
+
 # In-memory counters are per-process and reset on restart, so they only bound abuse on a
 # single worker. Point RATELIMIT_STORAGE_URI at Redis in production, or run one worker and
 # accept the limit as approximate. A spend quota needs a database row, not this.
 limiter = Limiter(
     key_func=get_remote_address,
-    storage_uri=os.environ.get("RATELIMIT_STORAGE_URI", "memory://"),
+    storage_uri=env_str("RATELIMIT_STORAGE_URI", "memory://"),
     default_limits=["240 per hour"],
 )
 

@@ -6,6 +6,7 @@ import { ButtonLabel, InlineAlert, PageLoader, Spinner } from '../components/Fee
 import NavBar from '../components/NavBar'
 import SelectMenu from '../components/SelectMenu'
 import { apiFetch } from '../lib/api'
+import { requestKey } from '../lib/requestKey'
 
 const sortOptions = [
   ['Recently added', 'created_at', 'desc'],
@@ -368,7 +369,7 @@ export default function DashboardPage() {
               className="primary-button min-w-28"
               disabled={createDraft.isPending || text.trim().length < 50 || text.trim().length > 10000}
               onClick={() => {
-                analyzeRequestKey.current ??= crypto.randomUUID()
+                analyzeRequestKey.current ??= requestKey()
                 createDraft.mutate({ description: text, sourceUrl, idempotencyKey: analyzeRequestKey.current })
               }}
             >
@@ -410,7 +411,7 @@ export default function DashboardPage() {
             const length = text.trim().length
             if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !createDraft.isPending && length >= 50 && length <= 10000) {
               event.preventDefault()
-              analyzeRequestKey.current ??= crypto.randomUUID()
+              analyzeRequestKey.current ??= requestKey()
               createDraft.mutate({ description: text, sourceUrl, idempotencyKey: analyzeRequestKey.current })
             }
           }}

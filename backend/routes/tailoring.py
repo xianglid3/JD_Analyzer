@@ -5,6 +5,7 @@ import os
 import re
 import threading
 
+from config import env_flag
 from db import get_cursor
 from services.resume_evidence import stale_edit_ids
 from extensions import authenticated_user_key, limiter
@@ -37,7 +38,7 @@ def inline_worker():
     lease, same fencing token; only the process differs. Read per call, not at import, so a
     test can turn it on.
     """
-    return os.environ.get("TAILORING_INLINE", "").lower() in ("1", "true", "yes")
+    return env_flag("TAILORING_INLINE")
 
 
 VALID_EDIT_DECISIONS = {"accepted", "rejected"}
