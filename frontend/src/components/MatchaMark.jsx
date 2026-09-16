@@ -10,15 +10,14 @@ export default function MatchaMark({ className = 'h-4 w-4' }) {
       strokeLinecap="round"
       strokeLinejoin="round"
     >
-      {/* steam — two short curls, kept inside the top third so they stay legible at 18px */}
-      <path d="M10 2.5c-.7.8-.7 1.7 0 2.5s.7 1.7 0 2.5" />
-      <path d="M14 3.5c-.5.6-.5 1.2 0 1.8s.5 1.2 0 1.8" />
-      {/* the bowl */}
-      <path d="M4 10h13v4.5A5.5 5.5 0 0 1 11.5 20h-2A5.5 5.5 0 0 1 4 14.5V10Z" />
+      {/* three curls of steam, the middle one tallest */}
+      <path d="M7.5 5.2c-.8.7-.8 1.6 0 2.3" />
+      <path d="M12 3.4c-.9.8-.9 1.8 0 2.6s.9 1.8 0 2.6" />
+      <path d="M16.5 5.2c-.8.7-.8 1.6 0 2.3" />
+      {/* the cup: square shoulders, round base — the shape that still reads at 16px */}
+      <path d="M3.5 11h13v4.5a5 5 0 0 1-5 5h-3a5 5 0 0 1-5-5V11Z" />
       {/* handle */}
-      <path d="M17 11.5h1.5a2.5 2.5 0 0 1 0 5H17" />
-      {/* saucer */}
-      <path d="M3 22h15" />
+      <path d="M16.5 12.5H18a2.75 2.75 0 0 1 0 5.5h-1.5" />
     </svg>
   )
 }

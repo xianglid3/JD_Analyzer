@@ -404,7 +404,7 @@ def _record_edit(cur, user_id, run_id, bullet_id, requirement, proposed_text,
     return edit_id
 
 
-def tool_propose_edit(cur, user_id, run_id, arguments):
+def tool_propose_edit(cur, user_id, run_id, arguments, surfacing=None):
     requirement = (arguments.get("requirement") or "").strip()
     bullet_id = (arguments.get("bullet_id") or "").strip()
     proposed_text = (arguments.get("proposed_text") or "").strip()
@@ -449,7 +449,9 @@ def tool_propose_edit(cur, user_id, run_id, arguments):
         (bullet_id, user_id),
     )
     original = cur.fetchone()
-    quality_issue = rewrite_quality_issue(original[0], proposed_text) if original else None
+    quality_issue = (
+        rewrite_quality_issue(original[0], proposed_text, surfacing=surfacing) if original else None
+    )
     if quality_issue:
         raise GroundingError(quality_issue)
 

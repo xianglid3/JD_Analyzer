@@ -444,6 +444,53 @@ def enforce_structure_limits(structure):
     return structure
 
 
+SURFACE_PROMPT = """You add one skill the candidate has confirmed they used to the bullet it belongs on.
+
+You are given the skill, the candidate's own sentence about what they did with it, and the
+bullets of the entry they named. Return ONLY valid JSON:
+{ "bullet_index": <0-based index of the bullet to rewrite>, "proposed_text": "<the rewrite>" }
+
+Pick the bullet the skill most plausibly applies to. Then rewrite it so a reader can see the
+skill in the work.
+
+Rules:
+- Keep every fact, technology, number and outcome the bullet already has. This is additive:
+  the result should be longer than the original, never shorter.
+- You may use the skill's name, and any fact contained in the candidate's own sentence. Nothing
+  else — no invented scale, tools, or results.
+- One sentence, in the register of the bullet you are rewriting.
+- If the candidate's sentence adds a concrete detail, work it in; if it only confirms usage,
+  name the skill and leave the rest alone."""
+
+
+def surface_rewrite(skill, detail, bullets, budget=None):
+    """One call: which bullet, and what it should say instead.
+
+    The model never sees a bullet id and never returns one — it picks an index into the list
+    it was given, and the caller maps that back. An id it cannot name is an id it cannot
+    invent.
+    """
+    listed = "\n".join(f"{index}. {text}" for index, text in enumerate(bullets))
+    response = _paid(
+        budget, "surface_skill",
+        messages=[
+            {"role": "system", "content": SURFACE_PROMPT},
+            {"role": "user", "content": json.dumps({
+                "skill": skill,
+                "what_they_did": detail,
+                "bullets": listed,
+            })},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0,
+    )
+    data = json.loads(response.choices[0].message.content)
+    return {
+        "bullet_index": data.get("bullet_index"),
+        "proposed_text": (data.get("proposed_text") or "").strip(),
+    }
+
+
 def complete_json(messages, model="gpt-4o-mini", timeout=30, budget=None,
                   kind="skill_relations"):
     """One JSON-mode call. Shared by the smaller enrichment callers that need a model but

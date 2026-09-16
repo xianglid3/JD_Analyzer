@@ -88,7 +88,7 @@ const GAP_GROUPS = [
   ['other', 'Other'],
 ]
 
-function GapsPanel({ gaps, outcomes, entries, onSaved }) {
+function GapsPanel({ gaps, outcomes, entries, runId, onSaved }) {
   const importanceByRequirement = new Map(
     (outcomes || []).map((item) => [item.requirement, item.importance || 'other']),
   )
@@ -119,6 +119,7 @@ function GapsPanel({ gaps, outcomes, entries, onSaved }) {
               group={group}
               defaultOpen={index === 0}
               entries={entries}
+              runId={runId}
               onSaved={onSaved}
             />
           ))}
@@ -128,7 +129,7 @@ function GapsPanel({ gaps, outcomes, entries, onSaved }) {
   )
 }
 
-function GapAccordion({ group, defaultOpen, entries, onSaved }) {
+function GapAccordion({ group, defaultOpen, entries, runId, onSaved }) {
   const [open, setOpen] = useState(defaultOpen)
   const panelId = `gap-group-${group.key}`
   return (
@@ -148,10 +149,14 @@ function GapAccordion({ group, defaultOpen, entries, onSaved }) {
         <ul id={panelId} className="animate-soft-in space-y-3 px-5 pb-4">
           {group.gaps.map((gap) => (
             <li key={gap.id} className="border-t border-border pt-3">
-              <p className="text-sm text-ink">{gap.requirement}</p>
-              {gap.note && <p className="mt-1 text-xs leading-5 text-muted">{gap.note}</p>}
+              {/* a chip, like every other skill on this page — a requirement is a term, and
+                  reading it as a sentence made the two panels look unrelated */}
+              <span className="inline-flex min-h-7 items-center rounded-full border border-border bg-surface px-2.5 text-xs text-ink">
+                {gap.requirement}
+              </span>
+              {gap.note && <p className="mt-1.5 text-xs leading-5 text-muted">{gap.note}</p>}
               {/* we read a resume, not a person — a gap can simply be us being wrong */}
-              <UsedItHere skill={gap.requirement} entries={entries} onSaved={onSaved} />
+              <UsedItHere skill={gap.requirement} entries={entries} runId={runId} onSaved={onSaved} />
             </li>
           ))}
         </ul>
@@ -171,25 +176,33 @@ function GapAccordion({ group, defaultOpen, entries, onSaved }) {
 // A gap we got wrong, and a skill proven only by a keyword list, are the same missing fact:
 // which project it belongs to. The resume cannot supply it, because the resume is what the
 // user typed one afternoon, not the whole truth about them. So ask.
-function UsedItHere({ skill, entries, onSaved }) {
-  const [open, setOpen] = useState(false)
-  const [picked, setPicked] = useState(() => new Set())
+function UsedItHere({ skill, entries, runId, onSaved }) {
+  const [step, setStep] = useState(null)        // null = closed, 1 = which, 2 = what
+  const [entryId, setEntryId] = useState(null)
+  const [detail, setDetail] = useState('')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState(null)
 
   if (!entries.length) return null
 
-  async function save() {
+  const entry = entries.find((item) => item.id === entryId)
+
+  function close() {
+    setStep(null)
+    setError(null)
+  }
+
+  async function submit() {
     setSaving(true)
     setError(null)
     try {
-      await apiFetch('/resume/entry-skills', {
-        method: 'PUT',
-        body: JSON.stringify({ skill, entry_ids: [...picked] }),
+      await apiFetch(`/tailoring/runs/${runId}/surface`, {
+        method: 'POST',
+        body: JSON.stringify({ skill, entry_id: entryId, detail }),
       })
       setSaved(true)
-      setOpen(false)
+      close()
       onSaved?.()
     } catch (saveError) {
       setError(saveError)
@@ -200,71 +213,100 @@ function UsedItHere({ skill, entries, onSaved }) {
 
   if (saved) {
     return (
-      <p className="mt-1.5 text-xs text-muted" role="status">
-        Saved. Re-run tailoring and a bullet there can say so.
+      <p className="mt-1.5 text-xs leading-5 text-muted" role="status">
+        Added — the proposed wording is at the bottom of the edits, waiting for your approval.
       </p>
-    )
-  }
-
-  if (!open) {
-    return (
-      <button
-        type="button"
-        className="mt-1 flex min-h-11 items-center text-xs text-charcoal underline underline-offset-4 transition-colors duration-150 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-obsidian"
-        onClick={() => setOpen(true)}
-      >
-        I used this — where?
-      </button>
     )
   }
 
   return (
-    <div className="mt-2 rounded-md border border-border bg-surface p-3">
-      <p className="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">
-        Where did you use {skill}?
-      </p>
-      <ul className="mt-2 space-y-1">
-        {entries.map((entry) => (
-          <li key={entry.id}>
-            <label className="flex min-h-11 cursor-pointer items-center gap-2 text-sm text-ink">
-              <input
-                type="checkbox"
-                className="size-4 shrink-0 accent-ink"
-                checked={picked.has(entry.id)}
-                onChange={() => setPicked((current) => {
-                  const next = new Set(current)
-                  if (next.has(entry.id)) next.delete(entry.id)
-                  else next.add(entry.id)
-                  return next
-                })}
-              />
-              {entry.name}
-            </label>
-          </li>
-        ))}
-      </ul>
-      <p className="mt-1 text-xs leading-5 text-muted">
-        Only tick where it is true. We will never write it anywhere you did not pick.
-      </p>
-      {error && <InlineAlert className="mt-2">{error.message}</InlineAlert>}
-      <div className="mt-2 flex gap-2">
-        <button
-          type="button"
-          className="primary-button compact-button"
-          disabled={saving || picked.size === 0}
-          onClick={save}
-        >
-          <ButtonLabel pending={saving} pendingText="Saving…">Save</ButtonLabel>
-        </button>
-        <button type="button" className="secondary-button compact-button" onClick={() => setOpen(false)}>
-          Cancel
-        </button>
-      </div>
-    </div>
+    <>
+      <button
+        type="button"
+        className="mt-1 flex min-h-11 items-center text-xs leading-5 text-charcoal underline underline-offset-4 transition-colors duration-150 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-obsidian"
+        onClick={() => setStep(1)}
+      >
+        I used this — where?
+      </button>
+
+      <Dialog
+        open={step !== null}
+        onClose={close}
+        width="max-w-lg"
+        title={step === 1 ? `Where did you use ${skill}?` : `What did you do with ${skill}?`}
+        description={step === 1
+          ? 'Pick the project or role it belongs to. We will never write it anywhere you did not pick.'
+          : `On ${entry?.name ?? 'that entry'}. Your own words are the evidence for whatever this adds.`}
+        footer={step === 1 ? (
+          <>
+            <button type="button" className="secondary-button" onClick={close}>Cancel</button>
+            <button
+              type="button"
+              className="primary-button"
+              disabled={!entryId}
+              onClick={() => setStep(2)}
+            >
+              Next
+            </button>
+          </>
+        ) : (
+          <>
+            <button type="button" className="secondary-button" onClick={() => setStep(1)}>Back</button>
+            <button
+              type="button"
+              className="primary-button"
+              disabled={saving || detail.trim().length < 10}
+              onClick={submit}
+            >
+              <ButtonLabel pending={saving} pendingText="Writing…">Add to my resume</ButtonLabel>
+            </button>
+          </>
+        )}
+      >
+        {error && <InlineAlert className="mb-3">{error.message}</InlineAlert>}
+
+        {step === 1 ? (
+          <ul className="space-y-1">
+            {entries.map((item) => (
+              <li key={item.id}>
+                <label className="flex min-h-11 cursor-pointer items-center gap-2 text-sm text-ink">
+                  <input
+                    type="radio"
+                    name="used-it-entry"
+                    className="size-4 shrink-0 accent-ink"
+                    checked={entryId === item.id}
+                    onChange={() => setEntryId(item.id)}
+                  />
+                  {item.name}
+                </label>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <label className="block text-sm text-ink">
+            What you actually did with it
+            <textarea
+              data-dialog-autofocus
+              value={detail}
+              onChange={(event) => setDetail(event.target.value)}
+              rows={4}
+              maxLength={500}
+              placeholder={`e.g. Used ${skill} to track releases and roll back a bad deploy`}
+              className="control mt-2 p-3 text-sm leading-5"
+            />
+            {/* the claim checker reads the answer, not the question — "yes" supports nothing */}
+            <span className="mt-1 block text-xs leading-5 text-muted">
+              Name what it applied to and anything concrete about it. A bare yes cannot support
+              a line on your resume, so nothing will be written from one.
+            </span>
+          </label>
+        )}
+      </Dialog>
+    </>
   )
 }
 
-function KeywordOnlyPanel({ items, entries, onSaved }) {
+function KeywordOnlyPanel({ items, entries, runId, onSaved }) {
   if (!items.length) return null
   return (
     <section className="surface-card p-5" aria-labelledby="keyword-only-heading">
@@ -297,7 +339,7 @@ function KeywordOnlyPanel({ items, entries, onSaved }) {
               {item.satisfied_by?.length > 0 && item.requirement !== named[0] && (
                 <p className="mt-1 text-xs leading-5 text-muted">{item.requirement}</p>
               )}
-              <UsedItHere skill={named[0]} entries={entries} onSaved={onSaved} />
+              <UsedItHere skill={named[0]} entries={entries} runId={runId} onSaved={onSaved} />
             </li>
           )
         })}
@@ -799,7 +841,7 @@ function OrderingExplainer({ composition }) {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="flex min-h-11 items-center text-xs text-charcoal underline underline-offset-4 transition-colors duration-150 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-obsidian"
+        className="flex min-h-11 items-center text-xs leading-5 text-charcoal underline underline-offset-4 transition-colors duration-150 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-obsidian"
       >
         What changed, and why
       </button>
@@ -1131,11 +1173,11 @@ export default function TailoringRunPage() {
                 </section>
               )}
 
-              <KeywordOnlyPanel items={keywordOnly} entries={resumeEntries} onSaved={refreshRun} />
+              <KeywordOnlyPanel items={keywordOnly} entries={resumeEntries} runId={run.id} onSaved={refreshRun} />
 
               <WorkPanel work={run.work} candidates={run.candidates || []} />
 
-              <GapsPanel gaps={run.gaps} outcomes={run.outcomes} entries={resumeEntries} onSaved={refreshRun} />
+              <GapsPanel gaps={run.gaps} outcomes={run.outcomes} entries={resumeEntries} runId={run.id} onSaved={refreshRun} />
 
               {(run.outcomes || []).length > 0 && (
                 <details className="surface-card p-5">

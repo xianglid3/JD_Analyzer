@@ -324,6 +324,44 @@ def save_entry_skills(cur, user_id, skill, entry_ids):
     return cur.rowcount
 
 
+def add_entry_skill(cur, user_id, skill, entry_id):
+    """Attach one skill to one entry, leaving any other entries it was attached to alone.
+
+    `save_entry_skills` replaces the whole set, which is right for a checkbox list and wrong
+    for "I also used it here" — that would silently unattach every other project.
+    """
+    from services.match import normalize_skill
+
+    normalized = normalize_skill(skill)
+    if not normalized:
+        return 0
+    cur.execute(
+        """
+        INSERT INTO resume_entry_skills (entry_id, user_id, skill, normalized)
+        SELECT e.id, %s, %s, %s FROM resume_entries AS e
+        WHERE e.user_id = %s AND e.id = %s
+        ON CONFLICT (entry_id, normalized) DO NOTHING
+        """,
+        (user_id, skill.strip(), normalized, user_id, str(entry_id)),
+    )
+    return cur.rowcount
+
+
+def entry_bullets(cur, user_id, entry_id):
+    """Every bullet of one entry, in resume order."""
+    cur.execute(
+        """
+        SELECT b.id, b.text
+        FROM resume_bullets AS b
+        JOIN resume_entries AS e ON e.id = b.entry_id
+        WHERE e.id = %s AND e.user_id = %s
+        ORDER BY b.sort_order
+        """,
+        (str(entry_id), user_id),
+    )
+    return [{"bullet_id": str(row[0]), "text": row[1]} for row in cur.fetchall()]
+
+
 def entry_skills(cur, user_id):
     """{entry_id: {normalized skill, ...}} for one user."""
     cur.execute(

@@ -468,7 +468,7 @@ describe('TailoringRunPage', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
-  it('lets the user say where a wrongly reported gap was actually used', async () => {
+  it('turns "I used this here" into a proposed edit in two steps', async () => {
     apiFetch.mockImplementation((path, options) => {
       if (path === '/resume/evidence' && !options) {
         return Promise.resolve({
@@ -478,7 +478,7 @@ describe('TailoringRunPage', () => {
           ],
         })
       }
-      if (path === '/resume/entry-skills') return Promise.resolve({ skill: 'Terraform', entries: ['entry-1'] })
+      if (path?.endsWith('/surface')) return Promise.resolve({ edit_id: 'edit-2' })
       return Promise.resolve(finished)
     })
 
@@ -486,17 +486,30 @@ describe('TailoringRunPage', () => {
 
     // a gap is us reading a resume, not a verdict on the person — it has to be correctable
     await userEvent.click((await screen.findAllByRole('button', { name: 'I used this — where?' }))[0])
-    await userEvent.click(screen.getByRole('checkbox', { name: 'Calendar Map' }))
-    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
 
-    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/resume/entry-skills', {
-      method: 'PUT',
-      body: JSON.stringify({ skill: 'Terraform', entry_ids: ['entry-1'] }),
+    // step one: which project
+    await userEvent.click(screen.getByRole('radio', { name: 'Calendar Map' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Next' }))
+
+    // step two: what they actually did with it, which is the evidence for the claim
+    await userEvent.type(
+      screen.getByLabelText(/What you actually did with it/),
+      'Tracked releases and rolled back a bad deploy',
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Add to my resume' }))
+
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/tailoring/runs/run-1/surface', {
+      method: 'POST',
+      body: JSON.stringify({
+        skill: 'Terraform',
+        entry_id: 'entry-1',
+        detail: 'Tracked releases and rolled back a bad deploy',
+      }),
     }))
-    expect(await screen.findByText(/Re-run tailoring and a bullet there can say so/)).toBeInTheDocument()
+    expect(await screen.findByText(/waiting for your approval/)).toBeInTheDocument()
   })
 
-  it('cannot save a claim without naming a project', async () => {
+  it('cannot write a claim without a project or without the fact behind it', async () => {
     apiFetch.mockImplementation((path, options) => {
       if (path === '/resume/evidence' && !options) {
         return Promise.resolve({ entries: [{ id: 'entry-1', kind: 'project', title: 'Calendar Map', bullets: [] }] })
@@ -508,7 +521,15 @@ describe('TailoringRunPage', () => {
     await userEvent.click((await screen.findAllByRole('button', { name: 'I used this — where?' }))[0])
 
     // "I have this skill" with no project behind it is the keyword list again
-    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled()
+
+    await userEvent.click(screen.getByRole('radio', { name: 'Calendar Map' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Next' }))
+
+    // and a bare confirmation carries no fact the rewrite could use
+    expect(screen.getByRole('button', { name: 'Add to my resume' })).toBeDisabled()
+    await userEvent.type(screen.getByLabelText(/What you actually did with it/), 'yes')
+    expect(screen.getByRole('button', { name: 'Add to my resume' })).toBeDisabled()
   })
 
   it('keeps the run on screen when a background poll fails', async () => {

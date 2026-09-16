@@ -159,12 +159,17 @@ def bullet_quality_gaps(text):
     return gaps
 
 
-def rewrite_quality_issue(original_text, proposed_text):
+def rewrite_quality_issue(original_text, proposed_text, surfacing=None):
     """Explain why a grounded rewrite still adds no useful value, or return ``None``.
 
     Grounding answers "is it true?". This answers the separate question "is it better?".
     It runs for weak bullets too; exempting them let synonym swaps through because weak
     bullets are exactly the ones the planner sends to the model.
+
+    `surfacing` is a skill the user has just told us they used on this entry. Its first
+    appearance in the bullet counts as new evidence even when it is not a term the graph
+    knows — otherwise the whole point of asking ("show this skill in the work") reads as a
+    phrasing change and gets refused.
     """
     original_words = _words(original_text)
     proposed_words = _words(proposed_text)
@@ -199,7 +204,9 @@ def rewrite_quality_issue(original_text, proposed_text):
     stronger_action = proposed_opens_strong and not original_opens_strong
     added_skills = proposed_skills - original_skills
     added_numbers = proposed_numbers - original_numbers
-    if not stronger_action and not added_skills and not added_numbers:
+    named = (surfacing or "").strip().lower()
+    surfaced = bool(named) and named in proposed_text.lower() and named not in original_text.lower()
+    if not stronger_action and not added_skills and not added_numbers and not surfaced:
         return (
             "the rewrite only changes phrasing; strengthen the action or surface new supported "
             "evidence, otherwise leave the bullet unchanged"

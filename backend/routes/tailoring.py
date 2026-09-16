@@ -3,11 +3,14 @@ from flask import Blueprint, Response, jsonify, g, request
 import logging
 import os
 import re
+from uuid import UUID
 import threading
 
 from config import env_flag
 from db import get_cursor
 from services.resume_evidence import stale_edit_ids
+from services.surface_skill import SurfaceRefused, surface_skill
+from services.usage import QuotaExceeded
 from extensions import authenticated_user_key, limiter
 from middleware import require_auth
 from routes.request_validation import get_json_object
@@ -283,6 +286,43 @@ def _decide_proposed_edit(edit_id):
     if row is None:
         return jsonify({"error": "proposed edit not found"}), 404
     return jsonify({"id": str(row[0]), "status": row[1]}), 200
+
+
+@tailoring_bp.route("/tailoring/runs/<run_id>/surface", methods=["POST"])
+@require_auth
+@limiter.limit("10 per minute; 60 per day", key_func=authenticated_user_key)
+def surface_skill_into_run(run_id):
+    """"I used this on that project" — recorded, and turned into a proposed edit here.
+
+    Rate-limited like the other paid actions: it makes one model call, and a user clicking
+    through every gap on a posting should cost a bounded number of them.
+    """
+    data, error = get_json_object()
+    if error:
+        return error
+
+    entry_id = data.get("entry_id")
+    try:
+        entry_id = str(UUID(str(entry_id)))
+    except (TypeError, ValueError, AttributeError):
+        return jsonify({"error": "entry_id must be a valid id"}), 400
+
+    try:
+        with get_cursor(commit=True) as cur:
+            outcome = surface_skill(
+                cur, g.user_id, run_id,
+                skill=data.get("skill"), entry_id=entry_id, detail=data.get("detail"),
+            )
+    except SurfaceRefused as exc:
+        # 422: the request was understood and the claim could not be supported. The message is
+        # the useful part — usually that the answer does not carry the fact the rewrite needs.
+        return jsonify({"error": str(exc)}), 422
+    except QuotaExceeded as exc:
+        return jsonify({"error": f"daily AI budget reached ({exc})"}), 429
+
+    if outcome is None:
+        return jsonify({"error": "run not found"}), 404
+    return jsonify(outcome), 201
 
 
 @tailoring_bp.route("/tailoring/questions/<question_id>", methods=["PATCH"])
