@@ -46,7 +46,8 @@ describe('DashboardPage', () => {
     renderWithProviders(<DashboardPage />, { route: '/dashboard' })
 
     expect(await screen.findByText('Frontend Engineer')).toBeInTheDocument()
-    // the pipeline filter is a checkbox list now, not a row of buttons
+    // the pipeline filter is a menu now: checkboxes, but behind a trigger
+    await user.click(screen.getByRole('button', { name: 'Filter by pipeline status' }))
     await user.click(screen.getByRole('checkbox', { name: /Applied/ }))
 
     await waitFor(() => expect(apiFetch).toHaveBeenCalledWith(expect.stringContaining('status=applied')))
@@ -57,7 +58,9 @@ describe('DashboardPage', () => {
     renderWithProviders(<DashboardPage />, { route: '/dashboard' })
 
     await screen.findByText('Frontend Engineer')
+    await user.click(screen.getByRole('button', { name: 'Filter by pipeline status' }))
     await user.click(screen.getByRole('checkbox', { name: /Applied/ }))
+    // the menu stays open: picking two statuses is the point of checkboxes
     await user.click(screen.getByRole('checkbox', { name: /Interview/ }))
 
     await waitFor(() => expect(apiFetch).toHaveBeenCalledWith(expect.stringMatching(/status=applied.*status=interview/)))

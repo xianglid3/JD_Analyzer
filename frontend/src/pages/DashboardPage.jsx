@@ -5,9 +5,13 @@ import Dialog from '../components/Dialog'
 import { ButtonLabel, InlineAlert, PageLoader, Spinner } from '../components/Feedback'
 import NavBar from '../components/NavBar'
 import SelectMenu from '../components/SelectMenu'
+import StatusFilterMenu from '../components/StatusFilterMenu'
 import { SourceLink, TrashIcon } from '../components/SourceLink'
 import { apiFetch } from '../lib/api'
 import { requestKey } from '../lib/requestKey'
+
+// Role · work setup · fit · posting link · status · the delete button
+const ROW_GRID = 'grid-cols-[minmax(0,1.4fr)_minmax(8rem,0.7fr)_6rem_minmax(0,1fr)_9rem_2.25rem]'
 
 const sortOptions = [
   ['Recently added', 'created_at', 'desc'],
@@ -189,7 +193,7 @@ export default function DashboardPage() {
           </button>
         </header>
 
-        <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_240px]">
+        <div className="grid items-start gap-6">
           <section aria-labelledby="jobs-table-title" className="min-w-0">
             <div className="mb-3 flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
               <div>
@@ -200,7 +204,7 @@ export default function DashboardPage() {
                     : `${statusFilters.length} ${statusFilters.length === 1 ? 'status' : 'statuses'} selected`}
                 </p>
               </div>
-              <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_180px] xl:w-[32rem]">
+              <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_170px_170px] xl:w-[42rem]">
                 <label className="relative block">
                   <span className="sr-only">Search jobs</span>
                   <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted"><SearchIcon /></span>
@@ -225,15 +229,27 @@ export default function DashboardPage() {
                       setPage(1)
                   }}
                 />
+                <StatusFilterMenu
+                  options={summaryItems}
+                  selected={statusFilters}
+                  total={stats?.total}
+                  onToggle={toggleStatus}
+                  onClear={() => { setStatusFilters([]); setPage(1) }}
+                />
               </div>
             </div>
 
             <div className="surface-card overflow-hidden">
-              <div className="hidden grid-cols-[minmax(0,1.5fr)_minmax(9rem,0.8fr)_7rem_9rem] gap-4 border-b border-border px-4 py-3 font-mono text-[11px] uppercase tracking-[0.06em] text-muted sm:grid">
+              {/* One template, used by this header and by every row below it. Two copies drift
+                  the moment a column is added, which is how the link column ended up with its
+                  values under the wrong headings. */}
+              <div className={`hidden ${ROW_GRID} gap-4 border-b border-border px-4 py-3 font-mono text-[11px] uppercase tracking-[0.06em] text-muted sm:grid`}>
                 <span>Role</span>
                 <span>Work setup</span>
                 <span>Fit</span>
+                <span>Posting</span>
                 <span>Status</span>
+                <span className="sr-only">Actions</span>
               </div>
 
               <ul className={jobsQuery.isFetching ? 'opacity-60' : ''} aria-busy={jobsQuery.isFetching}>
@@ -243,7 +259,7 @@ export default function DashboardPage() {
                     className="group/row animate-soft-in border-b border-border p-4 last:border-0 hover:bg-surface"
                     style={{ animationDelay: `${Math.min(index * 25, 150)}ms` }}
                   >
-                    <div className="grid gap-4 sm:grid-cols-[minmax(0,1.4fr)_minmax(8rem,0.7fr)_6rem_minmax(0,1fr)_9rem_2.25rem] sm:items-center">
+                    <div className={`grid gap-4 sm:${ROW_GRID.replace('grid-cols-', 'grid-cols-')} sm:items-center`}>
                       <div className="min-w-0">
                         <Link to={`/jobs/${job.id}`} className="block truncate text-sm font-medium text-ink hover:underline hover:underline-offset-4">
                           {job.title || 'Untitled role'}
@@ -343,58 +359,6 @@ export default function DashboardPage() {
             </div>
           </section>
 
-          <aside aria-labelledby="pipeline-title" className="surface-card overflow-hidden lg:sticky lg:top-20">
-            <div className="flex items-end justify-between gap-3 border-b border-border px-4 py-3">
-              <div>
-                <p className="eyebrow">Filter</p>
-                <h2 id="pipeline-title" className="mt-1 text-base font-medium text-ink">Pipeline status</h2>
-              </div>
-              {statusFilters.length > 0 && (
-                <button
-                  type="button"
-                  className="min-h-11 px-1 text-xs text-muted underline-offset-4 hover:text-ink hover:underline"
-                  onClick={() => {
-                    setStatusFilters([])
-                    setPage(1)
-                  }}
-                >
-                  Clear
-                </button>
-              )}
-            </div>
-            {statsQuery.isLoading ? (
-              <div className="space-y-2 p-3">
-                {Array.from({ length: 6 }, (_, index) => <div key={index} className="skeleton h-11" />)}
-              </div>
-            ) : (
-              <fieldset className="p-2">
-                <legend className="sr-only">Filter applications by pipeline status</legend>
-                {summaryItems.map(([label, value, key]) => {
-                  const selected = statusFilters.includes(key)
-                  return (
-                    <label
-                      key={key}
-                      className={`flex min-h-11 w-full cursor-pointer items-center gap-3 rounded-md px-3 text-sm transition-colors ${
-                        selected ? 'bg-surface text-ink' : 'text-charcoal hover:bg-surface hover:text-ink'
-                      }`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={selected}
-                        onChange={() => toggleStatus(key)}
-                        className="size-4 shrink-0 accent-obsidian"
-                      />
-                      <span className="flex-1">{label}</span>
-                      <span className="font-mono text-xs text-muted">{value ?? 0}</span>
-                    </label>
-                  )
-                })}
-                <p className="px-3 pb-2 pt-1 text-xs leading-5 text-muted">
-                  {statusFilters.length === 0 ? `${stats?.total ?? 0} total applications` : 'Showing any selected status'}
-                </p>
-              </fieldset>
-            )}
-          </aside>
         </div>
       </main>
 
