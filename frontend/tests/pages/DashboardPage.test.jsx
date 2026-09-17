@@ -123,7 +123,7 @@ describe('DashboardPage', () => {
     const field = within(row).getByRole('textbox', { name: /Posting link for/ })
     await user.clear(field)
     await user.type(field, 'https://example.com/careers/moved')
-    await user.click(within(row).getByRole('button', { name: 'Save link' }))
+    await user.click(within(row).getByRole('button', { name: 'Save' }))
 
     await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/jobs/7', {
       method: 'PATCH',

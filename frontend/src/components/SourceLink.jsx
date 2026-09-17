@@ -1,14 +1,5 @@
 import { useState } from 'react'
 
-function PenIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 20h9" />
-      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
-    </svg>
-  )
-}
-
 function GlobeIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24" className="size-3.5 shrink-0 text-muted" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
@@ -39,12 +30,24 @@ export function TrashIcon() {
   )
 }
 
-// The posting link, short enough to sit in a row or beside a heading. Hovering (or focusing) reveals edit and copy
-// to its right; clicking the link itself just opens the posting, which is what it is for.
+/**
+ * The posting link as one control, not three things sharing a row.
+ *
+ * It was a link with a gap and then two icons that appeared on hover, which read as separate
+ * elements that happened to be adjacent — and the gap had to be wide enough to reserve space
+ * for icons that were not there. Bounded together in a single bordered field, the way Notion
+ * shows a link, the reserved space becomes the control's own shape and nothing shifts.
+ *
+ * The actions stay visible rather than waiting for hover: they are inside the field now, so
+ * they cost no extra width, and a control that appears on hover cannot be reached by keyboard
+ * or touch at all.
+ */
 export function SourceLink({ job, onSave, saving, grow = false }) {
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState(job.source_url || '')
   const [copied, setCopied] = useState(false)
+
+  const width = grow ? 'w-72' : 'w-full'
 
   async function copy() {
     try {
@@ -59,10 +62,9 @@ export function SourceLink({ job, onSave, saving, grow = false }) {
   if (editing) {
     return (
       <form
-        // `grow` widens the field instead of pushing its neighbours around: the control is
-        // right-aligned, so growing extends it leftwards into empty space, and the transition
-        // is what makes that read as the same element rather than a new one appearing.
-        className={`flex items-center gap-1 transition-[width] duration-200 ease-out ${
+        // wider while editing, and right-aligned in the header, so it grows leftwards into
+        // empty space rather than pushing the status and delete around
+        className={`flex min-h-9 items-center gap-1 rounded-md border border-border bg-soft-paper px-2 transition-[width] duration-200 ease-out ${
           grow ? 'w-[26rem] max-w-[60vw]' : 'w-full'
         }`}
         onSubmit={(event) => {
@@ -71,22 +73,24 @@ export function SourceLink({ job, onSave, saving, grow = false }) {
           setEditing(false)
         }}
       >
+        <GlobeIcon />
         <input
           autoFocus
           value={value}
           onChange={(event) => setValue(event.target.value)}
           placeholder="https://…"
           aria-label={`Posting link for ${job.title || 'job'}`}
-          className="control min-w-0 flex-1 px-2 py-1 text-xs"
+          className="min-w-0 flex-1 bg-transparent py-1.5 text-xs text-ink outline-none"
         />
-        <button type="submit" className="icon-button" aria-label="Save link" disabled={saving}>✓</button>
+        <button type="submit" className="shrink-0 px-1 text-xs text-ink hover:underline" disabled={saving}>
+          Save
+        </button>
         <button
           type="button"
-          className="icon-button"
-          aria-label="Cancel"
+          className="shrink-0 px-1 text-xs text-muted hover:text-ink"
           onClick={() => { setValue(job.source_url || ''); setEditing(false) }}
         >
-          ×
+          Cancel
         </button>
       </form>
     )
@@ -94,47 +98,43 @@ export function SourceLink({ job, onSave, saving, grow = false }) {
 
   return (
     <div
-      className={`group/link flex min-w-0 items-center gap-1.5 transition-[width] duration-200 ease-out ${
-        grow ? 'w-56' : 'w-full'
-      }`}
+      className={`flex min-h-9 items-center gap-1.5 rounded-md border border-border bg-soft-paper px-2 transition-[width] duration-200 ease-out ${width}`}
     >
       <GlobeIcon />
+
       {job.source_url ? (
         <a
           href={job.source_url}
           target="_blank"
           rel="noreferrer noopener"
-          className="min-w-0 truncate text-xs text-charcoal underline underline-offset-4 hover:text-ink"
+          className="min-w-0 flex-1 truncate text-xs text-charcoal hover:text-ink hover:underline hover:underline-offset-4"
           title={job.source_url}
         >
           {job.source_url.replace(/^https?:\/\/(www\.)?/, '')}
         </a>
       ) : (
-        <span className="truncate text-xs text-muted">No link</span>
+        <span className="min-w-0 flex-1 truncate text-xs text-muted">No link</span>
       )}
 
-      {/* revealed on hover, and on keyboard focus — otherwise these are unreachable without a
-          mouse, which is the usual cost of hiding controls behind :hover */}
-      <span className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity duration-150 focus-within:opacity-100 group-hover/link:opacity-100">
+      {job.source_url && (
         <button
           type="button"
-          className="icon-button size-7"
-          aria-label={job.source_url ? `Edit link for ${job.title || 'job'}` : `Add a link for ${job.title || 'job'}`}
-          onClick={() => { setValue(job.source_url || ''); setEditing(true) }}
+          className="shrink-0 px-1 text-muted hover:text-ink"
+          aria-label={copied ? 'Link copied' : `Copy link for ${job.title || 'job'}`}
+          onClick={copy}
         >
-          <PenIcon />
+          {copied ? <span className="text-[11px] text-terminal-green" aria-hidden="true">✓</span> : <CopyIcon />}
         </button>
-        {job.source_url && (
-          <button
-            type="button"
-            className="icon-button size-7"
-            aria-label={copied ? 'Link copied' : `Copy link for ${job.title || 'job'}`}
-            onClick={copy}
-          >
-            {copied ? <span className="text-[11px] text-terminal-green" aria-hidden="true">✓</span> : <CopyIcon />}
-          </button>
-        )}
-      </span>
+      )}
+
+      <button
+        type="button"
+        className="shrink-0 px-1 text-xs text-muted hover:text-ink"
+        aria-label={job.source_url ? `Edit link for ${job.title || 'job'}` : `Add a link for ${job.title || 'job'}`}
+        onClick={() => { setValue(job.source_url || ''); setEditing(true) }}
+      >
+        {job.source_url ? 'Edit' : 'Add'}
+      </button>
     </div>
   )
 }
