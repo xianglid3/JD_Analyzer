@@ -156,6 +156,20 @@ def health():
     return jsonify({"status": "alive"})
 
 
+@app.route("/api/version")
+def version():
+    """Which commit is actually serving.
+
+    Three features in a row looked broken when they were only undeployed, and each cost a
+    round of guessing. A build id turns "is my fix live?" into one request. Railway injects
+    the SHA; the short form is a build identifier, not information worth hiding.
+    """
+    return jsonify({
+        "commit": env_str("RAILWAY_GIT_COMMIT_SHA", "unknown")[:7],
+        "environment": env_str("APP_ENV", "development"),
+    })
+
+
 @app.route("/api/ready")
 def ready():
     """Readiness: should this process receive traffic.

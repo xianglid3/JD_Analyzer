@@ -173,7 +173,7 @@ export default function JobDetailPage() {
         <button onClick={() => navigate('/dashboard')} className="mb-6 text-sm text-muted hover:text-ink">← Back to dashboard</button>
 
         <header className="mb-8 flex flex-col gap-5 border-b border-border pb-8 lg:flex-row lg:items-end lg:justify-between">
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <p className="eyebrow">Job details</p>
             <h1 className="page-heading mt-2">{job.title || 'Untitled role'}</h1>
             {metadata.length > 0 && <p className="mt-2 font-mono text-[11px] uppercase tracking-[0.06em] text-muted">{metadata.join(' · ')}</p>}
@@ -182,7 +182,7 @@ export default function JobDetailPage() {
           {/* The three things you act on rather than read: where the posting is, where you are
               with it, and getting rid of it. They belong beside the title, not buried in a form
               below the fold — and each saves on the spot, so there is nothing to remember. */}
-          <div className="flex items-center justify-end gap-2">
+          <div className="flex shrink-0 items-center justify-end gap-3">
             <SourceLink
               job={job}
               grow

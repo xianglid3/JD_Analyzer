@@ -136,3 +136,14 @@ def test_readiness_reports_a_schema_that_is_behind(client, monkeypatch):
     assert response.get_json()["missing"] == ["index tailoring_runs_one_active_per_job"]
     # liveness is a different question and must not fail with it
     assert client.get("/api/health").status_code == 200
+
+
+def test_version_reports_the_build_that_is_serving(client, monkeypatch):
+    """Undeployed code and broken code look identical from the outside; this tells them apart."""
+    monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "abc1234def5678")
+
+    body = client.get("/api/version").get_json()
+
+    assert body["commit"] == "abc1234"
+    # a short SHA only — enough to compare against git log, and nothing else
+    assert len(body["commit"]) == 7

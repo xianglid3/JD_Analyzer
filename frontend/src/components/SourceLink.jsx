@@ -9,6 +9,16 @@ function PenIcon() {
   )
 }
 
+function GlobeIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" className="size-3.5 shrink-0 text-muted" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M3 12h18" />
+      <path d="M12 3a15 15 0 0 1 0 18a15 15 0 0 1 0-18Z" />
+    </svg>
+  )
+}
+
 function CopyIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
@@ -84,10 +94,11 @@ export function SourceLink({ job, onSave, saving, grow = false }) {
 
   return (
     <div
-      className={`group/link flex min-w-0 items-center gap-1 transition-[width] duration-200 ease-out ${
-        grow ? 'w-auto justify-end' : 'w-full'
+      className={`group/link flex min-w-0 items-center gap-1.5 transition-[width] duration-200 ease-out ${
+        grow ? 'w-56' : 'w-full'
       }`}
     >
+      <GlobeIcon />
       {job.source_url ? (
         <a
           href={job.source_url}
