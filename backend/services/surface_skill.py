@@ -20,6 +20,7 @@ import logging
 
 from services.openai_services import surface_rewrite
 from services.resume_evidence import add_entry_skill, entry_bullets
+from services.skill_evidence import recompute_job_match
 from services.tailoring_agent import GroundingError, tool_propose_edit
 from services.usage import QuotaExceeded, budget
 
@@ -37,13 +38,13 @@ class SurfaceRefused(Exception):
 
 def _load_run(cur, user_id, run_id):
     cur.execute(
-        "SELECT status FROM tailoring_runs WHERE id = %s AND user_id = %s",
+        "SELECT status, job_id FROM tailoring_runs WHERE id = %s AND user_id = %s",
         (run_id, user_id),
     )
     row = cur.fetchone()
     if row is None:
         return None
-    return {"status": row[0]}
+    return {"status": row[0], "job_id": row[1]}
 
 
 def _record_retrieval(cur, run_id, skill, bullets):
@@ -155,6 +156,11 @@ def surface_skill(cur, user_id, run_id, skill, entry_id, detail):
         # The checks that refuse the agent refuse this too. Said plainly, because the usual
         # cause is an answer that does not actually contain the fact the rewrite needs.
         raise SurfaceRefused(str(exc)) from None
+
+    # Rescore the job now that this skill has evidence behind it. The run page reads gaps and
+    # "claimed, but not shown" from the stored assessment, so without this the item the user
+    # just answered stays on screen offering to ask them again.
+    recompute_job_match(cur, user_id, run["job_id"])
 
     return {"edit_id": result["edit_id"], "bullet_id": target["bullet_id"], "skill": skill}
 

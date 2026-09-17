@@ -586,3 +586,63 @@ def test_resume_of_another_users_run_is_404(client, monkeypatch, setup, _db):
 
 def test_resume_of_an_unknown_run_is_404(client, setup):
     assert client.post("/api/tailoring/runs/00000000-0000-0000-0000-000000000000/resume").status_code == 404
+
+
+def test_a_finished_run_can_be_deleted_with_everything_it_produced(client, monkeypatch, setup, _db):
+    grounded_run(monkeypatch, setup["bullet_id"])
+    run_id = client.post(f"/api/jobs/{setup['job_id']}/tailor").get_json()["id"]
+    wait_for_run(client, run_id)
+
+    assert client.delete(f"/api/tailoring/runs/{run_id}").status_code == 200
+
+    assert client.get(f"/api/tailoring/runs/{run_id}").status_code == 404
+    with _db.cursor() as cur:
+        # the rows it owned go with it rather than being orphaned
+        cur.execute("SELECT count(*) FROM tool_calls WHERE run_id = %s", (run_id,))
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT count(*) FROM proposed_edits WHERE run_id = %s", (run_id,))
+        assert cur.fetchone()[0] == 0
+
+
+def test_a_run_in_progress_is_not_deletable(client, setup, _db):
+    """The rows cascade, so deleting under a live worker leaves it writing to nothing."""
+    with _db.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO tailoring_runs (user_id, job_id, model, max_steps, status)
+            VALUES (%s, %s, 'gpt-4o-mini', 8, 'running') RETURNING id
+            """,
+            (setup["user_id"], setup["job_id"]),
+        )
+        run_id = str(cur.fetchone()[0])
+    _db.commit()
+
+    response = client.delete(f"/api/tailoring/runs/{run_id}")
+
+    assert response.status_code == 409
+    with _db.cursor() as cur:
+        cur.execute("SELECT count(*) FROM tailoring_runs WHERE id = %s", (run_id,))
+        assert cur.fetchone()[0] == 1
+
+
+def test_another_users_run_cannot_be_deleted(client, setup, _db):
+    with _db.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO tailoring_runs (user_id, job_id, model, max_steps, status)
+            VALUES (%s, %s, 'gpt-4o-mini', 8, 'completed') RETURNING id
+            """,
+            (setup["user_id"], setup["job_id"]),
+        )
+        run_id = str(cur.fetchone()[0])
+    _db.commit()
+
+    client.post("/api/auth/logout")
+    client.post("/api/auth/signup", json={"username": "runthief", "password": "pw123456"})
+    client.post("/api/auth/login", json={"username": "runthief", "password": "pw123456"})
+
+    # not 403: a run they do not own is a run that does not exist, as far as they can tell
+    assert client.delete(f"/api/tailoring/runs/{run_id}").status_code == 404
+    with _db.cursor() as cur:
+        cur.execute("SELECT count(*) FROM tailoring_runs WHERE id = %s", (run_id,))
+        assert cur.fetchone()[0] == 1

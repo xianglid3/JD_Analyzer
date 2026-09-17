@@ -8,6 +8,126 @@ import SelectMenu from '../components/SelectMenu'
 import { apiFetch } from '../lib/api'
 import { requestKey } from '../lib/requestKey'
 
+function PenIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </svg>
+  )
+}
+
+function CopyIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="9" y="9" width="11" height="11" rx="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+  )
+}
+
+function TrashIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 6h18" />
+      <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+      <path d="M10 11v6M14 11v6" />
+    </svg>
+  )
+}
+
+// The posting link, short enough to sit in a row. Hovering (or focusing) reveals edit and copy
+// to its right; clicking the link itself just opens the posting, which is what it is for.
+function SourceLink({ job, onSave, saving }) {
+  const [editing, setEditing] = useState(false)
+  const [value, setValue] = useState(job.source_url || '')
+  const [copied, setCopied] = useState(false)
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(job.source_url)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1200)
+    } catch {
+      setCopied(false)      // a denied clipboard permission is not worth an error state
+    }
+  }
+
+  if (editing) {
+    return (
+      <form
+        className="flex items-center gap-1"
+        onSubmit={(event) => {
+          event.preventDefault()
+          onSave(value.trim() || null)
+          setEditing(false)
+        }}
+      >
+        <input
+          autoFocus
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          placeholder="https://…"
+          aria-label={`Posting link for ${job.title || 'job'}`}
+          className="control min-w-0 flex-1 px-2 py-1 text-xs"
+        />
+        <button type="submit" className="icon-button" aria-label="Save link" disabled={saving}>✓</button>
+        <button
+          type="button"
+          className="icon-button"
+          aria-label="Cancel"
+          onClick={() => { setValue(job.source_url || ''); setEditing(false) }}
+        >
+          ×
+        </button>
+      </form>
+    )
+  }
+
+  return (
+    <div className="group/link flex min-w-0 items-center gap-1">
+      {job.source_url ? (
+        <a
+          href={job.source_url}
+          target="_blank"
+          rel="noreferrer noopener"
+          className="min-w-0 truncate text-xs text-charcoal underline underline-offset-4 hover:text-ink"
+          title={job.source_url}
+        >
+          {job.source_url.replace(/^https?:\/\/(www\.)?/, '')}
+        </a>
+      ) : (
+        <span className="truncate text-xs text-muted">No link</span>
+      )}
+
+      {/* revealed on hover, and on keyboard focus — otherwise these are unreachable without a
+          mouse, which is the usual cost of hiding controls behind :hover */}
+      <span className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity duration-150 focus-within:opacity-100 group-hover/link:opacity-100">
+        <button
+          type="button"
+          className="icon-button size-7"
+          aria-label={job.source_url ? `Edit link for ${job.title || 'job'}` : `Add a link for ${job.title || 'job'}`}
+          onClick={() => { setValue(job.source_url || ''); setEditing(true) }}
+        >
+          <PenIcon />
+        </button>
+        {job.source_url && (
+          <button
+            type="button"
+            className="icon-button size-7"
+            aria-label={copied ? 'Link copied' : `Copy link for ${job.title || 'job'}`}
+            onClick={copy}
+          >
+            {copied ? <span className="text-[11px] text-terminal-green" aria-hidden="true">✓</span> : <CopyIcon />}
+          </button>
+        )}
+      </span>
+    </div>
+  )
+}
+
+
 const sortOptions = [
   ['Recently added', 'created_at', 'desc'],
   ['Oldest added', 'created_at', 'asc'],
@@ -57,6 +177,7 @@ export default function DashboardPage() {
   const [sortDir, setSortDir] = useState('desc')
   const [page, setPage] = useState(1)
   const [notice, setNotice] = useState(null)
+  const [pendingDelete, setPendingDelete] = useState(null)
   const deferredSearch = useDeferredValue(search)
   const analyzeRequestKey = useRef(null)
 
@@ -83,6 +204,24 @@ export default function DashboardPage() {
       setSourceUrl('')
       setShowModal(false)
       navigate(data.confirmed ? `/jobs/${data.id}` : `/jobs/review/${data.id}`)
+    },
+  })
+
+  const updateLink = useMutation({
+    mutationFn: ({ id, source_url: sourceUrl }) =>
+      apiFetch(`/jobs/${id}`, { method: 'PATCH', body: JSON.stringify({ source_url: sourceUrl }) }),
+    onSuccess: (_data, variables) => setNotice({ jobId: variables.id, tone: 'success', message: 'Link saved.' }),
+    onError: (error, variables) => setNotice({ jobId: variables.id, tone: 'error', message: error.message }),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['jobs'] }),
+  })
+
+  const deleteJob = useMutation({
+    mutationFn: (id) => apiFetch(`/jobs/${id}`, { method: 'DELETE' }),
+    onError: (error, id) => setNotice({ jobId: id, tone: 'error', message: error.message }),
+    onSettled: () => {
+      setPendingDelete(null)
+      queryClient.invalidateQueries({ queryKey: ['jobs'] })
+      queryClient.invalidateQueries({ queryKey: ['jobs-stats'] })
     },
   })
 
@@ -220,10 +359,10 @@ export default function DashboardPage() {
                 {data.jobs.map((job, index) => (
                   <li
                     key={job.id}
-                    className="animate-soft-in border-b border-border p-4 last:border-0 hover:bg-surface"
+                    className="group/row animate-soft-in border-b border-border p-4 last:border-0 hover:bg-surface"
                     style={{ animationDelay: `${Math.min(index * 25, 150)}ms` }}
                   >
-                    <div className="grid gap-4 sm:grid-cols-[minmax(0,1.5fr)_minmax(9rem,0.8fr)_7rem_9rem] sm:items-center">
+                    <div className="grid gap-4 sm:grid-cols-[minmax(0,1.4fr)_minmax(8rem,0.7fr)_6rem_minmax(0,1fr)_9rem_2.25rem] sm:items-center">
                       <div className="min-w-0">
                         <Link to={`/jobs/${job.id}`} className="block truncate text-sm font-medium text-ink hover:underline hover:underline-offset-4">
                           {job.title || 'Untitled role'}
@@ -247,6 +386,15 @@ export default function DashboardPage() {
                         </div>
                       </div>
 
+                      <SourceLink
+                        job={job}
+                        saving={updateLink.isPending && updateLink.variables?.id === job.id}
+                        onSave={(sourceUrl) => {
+                          setNotice(null)
+                          updateLink.mutate({ id: job.id, source_url: sourceUrl })
+                        }}
+                      />
+
                       <div>
                         <SelectMenu
                           value={job.status}
@@ -267,6 +415,19 @@ export default function DashboardPage() {
                             {notice.message}
                           </p>
                         )}
+                      </div>
+
+                      {/* aligned with the title, and only visible on hover or focus: deleting a
+                          job is not something to leave one stray click away on every row */}
+                      <div className="flex justify-end self-start sm:self-center">
+                        <button
+                          type="button"
+                          className="icon-button text-muted opacity-0 transition-opacity duration-150 hover:text-red-700 focus-visible:opacity-100 group-hover/row:opacity-100"
+                          aria-label={`Delete ${job.title || 'job'}`}
+                          onClick={() => setPendingDelete(job)}
+                        >
+                          <TrashIcon />
+                        </button>
                       </div>
                     </div>
                   </li>
@@ -355,6 +516,36 @@ export default function DashboardPage() {
           </aside>
         </div>
       </main>
+
+      <Dialog
+        open={pendingDelete !== null}
+        width="max-w-md"
+        title="Delete this job?"
+        description="The analysis, match, and every tailoring run for it go too. This cannot be undone."
+        onClose={() => setPendingDelete(null)}
+        dismissible={!deleteJob.isPending}
+        footer={(
+          <>
+            <button
+              className="secondary-button"
+              onClick={() => setPendingDelete(null)}
+              disabled={deleteJob.isPending}
+            >
+              Cancel
+            </button>
+            <button
+              className="danger-button"
+              onClick={() => deleteJob.mutate(pendingDelete.id)}
+              disabled={deleteJob.isPending}
+            >
+              <ButtonLabel pending={deleteJob.isPending} pendingText="Deleting…">Delete</ButtonLabel>
+            </button>
+          </>
+        )}
+      >
+        <p className="text-sm text-ink">{pendingDelete?.title || 'Untitled role'}</p>
+        <p className="mt-1 text-xs text-muted">{pendingDelete?.company_name || 'Company not listed'}</p>
+      </Dialog>
 
       <Dialog
         open={showModal}

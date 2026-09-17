@@ -217,4 +217,30 @@ describe('JobDetailPage tailoring history', () => {
     await screen.findByText('Platform Engineer')
     expect(screen.queryByText('Earlier runs')).not.toBeInTheDocument()
   })
+
+  it('deletes an earlier run, after asking', async () => {
+    const user = userEvent.setup()
+    apiFetch.mockImplementation((path, options) => {
+      if (path?.endsWith('/tailoring')) {
+        return Promise.resolve({
+          runs: [{
+            id: 'run-9', status: 'completed', steps_used: 4,
+            started_at: '2026-08-31T12:00:00+00:00', completed_at: null,
+            edit_count: 2, gap_count: 1,
+          }],
+        })
+      }
+      if (options?.method === 'DELETE') return Promise.resolve({ deleted: 'run-9' })
+      return Promise.resolve({ id: 42, title: 'Platform Engineer', skills: [], match_detail: null })
+    })
+
+    renderWithProviders(<JobDetailPage />, { route: '/jobs/42' })
+    await user.click(await screen.findByRole('button', { name: /Delete run from/ }))
+
+    // a run costs real money to produce, so it does not go on one click
+    expect(await screen.findByText(/Its suggestions, questions and trace go with it/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Delete run' }))
+
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/tailoring/runs/run-9', { method: 'DELETE' }))
+  })
 })

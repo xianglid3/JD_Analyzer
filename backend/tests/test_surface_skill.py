@@ -159,3 +159,38 @@ def test_the_retrieval_is_recorded_as_the_search_it_is(monkeypatch, setup, _db):
         arguments = cur.fetchone()[0]
     # the trace never implies the model went looking for this
     assert arguments["source"] == "the entry the user named"
+
+
+def test_the_question_stops_being_asked_once_it_is_answered(monkeypatch, setup, _db):
+    """The page reads gaps and "claimed, but not shown" from the stored assessment. Without a
+    rescore the item the user just answered stays on screen, still offering to ask them."""
+    with _db.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE jobs SET requirements = '[{"skill": "software configuration management",
+                                              "importance": "required", "type": "skill"}]'::jsonb,
+                            skills = '["software configuration management"]'::jsonb
+            WHERE id = %s
+            """,
+            (setup["job_id"],),
+        )
+    _db.commit()
+
+    with get_cursor(commit=True) as cur:
+        before = load_run(cur, setup["user_id"], setup["run_id"])
+    asked_before = {item["requirement"] for item in (before["outcomes"] or [])
+                    if item["action"] in ("gap", "only_in_skills")}
+    assert "software configuration management" in asked_before
+
+    rewrite_as(monkeypatch, "Built an ingestion pipeline in Python processing 2M events daily "
+                            "under software configuration management")
+    with get_cursor(commit=True) as cur:
+        surface_skill(cur, setup["user_id"], setup["run_id"],
+                      skill="software configuration management", entry_id=setup["entry_id"],
+                      detail="Every pipeline release went through version control and review")
+
+    with get_cursor() as cur:
+        after = load_run(cur, setup["user_id"], setup["run_id"])
+    asked_after = {item["requirement"] for item in (after["outcomes"] or [])
+                   if item["action"] in ("gap", "only_in_skills")}
+    assert "software configuration management" not in asked_after

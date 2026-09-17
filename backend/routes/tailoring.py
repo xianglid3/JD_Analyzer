@@ -288,6 +288,36 @@ def _decide_proposed_edit(edit_id):
     return jsonify({"id": str(row[0]), "status": row[1]}), 200
 
 
+@tailoring_bp.route("/tailoring/runs/<run_id>", methods=["DELETE"])
+@require_auth
+def delete_tailoring_run(run_id):
+    """Remove a run and everything it produced.
+
+    Refused while a worker owns it: the rows cascade, so deleting underneath a running worker
+    would have it writing tool calls and edits against a run that no longer exists. Finish or
+    abandon it first.
+    """
+    with get_cursor(commit=True) as cur:
+        cur.execute(
+            "SELECT status FROM tailoring_runs WHERE id = %s AND user_id = %s",
+            (run_id, g.user_id),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return jsonify({"error": "run not found"}), 404
+        if row[0] in ("running", "waiting_for_user"):
+            return jsonify({"error": "this run is still in progress"}), 409
+
+        # tool_calls, proposed_edits, evidence_links, candidates and questions all cascade
+        cur.execute(
+            "DELETE FROM tailoring_runs WHERE id = %s AND user_id = %s RETURNING id",
+            (run_id, g.user_id),
+        )
+        deleted = cur.fetchone()
+
+    return jsonify({"deleted": str(deleted[0])}), 200
+
+
 @tailoring_bp.route("/tailoring/runs/<run_id>/surface", methods=["POST"])
 @require_auth
 @limiter.limit("10 per minute; 60 per day", key_func=authenticated_user_key)

@@ -440,6 +440,30 @@ def match_for_job(cur, user_id, requirements, skills):
     return evaluate_requirements(items, load_evidence_bullets(cur, user_id))
 
 
+def recompute_job_match(cur, user_id, job_id):
+    """Rescore one job. For the paths that change evidence for a single job the user is
+    looking at — rescoring their whole list would be work nobody asked for."""
+    import json
+
+    cur.execute(
+        "SELECT requirements, skills FROM jobs WHERE id = %s AND user_id = %s",
+        (str(job_id), user_id),
+    )
+    row = cur.fetchone()
+    if row is None:
+        return None
+
+    items = requirements_for_job(row[0], row[1])
+    result = evaluate_requirements(items, load_evidence_bullets(cur, user_id)) if items else None
+    cur.execute(
+        "UPDATE jobs SET match_score = %s, match_detail = %s WHERE id = %s AND user_id = %s",
+        (result["score"] if result else None,
+         json.dumps(detail_for(result)) if result else None,
+         str(job_id), user_id),
+    )
+    return result
+
+
 def recompute_user_matches(cur, user_id):
     """Rescore every job after the resume changes: one read, one batched write."""
     import json

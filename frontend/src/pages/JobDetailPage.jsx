@@ -36,6 +36,17 @@ const requirementState = {
   NONE: { label: 'gap', className: 'text-muted' },
 }
 
+function TrashIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 6h18" />
+      <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+      <path d="M10 11v6M14 11v6" />
+    </svg>
+  )
+}
+
 function ChevronIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -66,6 +77,7 @@ export default function JobDetailPage() {
   const [sourceUrl, setSourceUrl] = useState('')
   const [notice, setNotice] = useState(null)
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
+  const [pendingRun, setPendingRun] = useState(null)
   const closeDeleteDialog = useCallback(() => setShowDeleteDialog(false), [])
 
   const jobQuery = useQuery({
@@ -104,6 +116,15 @@ export default function JobDetailPage() {
     queryKey: ['job-tailoring-runs', id],
     queryFn: () => apiFetch(`/jobs/${id}/tailoring`),
     retry: false,
+  })
+
+  const deleteRun = useMutation({
+    mutationFn: (runId) => apiFetch(`/tailoring/runs/${runId}`, { method: 'DELETE' }),
+    onError: (error) => setNotice({ tone: 'error', message: error.message }),
+    onSettled: () => {
+      setPendingRun(null)
+      queryClient.invalidateQueries({ queryKey: ['job-tailoring-runs', id] })
+    },
   })
 
   const tailorJob = useMutation({
@@ -351,14 +372,26 @@ export default function JobDetailPage() {
                   <p className="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Earlier runs</p>
                   <div className="mt-2 space-y-2">
                     {runsQuery.data.runs.slice(0, 4).map((run) => (
-                      <Link
-                        key={run.id}
-                        to={`/tailoring/${run.id}`}
-                        className="block text-xs leading-5 text-muted underline decoration-border underline-offset-4 hover:text-ink"
-                      >
-                        {new Date(run.started_at).toLocaleDateString()} · {run.edit_count} {run.edit_count === 1 ? 'suggestion' : 'suggestions'}
-                        {run.gap_count > 0 && `, ${run.gap_count} ${run.gap_count === 1 ? 'gap' : 'gaps'}`}
-                      </Link>
+                      <div key={run.id} className="group/run flex items-center gap-2">
+                        <Link
+                          to={`/tailoring/${run.id}`}
+                          className="min-w-0 flex-1 truncate text-xs leading-5 text-muted underline decoration-border underline-offset-4 hover:text-ink"
+                        >
+                          {new Date(run.started_at).toLocaleDateString()} · {run.edit_count} {run.edit_count === 1 ? 'suggestion' : 'suggestions'}
+                          {run.gap_count > 0 && `, ${run.gap_count} ${run.gap_count === 1 ? 'gap' : 'gaps'}`}
+                        </Link>
+                        {/* on hover or keyboard focus — a delete sitting permanently beside a
+                            link is one slip away from losing a run that cost real money */}
+                        <button
+                          type="button"
+                          className="icon-button size-7 shrink-0 text-muted opacity-0 transition-opacity duration-150 hover:text-red-700 focus-visible:opacity-100 group-hover/run:opacity-100"
+                          aria-label={`Delete run from ${new Date(run.started_at).toLocaleDateString()}`}
+                          disabled={deleteRun.isPending}
+                          onClick={() => setPendingRun(run)}
+                        >
+                          <TrashIcon />
+                        </button>
+                      </div>
                     ))}
                   </div>
                 </div>
@@ -458,6 +491,30 @@ export default function JobDetailPage() {
       >
         {deleteJob.error && <InlineAlert>{deleteJob.error.message}</InlineAlert>}
         <p className="text-sm leading-6 text-muted">You cannot undo this action.</p>
+      </Dialog>
+
+      <Dialog
+        open={pendingRun !== null}
+        title="Delete this tailoring run?"
+        description="Its suggestions, questions and trace go with it. The job and your resume are untouched."
+        onClose={() => setPendingRun(null)}
+        dismissible={!deleteRun.isPending}
+        width="max-w-md"
+        footer={(
+          <>
+            <button className="secondary-button" onClick={() => setPendingRun(null)} disabled={deleteRun.isPending}>Cancel</button>
+            <button className="danger-button" onClick={() => deleteRun.mutate(pendingRun.id)} disabled={deleteRun.isPending}>
+              <ButtonLabel pending={deleteRun.isPending} pendingText="Deleting…">Delete run</ButtonLabel>
+            </button>
+          </>
+        )}
+      >
+        {deleteRun.error && <InlineAlert className="mb-3">{deleteRun.error.message}</InlineAlert>}
+        <p className="text-sm text-ink">
+          {pendingRun && new Date(pendingRun.started_at).toLocaleDateString()} · {pendingRun?.edit_count}{' '}
+          {pendingRun?.edit_count === 1 ? 'suggestion' : 'suggestions'}
+        </p>
+        <p className="mt-1 text-xs text-muted">Accepted wording you already downloaded is not affected.</p>
       </Dialog>
     </div>
   )

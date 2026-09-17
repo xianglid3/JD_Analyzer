@@ -17,6 +17,7 @@ const jobsPage = {
     match_score: 80,
     status: 'saved',
     created_at: '2026-08-24T12:00:00Z',
+    source_url: 'https://example.com/careers/frontend-engineer',
   }],
   page: 1,
   per_page: 20,
@@ -91,5 +92,53 @@ describe('DashboardPage', () => {
     await user.click(screen.getByRole('option', { name: 'Applied' }))
 
     expect(await within(row).findByText('Status updated.')).toBeInTheDocument()
+  })
+
+  it('opens the posting link, and keeps edit and copy out of the way until wanted', async () => {
+    renderWithProviders(<DashboardPage />, { route: '/dashboard' })
+
+    const title = await screen.findByText('Frontend Engineer')
+    const row = title.closest('li')
+
+    // the link itself is a link: clicking it goes to the posting, not into an editor
+    const link = within(row).getByRole('link', { name: /example\.com\/careers/ })
+    expect(link).toHaveAttribute('href', 'https://example.com/careers/frontend-engineer')
+    expect(link).toHaveAttribute('target', '_blank')
+
+    // the actions exist for keyboard and hover, rather than being permanently on show
+    expect(within(row).getByRole('button', { name: /Edit link for/ })).toBeInTheDocument()
+    expect(within(row).getByRole('button', { name: /Copy link for/ })).toBeInTheDocument()
+  })
+
+  it('edits the posting link in place', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(<DashboardPage />, { route: '/dashboard' })
+
+    const row = (await screen.findByText('Frontend Engineer')).closest('li')
+    await user.click(within(row).getByRole('button', { name: /Edit link for/ }))
+
+    const field = within(row).getByRole('textbox', { name: /Posting link for/ })
+    await user.clear(field)
+    await user.type(field, 'https://example.com/careers/moved')
+    await user.click(within(row).getByRole('button', { name: 'Save link' }))
+
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/jobs/7', {
+      method: 'PATCH',
+      body: JSON.stringify({ source_url: 'https://example.com/careers/moved' }),
+    }))
+  })
+
+  it('asks before deleting a job, and says what goes with it', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(<DashboardPage />, { route: '/dashboard' })
+
+    const row = (await screen.findByText('Frontend Engineer')).closest('li')
+    await user.click(within(row).getByRole('button', { name: /Delete Frontend Engineer/ }))
+
+    // a job takes its tailoring runs with it, so the confirmation has to say so
+    expect(await screen.findByText(/every tailoring run for it go too/)).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Delete' }))
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/jobs/7', { method: 'DELETE' }))
   })
 })
