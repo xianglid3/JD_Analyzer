@@ -64,7 +64,7 @@ export function SourceLink({ job, onSave, saving, grow = false }) {
       <form
         // wider while editing, and right-aligned in the header, so it grows leftwards into
         // empty space rather than pushing the status and delete around
-        className={`flex min-h-9 items-center gap-1 rounded-md border border-border bg-soft-paper px-2 transition-[width] duration-200 ease-out ${
+        className={`flex min-h-11 items-center gap-1.5 rounded-md border border-border bg-soft-paper px-3 transition-[width] duration-200 ease-out ${
           grow ? 'w-[26rem] max-w-[60vw]' : 'w-full'
         }`}
         onSubmit={(event) => {
@@ -80,7 +80,7 @@ export function SourceLink({ job, onSave, saving, grow = false }) {
           onChange={(event) => setValue(event.target.value)}
           placeholder="https://…"
           aria-label={`Posting link for ${job.title || 'job'}`}
-          className="min-w-0 flex-1 bg-transparent py-1.5 text-xs text-ink outline-none"
+          className="min-w-0 flex-1 self-stretch bg-transparent text-sm text-ink outline-none"
         />
         <button type="submit" className="shrink-0 px-1 text-xs text-ink hover:underline" disabled={saving}>
           Save
@@ -98,7 +98,7 @@ export function SourceLink({ job, onSave, saving, grow = false }) {
 
   return (
     <div
-      className={`flex min-h-9 items-center gap-1.5 rounded-md border border-border bg-soft-paper px-2 transition-[width] duration-200 ease-out ${width}`}
+      className={`flex min-h-11 items-center gap-1.5 rounded-md border border-border bg-soft-paper px-3 transition-[width] duration-200 ease-out ${width}`}
     >
       <GlobeIcon />
 
@@ -107,13 +107,13 @@ export function SourceLink({ job, onSave, saving, grow = false }) {
           href={job.source_url}
           target="_blank"
           rel="noreferrer noopener"
-          className="min-w-0 flex-1 truncate text-xs text-charcoal hover:text-ink hover:underline hover:underline-offset-4"
+          className="min-w-0 flex-1 truncate text-sm text-charcoal hover:text-ink hover:underline hover:underline-offset-4"
           title={job.source_url}
         >
           {job.source_url.replace(/^https?:\/\/(www\.)?/, '')}
         </a>
       ) : (
-        <span className="min-w-0 flex-1 truncate text-xs text-muted">No link</span>
+        <span className="min-w-0 flex-1 truncate text-sm text-muted">No link</span>
       )}
 
       {job.source_url && (

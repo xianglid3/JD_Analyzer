@@ -186,7 +186,7 @@ export default function DashboardPage() {
             }}
           >
             <span className="mr-2"><PlusIcon /></span>
-            Analyze new JD
+            Analyze
           </button>
         </header>
 
@@ -242,9 +242,9 @@ export default function DashboardPage() {
                   values under the wrong headings. */}
               <div className="job-grid hidden border-b border-border px-4 py-3 font-mono text-[11px] uppercase tracking-[0.06em] text-muted sm:grid">
                 <span>Role</span>
-                <span>Work setup</span>
+                <span>Location</span>
                 <span>Fit</span>
-                <span>Posting</span>
+                <span>Source</span>
                 <span>Status</span>
                 <span className="sr-only">Actions</span>
               </div>
