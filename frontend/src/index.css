@@ -141,6 +141,22 @@ button:disabled { cursor: not-allowed; }
   box-shadow: 0 0 0 1px #171717;
 }
 
+/* The applications table: one definition for the header and every row.
+   Written in CSS rather than a shared Tailwind string, because Tailwind reads class names out
+   of the source text — a template literal built at runtime is invisible to it, so the columns
+   silently never existed and every cell stacked. */
+.job-grid {
+  display: grid;
+  gap: 1rem;
+}
+@media (min-width: 640px) {
+  .job-grid {
+    /* role · work setup · fit · posting · status · delete */
+    grid-template-columns: minmax(0, 1.4fr) minmax(8rem, 0.7fr) 6rem minmax(0, 1fr) 9rem 2.25rem;
+    align-items: center;
+  }
+}
+
 /* Every editable value in the resume review uses one type scale. Textareas otherwise pick
    up browser-specific metrics that can make bullet copy look larger than adjacent inputs. */
 .resume-structure-editor .control {

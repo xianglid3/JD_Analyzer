@@ -182,14 +182,13 @@ export default function JobDetailPage() {
           {/* The three things you act on rather than read: where the posting is, where you are
               with it, and getting rid of it. They belong beside the title, not buried in a form
               below the fold — and each saves on the spot, so there is nothing to remember. */}
-          <div className="flex items-center gap-3 lg:justify-end">
-            <div className="min-w-0 max-w-xs flex-1 lg:w-64 lg:flex-none">
-              <SourceLink
-                job={job}
-                saving={quickSave.isPending && quickSave.variables?.source_url !== undefined}
-                onSave={(nextUrl) => quickSave.mutate({ source_url: nextUrl })}
-              />
-            </div>
+          <div className="flex items-center justify-end gap-2">
+            <SourceLink
+              job={job}
+              grow
+              saving={quickSave.isPending && quickSave.variables?.source_url !== undefined}
+              onSave={(nextUrl) => quickSave.mutate({ source_url: nextUrl })}
+            />
             <SelectMenu
               className="w-36 shrink-0"
               ariaLabel="Status"

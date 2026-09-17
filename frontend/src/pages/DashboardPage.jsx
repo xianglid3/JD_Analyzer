@@ -10,9 +10,6 @@ import { SourceLink, TrashIcon } from '../components/SourceLink'
 import { apiFetch } from '../lib/api'
 import { requestKey } from '../lib/requestKey'
 
-// Role · work setup · fit · posting link · status · the delete button
-const ROW_GRID = 'grid-cols-[minmax(0,1.4fr)_minmax(8rem,0.7fr)_6rem_minmax(0,1fr)_9rem_2.25rem]'
-
 const sortOptions = [
   ['Recently added', 'created_at', 'desc'],
   ['Oldest added', 'created_at', 'asc'],
@@ -243,7 +240,7 @@ export default function DashboardPage() {
               {/* One template, used by this header and by every row below it. Two copies drift
                   the moment a column is added, which is how the link column ended up with its
                   values under the wrong headings. */}
-              <div className={`hidden ${ROW_GRID} gap-4 border-b border-border px-4 py-3 font-mono text-[11px] uppercase tracking-[0.06em] text-muted sm:grid`}>
+              <div className="job-grid hidden border-b border-border px-4 py-3 font-mono text-[11px] uppercase tracking-[0.06em] text-muted sm:grid">
                 <span>Role</span>
                 <span>Work setup</span>
                 <span>Fit</span>
@@ -259,7 +256,7 @@ export default function DashboardPage() {
                     className="group/row animate-soft-in border-b border-border p-4 last:border-0 hover:bg-surface"
                     style={{ animationDelay: `${Math.min(index * 25, 150)}ms` }}
                   >
-                    <div className={`grid gap-4 sm:${ROW_GRID.replace('grid-cols-', 'grid-cols-')} sm:items-center`}>
+                    <div className="job-grid">
                       <div className="min-w-0">
                         <Link to={`/jobs/${job.id}`} className="block truncate text-sm font-medium text-ink hover:underline hover:underline-offset-4">
                           {job.title || 'Untitled role'}

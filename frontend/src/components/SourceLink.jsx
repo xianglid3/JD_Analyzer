@@ -31,7 +31,7 @@ export function TrashIcon() {
 
 // The posting link, short enough to sit in a row or beside a heading. Hovering (or focusing) reveals edit and copy
 // to its right; clicking the link itself just opens the posting, which is what it is for.
-export function SourceLink({ job, onSave, saving }) {
+export function SourceLink({ job, onSave, saving, grow = false }) {
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState(job.source_url || '')
   const [copied, setCopied] = useState(false)
@@ -49,7 +49,12 @@ export function SourceLink({ job, onSave, saving }) {
   if (editing) {
     return (
       <form
-        className="flex items-center gap-1"
+        // `grow` widens the field instead of pushing its neighbours around: the control is
+        // right-aligned, so growing extends it leftwards into empty space, and the transition
+        // is what makes that read as the same element rather than a new one appearing.
+        className={`flex items-center gap-1 transition-[width] duration-200 ease-out ${
+          grow ? 'w-[26rem] max-w-[60vw]' : 'w-full'
+        }`}
         onSubmit={(event) => {
           event.preventDefault()
           onSave(value.trim() || null)
@@ -78,7 +83,11 @@ export function SourceLink({ job, onSave, saving }) {
   }
 
   return (
-    <div className="group/link flex min-w-0 items-center gap-1">
+    <div
+      className={`group/link flex min-w-0 items-center gap-1 transition-[width] duration-200 ease-out ${
+        grow ? 'w-auto justify-end' : 'w-full'
+      }`}
+    >
       {job.source_url ? (
         <a
           href={job.source_url}
