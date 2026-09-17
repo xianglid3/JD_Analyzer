@@ -51,23 +51,32 @@ describe('JobDetailPage', () => {
 
     expect(await screen.findByText('Platform Engineer')).toBeInTheDocument()
     expect(screen.getByText('No-BS translation').closest('section')).toHaveClass('inverted-card')
-    expect(screen.getByRole('link', { name: 'Open posting ↗' })).toHaveAttribute('href', job.source_url)
-    await user.click(screen.getByRole('combobox', { name: 'Status' }))
-    await user.click(screen.getByRole('option', { name: 'Interview' }))
+    expect(screen.getByRole('link', { name: /example\.com\/jobs\/42/ })).toHaveAttribute('href', job.source_url)
     await user.type(screen.getByLabelText(/^Notes/), 'Recruiter call Friday')
     await user.click(screen.getByRole('button', { name: 'Save changes' }))
 
+    // status and the link save on change from the header; this form is only what you type
     await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/jobs/42', {
       method: 'PATCH',
-      body: JSON.stringify({
-        notes: 'Recruiter call Friday',
-        status: 'interview',
-        deadline: null,
-        source_url: job.source_url,
-      }),
+      body: JSON.stringify({ notes: 'Recruiter call Friday', deadline: null }),
     }))
     const tracking = screen.getByRole('heading', { name: 'Tracking' }).closest('section')
     expect(await within(tracking).findByText('Tracking details saved.')).toBeInTheDocument()
+  })
+
+  it('saves status from the header the moment it changes', async () => {
+    const user = userEvent.setup()
+    renderPage()
+
+    await screen.findByText('Platform Engineer')
+    await user.click(screen.getByRole('combobox', { name: 'Status' }))
+    await user.click(screen.getByRole('option', { name: 'Interview' }))
+
+    // no Save to remember for a one-click field
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/jobs/42', {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'interview' }),
+    }))
   })
 
   it('requires confirmation before deleting a job', async () => {

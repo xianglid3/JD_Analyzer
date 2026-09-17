@@ -5,6 +5,7 @@ import Dialog from '../components/Dialog'
 import { ButtonLabel, InlineAlert, PageLoader } from '../components/Feedback'
 import NavBar from '../components/NavBar'
 import SelectMenu from '../components/SelectMenu'
+import { SourceLink, TrashIcon } from '../components/SourceLink'
 import { apiFetch } from '../lib/api'
 
 // These two were called capability/communication until the rename. `match_detail` is stored
@@ -36,17 +37,6 @@ const requirementState = {
   NONE: { label: 'gap', className: 'text-muted' },
 }
 
-function TrashIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M3 6h18" />
-      <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
-      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
-      <path d="M10 11v6M14 11v6" />
-    </svg>
-  )
-}
-
 function ChevronIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -74,7 +64,6 @@ export default function JobDetailPage() {
   const [notes, setNotes] = useState('')
   const [status, setStatus] = useState('saved')
   const [deadline, setDeadline] = useState('')
-  const [sourceUrl, setSourceUrl] = useState('')
   const [notice, setNotice] = useState(null)
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [pendingRun, setPendingRun] = useState(null)
@@ -91,17 +80,26 @@ export default function JobDetailPage() {
     setNotes(jobQuery.data.notes || '')
     setStatus(jobQuery.data.status)
     setDeadline(jobQuery.data.deadline || '')
-    setSourceUrl(jobQuery.data.source_url || '')
   }, [jobQuery.data])
+
+  // Status and the posting link save the moment they change, from the header. This form is
+  // what is left: the things you type, which need a Save because half a sentence is not an
+  // edit anyone meant to make.
+  const quickSave = useMutation({
+    mutationFn: (fields) => apiFetch(`/jobs/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(fields),
+    }),
+    onError: (error) => setNotice({ tone: 'error', message: error.message }),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['job', id] }),
+  })
 
   const saveTracking = useMutation({
     mutationFn: () => apiFetch(`/jobs/${id}`, {
       method: 'PATCH',
       body: JSON.stringify({
         notes,
-        status,
         deadline: deadline || null,
-        source_url: sourceUrl.trim() || null,
       }),
     }),
     onSuccess: () => {
@@ -164,10 +162,7 @@ export default function JobDetailPage() {
 
   const job = jobQuery.data
   const notesTooLong = notes.length > 5000
-  const isDirty = notes !== (job.notes || '')
-    || status !== job.status
-    || deadline !== (job.deadline || '')
-    || sourceUrl !== (job.source_url || '')
+  const isDirty = notes !== (job.notes || '') || deadline !== (job.deadline || '')
   const metadata = [job.company_name, job.location, job.work_type?.replace('_', ' ')].filter(Boolean)
   const skills = job.skills || []
 
@@ -182,16 +177,34 @@ export default function JobDetailPage() {
             <p className="eyebrow">Job details</p>
             <h1 className="page-heading mt-2">{job.title || 'Untitled role'}</h1>
             {metadata.length > 0 && <p className="mt-2 font-mono text-[11px] uppercase tracking-[0.06em] text-muted">{metadata.join(' · ')}</p>}
-            {job.source_url && (
-              <a
-                href={job.source_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="mt-3 inline-flex min-h-11 items-center text-sm text-ink underline decoration-border underline-offset-4 transition-colors hover:text-muted"
-              >
-                Open posting ↗
-              </a>
-            )}
+          </div>
+
+          {/* The three things you act on rather than read: where the posting is, where you are
+              with it, and getting rid of it. They belong beside the title, not buried in a form
+              below the fold — and each saves on the spot, so there is nothing to remember. */}
+          <div className="flex items-center gap-3 lg:justify-end">
+            <div className="min-w-0 max-w-xs flex-1 lg:w-64 lg:flex-none">
+              <SourceLink
+                job={job}
+                saving={quickSave.isPending && quickSave.variables?.source_url !== undefined}
+                onSave={(nextUrl) => quickSave.mutate({ source_url: nextUrl })}
+              />
+            </div>
+            <SelectMenu
+              className="w-36 shrink-0"
+              ariaLabel="Status"
+              value={status}
+              options={statusOptions.map(([label, optionValue]) => ({ label, value: optionValue }))}
+              onChange={(nextStatus) => { setStatus(nextStatus); quickSave.mutate({ status: nextStatus }) }}
+            />
+            <button
+              type="button"
+              className="icon-button shrink-0 text-muted hover:text-red-700"
+              aria-label="Delete job"
+              onClick={() => { deleteJob.reset(); setShowDeleteDialog(true) }}
+            >
+              <TrashIcon />
+            </button>
           </div>
           <div className="flex flex-wrap items-center gap-3 lg:hidden">
             <span className="text-sm font-medium text-ink">{job.match_score != null ? `${job.match_score}% match` : 'Not scored'}</span>
@@ -414,32 +427,9 @@ export default function JobDetailPage() {
               <p className="eyebrow">Application</p>
               <h2 className="mt-2 text-base font-medium text-ink">Tracking</h2>
               <div className="mt-4 space-y-4">
-              <div className="text-sm text-ink">
-                <p>Status</p>
-                <SelectMenu
-                  className="mt-2"
-                  ariaLabel="Status"
-                  value={status}
-                  options={statusOptions.map(([label, optionValue]) => ({ label, value: optionValue }))}
-                  onChange={(nextStatus) => { setStatus(nextStatus); setNotice(null); if (saveTracking.isError) saveTracking.reset() }}
-                />
-              </div>
-
               <label className="block text-sm text-ink">
                 Deadline
                 <input type="date" value={deadline} onChange={(event) => { setDeadline(event.target.value); setNotice(null); if (saveTracking.isError) saveTracking.reset() }} className="control mt-2 px-3 py-2.5 text-sm" />
-              </label>
-
-              <label className="block text-sm text-ink">
-                Job posting URL
-                <input
-                  type="url"
-                  maxLength={2048}
-                  value={sourceUrl}
-                  onChange={(event) => { setSourceUrl(event.target.value); setNotice(null); if (saveTracking.isError) saveTracking.reset() }}
-                  placeholder="https://company.com/jobs/role"
-                  className="control mt-2 px-3 py-2.5 text-sm"
-                />
               </label>
 
               <label className="block text-sm text-ink">
@@ -464,9 +454,6 @@ export default function JobDetailPage() {
               {saveTracking.error && <InlineAlert>{saveTracking.error.message}</InlineAlert>}
               {notice && <InlineAlert tone={notice.tone}>{notice.message}</InlineAlert>}
 
-              <div className="border-t border-border pt-4 text-center">
-                <button className="text-sm text-muted underline-offset-4 hover:text-ink hover:underline" onClick={() => { deleteJob.reset(); setShowDeleteDialog(true) }}>Delete job</button>
-              </div>
               </div>
             </section>
           </aside>
