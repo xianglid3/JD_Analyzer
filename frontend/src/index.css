@@ -128,7 +128,9 @@ button:disabled { cursor: not-allowed; }
 .control {
   width: 100%;
   border: 1px solid #ebebeb;
-  border-radius: 0.375rem;
+  /* 10px, not the 6px in DESIGN.md: a deliberate deviation the owner asked for, applied to
+     every interactive box at once so inputs, selects and buttons keep one shape between them. */
+  border-radius: 0.625rem;
   background: #ffffff;
   color: #171717;
 }
@@ -151,8 +153,8 @@ button:disabled { cursor: not-allowed; }
 }
 @media (min-width: 640px) {
   .job-grid {
-    /* role · work setup · fit · posting · status · delete */
-    grid-template-columns: minmax(0, 1.4fr) minmax(8rem, 0.7fr) 6rem minmax(0, 1fr) 9rem 2.25rem;
+    /* role · work setup · fit · posting · added · status · delete */
+    grid-template-columns: minmax(0, 1.3fr) minmax(7rem, 0.6fr) 5.5rem minmax(0, 1fr) 6.5rem 9rem 2.25rem;
     align-items: center;
   }
 }
@@ -172,7 +174,7 @@ button:disabled { cursor: not-allowed; }
   min-height: 2.75rem;
   align-items: center;
   justify-content: center;
-  border-radius: 0.375rem;
+  border-radius: 0.625rem;
   padding: 0.625rem 1rem;
   font-size: 0.875rem;
   font-weight: 400;

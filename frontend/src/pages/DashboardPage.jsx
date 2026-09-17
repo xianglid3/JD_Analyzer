@@ -245,6 +245,7 @@ export default function DashboardPage() {
                 <span>Location</span>
                 <span>Fit</span>
                 <span>Source</span>
+                <span>Added</span>
                 <span>Status</span>
                 <span className="sr-only">Actions</span>
               </div>
@@ -261,10 +262,8 @@ export default function DashboardPage() {
                         <Link to={`/jobs/${job.id}`} className="block truncate text-sm font-medium text-ink hover:underline hover:underline-offset-4">
                           {job.title || 'Untitled role'}
                         </Link>
-                        <p className="mt-1 flex flex-wrap gap-x-2 text-xs text-muted">
-                          <span>{job.company_name || 'Company not listed'}</span>
-                          <span aria-hidden="true">·</span>
-                          <span>Added {new Date(job.created_at).toLocaleDateString()}</span>
+                        <p className="mt-1 truncate text-xs text-muted">
+                          {job.company_name || 'Company not listed'}
                         </p>
                       </div>
 
@@ -288,6 +287,8 @@ export default function DashboardPage() {
                           updateLink.mutate({ id: job.id, source_url: sourceUrl })
                         }}
                       />
+
+                      <p className="text-xs text-muted">{new Date(job.created_at).toLocaleDateString()}</p>
 
                       <div>
                         <SelectMenu

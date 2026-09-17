@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 function GlobeIcon() {
   return (
@@ -46,8 +46,34 @@ export function SourceLink({ job, onSave, saving, grow = false }) {
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState(job.source_url || '')
   const [copied, setCopied] = useState(false)
+  const box = useRef(null)
 
   const width = grow ? 'w-72' : 'w-full'
+
+  // Clicking away means "never mind", the way every inline editor behaves. Without it the only
+  // way out is Cancel, and a half-typed URL follows you around the page.
+  useEffect(() => {
+    if (!editing) return undefined
+
+    function onPointerDown(event) {
+      if (box.current?.contains(event.target)) return
+      setValue(job.source_url || '')
+      setEditing(false)
+    }
+
+    function onKeyDown(event) {
+      if (event.key !== 'Escape') return
+      setValue(job.source_url || '')
+      setEditing(false)
+    }
+
+    document.addEventListener('mousedown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [editing, job.source_url])
 
   async function copy() {
     try {
@@ -64,7 +90,8 @@ export function SourceLink({ job, onSave, saving, grow = false }) {
       <form
         // wider while editing, and right-aligned in the header, so it grows leftwards into
         // empty space rather than pushing the status and delete around
-        className={`flex min-h-11 items-center gap-1.5 rounded-md border border-border bg-soft-paper px-3 transition-[width] duration-200 ease-out ${
+        ref={box}
+        className={`animate-soft-in flex min-h-11 items-center gap-1.5 rounded-[0.625rem] border border-border bg-soft-paper px-3 transition-[width,box-shadow] duration-200 ease-out focus-within:border-obsidian focus-within:shadow-[0_0_0_1px_#171717] ${
           grow ? 'w-[26rem] max-w-[60vw]' : 'w-full'
         }`}
         onSubmit={(event) => {
@@ -98,7 +125,7 @@ export function SourceLink({ job, onSave, saving, grow = false }) {
 
   return (
     <div
-      className={`flex min-h-11 items-center gap-1.5 rounded-md border border-border bg-soft-paper px-3 transition-[width] duration-200 ease-out ${width}`}
+      className={`animate-soft-in flex min-h-11 items-center gap-1.5 rounded-[0.625rem] border border-border bg-soft-paper px-3 transition-[width] duration-200 ease-out hover:border-ash ${width}`}
     >
       <GlobeIcon />
 

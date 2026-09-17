@@ -91,7 +91,13 @@ export default function JobDetailPage() {
       body: JSON.stringify(fields),
     }),
     onError: (error) => setNotice({ tone: 'error', message: error.message }),
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ['job', id] }),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['job', id] })
+      // the dashboard lists the same fields; without this it keeps showing the old link and
+      // status until something else happens to refetch it
+      queryClient.invalidateQueries({ queryKey: ['jobs'] })
+      queryClient.invalidateQueries({ queryKey: ['jobs-stats'] })
+    },
   })
 
   const saveTracking = useMutation({

@@ -72,10 +72,11 @@ describe('DashboardPage', () => {
     renderWithProviders(<DashboardPage />, { route: '/dashboard' })
 
     await screen.findByText('Frontend Engineer')
-    await user.click(screen.getByRole('button', { name: /Analyze new JD/ }))
+    // two buttons read "Analyze": the one in the header and the one inside the dialog it opens
+    await user.click(screen.getAllByRole('button', { name: /^Analyze$/ })[0])
     await user.type(screen.getByLabelText(/Job posting URL/), 'https://example.com/jobs/42')
     await user.type(screen.getByLabelText('Job description'), 'A'.repeat(60))
-    await user.click(screen.getByRole('button', { name: 'Analyze' }))
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Analyze' }))
 
     await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/jobs/drafts', {
       method: 'POST',
@@ -143,5 +144,27 @@ describe('DashboardPage', () => {
 
     await user.click(screen.getByRole('button', { name: 'Delete' }))
     await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/jobs/7', { method: 'DELETE' }))
+  })
+
+  it('abandons a link edit when the click lands elsewhere', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(<DashboardPage />, { route: '/dashboard' })
+
+    const row = (await screen.findByText('Frontend Engineer')).closest('li')
+    await user.click(within(row).getByRole('button', { name: /Edit link for/ }))
+    await user.type(within(row).getByRole('textbox', { name: /Posting link for/ }), '/typo')
+
+    await user.click(document.body)
+
+    // a half-typed URL should not follow you around the page
+    expect(within(row).queryByRole('textbox', { name: /Posting link for/ })).not.toBeInTheDocument()
+    expect(apiFetch).not.toHaveBeenCalledWith('/jobs/7', expect.objectContaining({ method: 'PATCH' }))
+  })
+
+  it('shows when each job was added, in its own column', async () => {
+    renderWithProviders(<DashboardPage />, { route: '/dashboard' })
+
+    const row = (await screen.findByText('Frontend Engineer')).closest('li')
+    expect(within(row).getByText(new Date('2026-08-24T12:00:00Z').toLocaleDateString())).toBeInTheDocument()
   })
 })
