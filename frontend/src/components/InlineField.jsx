@@ -49,62 +49,86 @@ export function TrashIcon({ className = 'size-4' }) {
 }
 
 /**
- * Free-text places, from OpenStreetMap's public geocoder.
+ * Free-text places, via `leaflet-geosearch`'s OpenStreetMap provider.
  *
- * Chosen for having no key to manage and no bill to watch — which matters for a field nobody
- * types in more than once per job. It is rate-limited to roughly one request a second, hence
- * the 400ms debounce and the three-character floor; and it only ever sees the few words being
- * typed into a location box, never the posting or the resume.
+ * The library owns the parts that were fiddly by hand: building the query, normalising results
+ * across providers, and returning a stable shape. Swapping to Google or Mapbox later is a
+ * one-line provider change rather than a rewrite of this hook.
  *
- * Failure is silence: no suggestions, and the field still takes whatever the user types. A
- * geocoder being down must not stop someone writing "Remote".
+ * Fires as soon as typing pauses (250ms), from two characters up. The public OSM endpoint is
+ * rate-limited to roughly a request a second, and one pause means one request, so this stays
+ * well inside it. It only ever sees what is typed into a location
+ * box — never the posting or the resume — and failure is silence: no suggestions, and the field
+ * takes whatever the user types. A geocoder being down must not stop someone writing "Remote".
  */
+// Short enough to fire on a real pause in typing rather than after one, long enough that
+// "char" does not become four requests. Only one request is ever in flight per pause, which is
+// what the public OSM endpoint's ~1/second limit actually cares about.
+const PAUSE_MS = 250
+const MIN_QUERY = 2
+
+// Loaded the first time someone edits a location, not on every page view: statically imported
+// it added ~155KB to the main bundle, which is a lot to carry for a field most sessions never
+// touch. The import is cached, so the wait happens once.
+let providerPromise = null
+
+function geocoder() {
+  if (!providerPromise) {
+    providerPromise = import('leaflet-geosearch').then(({ OpenStreetMapProvider }) => (
+      new OpenStreetMapProvider({ params: { addressdetails: 1, 'accept-language': 'en', limit: 5 } })
+    ))
+  }
+  return providerPromise
+}
+
 function usePlaceSuggestions(query, enabled) {
   const [places, setPlaces] = useState([])
+  const [searching, setSearching] = useState(false)
 
   const text = query.trim()
-  const asking = enabled && text.length >= 3
+  const asking = enabled && text.length >= MIN_QUERY
 
   useEffect(() => {
     if (!asking) return undefined
 
-    const controller = new AbortController()
+    let live = true
+    // set inside the timer, not before it: "searching" should mean a request is in flight, and
+    // setting state synchronously in an effect body cascades a render for nothing
     const timer = setTimeout(async () => {
+      if (!live) return
+      setSearching(true)
       try {
-        const response = await fetch(
-          `https://nominatim.openstreetmap.org/search?format=json&limit=5&addressdetails=1&q=${encodeURIComponent(text)}`,
-          { signal: controller.signal, headers: { Accept: 'application/json' } },
-        )
-        if (!response.ok) return
-        const results = await response.json()
-        setPlaces([...new Set(results.map(shortPlaceName).filter(Boolean))])
+        const results = await (await geocoder()).search({ query: text })
+        if (!live) return
+        setPlaces([...new Set(results.map(shortPlaceName).filter(Boolean))].slice(0, 5))
       } catch {
-        setPlaces([])
+        if (live) setPlaces([])
+      } finally {
+        if (live) setSearching(false)
       }
-    }, 400)
+    }, PAUSE_MS)
 
     return () => {
+      live = false
       clearTimeout(timer)
-      controller.abort()
     }
   }, [text, asking])
 
   // derived, not stored: clearing the list in an effect would set state during render and
   // cascade a second one for nothing
-  return asking ? places : []
+  return { places: asking ? places : [], searching: asking && searching }
 }
 
 // "Charlotte, Mecklenburg County, North Carolina, 28202, United States" is not a location a
-// resume would ever say. Keep the place, the region and the country.
+// resume would ever say. Keep the place, the region, and the country when it is not the US.
 function shortPlaceName(result) {
-  const address = result.address || {}
+  const address = result.raw?.address || {}
   const place = address.city || address.town || address.village || address.hamlet
-    || address.county || result.name
+    || address.county || result.raw?.name
   const region = address.state || address.region
-  const country = address.country_code?.toUpperCase()
-  return [place, region, country && country !== 'US' ? address.country : undefined]
-    .filter(Boolean)
-    .join(', ') || result.display_name?.split(',')[0]
+  const isUS = address.country_code?.toUpperCase() === 'US'
+  return [place, region, isUS ? undefined : address.country].filter(Boolean).join(', ')
+    || result.label?.split(',')[0]
 }
 
 /**
@@ -136,7 +160,8 @@ export function InlineField({
   const [copied, setCopied] = useState(false)
   const box = useRef(null)
   const listId = useId()
-  const places = usePlaceSuggestions(draft, suggest && editing)
+  const { places, searching } = usePlaceSuggestions(draft, suggest && editing)
+  const [active, setActive] = useState(-1)
 
   useEffect(() => {
     if (!editing) return undefined
@@ -170,6 +195,12 @@ export function InlineField({
     }
   }
 
+  function choose(place) {
+    onSave(place)
+    setDraft(place)
+    setEditing(false)
+  }
+
   const shell = 'flex min-h-11 items-center gap-1.5 rounded-[0.625rem] border border-border bg-soft-paper px-3 transition-[width] duration-200 ease-out'
 
   if (editing) {
@@ -188,13 +219,33 @@ export function InlineField({
           <input
             autoFocus
             value={draft}
-            onChange={(event) => setDraft(event.target.value)}
+            onChange={(event) => { setDraft(event.target.value); setActive(-1) }}
             placeholder={placeholder}
             aria-label={label}
             autoComplete="off"
+            role={suggest ? 'combobox' : undefined}
+            aria-expanded={suggest ? places.length > 0 : undefined}
+            aria-controls={suggest ? listId : undefined}
+            aria-activedescendant={active >= 0 ? `${listId}-${active}` : undefined}
+            onKeyDown={(event) => {
+              if (!suggest || places.length === 0) return
+              // arrow keys move through the list, Enter takes the highlighted one — a
+              // suggestion list reachable only by mouse is half a control
+              if (event.key === 'ArrowDown') {
+                event.preventDefault()
+                setActive((index) => (index + 1) % places.length)
+              } else if (event.key === 'ArrowUp') {
+                event.preventDefault()
+                setActive((index) => (index <= 0 ? places.length - 1 : index - 1))
+              } else if (event.key === 'Enter' && active >= 0) {
+                event.preventDefault()
+                choose(places[active])
+              }
+            }}
             // the ring is drawn by the box around it, which is the shape the user sees
             className="min-w-0 flex-1 self-stretch bg-transparent text-sm text-ink outline-none"
           />
+          {searching && <span className="shrink-0 text-[11px] text-muted">…</span>}
           <button type="submit" className="shrink-0 px-1 text-xs text-ink hover:underline" disabled={saving}>
             {value ? 'Save' : 'Confirm'}
           </button>
@@ -206,18 +257,18 @@ export function InlineField({
         {suggest && places.length > 0 && (
           <ul
             id={listId}
+            role="listbox"
             className="animate-soft-in absolute left-0 right-0 top-full z-20 mt-1 overflow-hidden rounded-[0.625rem] border border-border bg-soft-paper py-1 shadow-sm"
           >
-            {places.map((place) => (
-              <li key={place}>
+            {places.map((place, index) => (
+              <li key={place} id={`${listId}-${index}`} role="option" aria-selected={index === active}>
                 <button
                   type="button"
-                  className="flex w-full items-center px-3 py-2 text-left text-sm text-charcoal hover:bg-surface hover:text-ink"
-                  onClick={() => {
-                    onSave(place)
-                    setDraft(place)
-                    setEditing(false)
-                  }}
+                  className={`flex w-full items-center px-3 py-2 text-left text-sm ${
+                    index === active ? 'bg-surface text-ink' : 'text-charcoal hover:bg-surface hover:text-ink'
+                  }`}
+                  onMouseEnter={() => setActive(index)}
+                  onClick={() => choose(place)}
                 >
                   {place}
                 </button>
