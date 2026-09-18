@@ -175,7 +175,7 @@ export default function DashboardPage() {
         <header className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <p className="eyebrow">Job workspace</p>
-            <h1 className="page-heading mt-2">Your job descriptions</h1>
+            <h1 className="page-heading mt-2">Your Jobs</h1>
             <p className="mt-2 text-sm text-muted">Analyze roles, compare skills, and track every application.</p>
           </div>
           <button
@@ -243,9 +243,9 @@ export default function DashboardPage() {
               <div className="job-grid hidden border-b border-border px-4 py-3 font-mono text-[11px] uppercase tracking-[0.06em] text-muted sm:grid">
                 <span>Role</span>
                 <span>Location</span>
+                <span>Added</span>
                 <span>Fit</span>
                 <span>Source</span>
-                <span>Added</span>
                 <span>Status</span>
                 <span className="sr-only">Actions</span>
               </div>
@@ -272,6 +272,8 @@ export default function DashboardPage() {
                         {job.work_type && <span className="rounded-full border border-border bg-soft-paper px-2.5 py-1">{job.work_type.replace('_', ' ')}</span>}
                       </div>
 
+                      <p className="text-xs text-muted">{new Date(job.created_at).toLocaleDateString()}</p>
+
                       <div aria-label={job.match_score != null ? `${job.match_score}% match` : 'No match score'}>
                         <p className="text-sm font-medium text-ink">{job.match_score != null ? `${job.match_score}%` : '—'}</p>
                         <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-border">
@@ -287,8 +289,6 @@ export default function DashboardPage() {
                           updateLink.mutate({ id: job.id, source_url: sourceUrl })
                         }}
                       />
-
-                      <p className="text-xs text-muted">{new Date(job.created_at).toLocaleDateString()}</p>
 
                       <div>
                         <SelectMenu

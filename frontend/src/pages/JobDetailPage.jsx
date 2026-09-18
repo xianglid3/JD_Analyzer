@@ -5,6 +5,7 @@ import Dialog from '../components/Dialog'
 import { ButtonLabel, InlineAlert, PageLoader } from '../components/Feedback'
 import NavBar from '../components/NavBar'
 import SelectMenu from '../components/SelectMenu'
+import { InlineField, PenIcon, PinIcon } from '../components/InlineField'
 import { SourceLink, TrashIcon } from '../components/SourceLink'
 import { apiFetch } from '../lib/api'
 
@@ -67,6 +68,8 @@ export default function JobDetailPage() {
   const [notice, setNotice] = useState(null)
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [pendingRun, setPendingRun] = useState(null)
+  const [editingTitle, setEditingTitle] = useState(false)
+  const [titleDraft, setTitleDraft] = useState('')
   const closeDeleteDialog = useCallback(() => setShowDeleteDialog(false), [])
 
   const jobQuery = useQuery({
@@ -169,7 +172,6 @@ export default function JobDetailPage() {
   const job = jobQuery.data
   const notesTooLong = notes.length > 5000
   const isDirty = notes !== (job.notes || '') || deadline !== (job.deadline || '')
-  const metadata = [job.company_name, job.location, job.work_type?.replace('_', ' ')].filter(Boolean)
   const skills = job.skills || []
 
   return (
@@ -181,8 +183,69 @@ export default function JobDetailPage() {
         <header className="mb-8 flex flex-col gap-5 border-b border-border pb-8 lg:flex-row lg:items-end lg:justify-between">
           <div className="min-w-0 flex-1">
             <p className="eyebrow">Job details</p>
-            <h1 className="page-heading mt-2">{job.title || 'Untitled role'}</h1>
-            {metadata.length > 0 && <p className="mt-2 font-mono text-[11px] uppercase tracking-[0.06em] text-muted">{metadata.join(' · ')}</p>}
+
+            {editingTitle ? (
+              <form
+                className="mt-2 flex items-center gap-2"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  quickSave.mutate({ title: titleDraft.trim() || null })
+                  setEditingTitle(false)
+                }}
+              >
+                <input
+                  autoFocus
+                  value={titleDraft}
+                  onChange={(event) => setTitleDraft(event.target.value)}
+                  onBlur={() => { setTitleDraft(job.title || ''); setEditingTitle(false) }}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Escape') return
+                    setTitleDraft(job.title || '')
+                    setEditingTitle(false)
+                  }}
+                  aria-label="Job title"
+                  maxLength={300}
+                  className="control min-w-0 flex-1 px-3 py-2 text-2xl font-medium text-ink"
+                />
+                <button type="submit" className="shrink-0 px-1 text-sm text-ink hover:underline">Save</button>
+              </form>
+            ) : (
+              <div className="mt-2 flex items-center gap-2">
+                <h1 className="page-heading min-w-0 truncate">{job.title || 'Untitled role'}</h1>
+                <button
+                  type="button"
+                  aria-label="Edit job title"
+                  className="shrink-0 px-1 text-muted hover:text-ink"
+                  onClick={() => { setTitleDraft(job.title || ''); setEditingTitle(true) }}
+                >
+                  <PenIcon className="size-4" />
+                </button>
+              </div>
+            )}
+
+            <div className="mt-2 flex flex-wrap items-center gap-3">
+              {job.company_name && (
+                <p className="font-mono text-[11px] uppercase tracking-[0.06em] text-muted">{job.company_name}</p>
+              )}
+              {/* the location is model output too, and often simply absent from a posting */}
+              <InlineField
+                value={job.location || ''}
+                onSave={(next) => quickSave.mutate({ location: next })}
+                saving={quickSave.isPending}
+                icon={PinIcon}
+                label="location"
+                placeholder="City, State"
+                emptyText="No location"
+                copyable
+                suggest
+                width="w-60"
+              />
+              {job.work_type && (
+                <span className="rounded-full border border-border bg-soft-paper px-2.5 py-1 text-xs text-muted">
+                  {job.work_type.replace('_', ' ')}
+                </span>
+              )}
+            </div>
           </div>
 
           {/* The three things you act on rather than read: where the posting is, where you are
@@ -359,7 +422,7 @@ export default function JobDetailPage() {
                 {job.match_detail?.eligibility?.length > 0 && (
                   <div className="mt-4 rounded-md border border-border bg-surface p-3">
                     <p className="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Eligibility</p>
-                    <ul className="mt-1 space-y-1 text-xs leading-5 text-ink">
+                    <ul className="mt-1.5 list-disc space-y-1 pl-4 text-xs leading-5 text-ink marker:text-muted">
                       {job.match_detail.eligibility.map((condition) => (
                         <li key={condition}>{condition}</li>
                       ))}

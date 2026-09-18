@@ -23,6 +23,8 @@ VALID_WORK_TYPES = {"remote", "hybrid", "in_person"}
 IDEMPOTENCY_STALE_AFTER = "10 minutes"
 IDEMPOTENCY_COMPLETED_TTL = "7 days"
 MAX_NOTES_CHARS = 5000
+MAX_TITLE_CHARS = 300
+MAX_LOCATION_CHARS = 200
 MAX_SKILL_CHARS = 100
 # An eligibility condition is the posting's own sentence, quoted — "must commit to an
 # onboarding date by the end of the year". It is never matched against evidence, so the short
@@ -704,7 +706,11 @@ def update_job(job_id):
         return error
 
     # whitelist 'allowed' a user is permitted to change
-    allowed = ["status", "notes", "deadline", "source_url"]
+    #
+    # `title` and `location` are the model's output, and the model is sometimes wrong — a
+    # posting titled "Req 155557" or with no location stated leaves the user with a row they
+    # cannot correct. Editable; the raw description they came from is not.
+    allowed = ["status", "notes", "deadline", "source_url", "title", "location"]
     updates = {field: data[field] for field in allowed if field in data}
 
     if not updates:
@@ -733,6 +739,20 @@ def update_job(job_id):
                 return jsonify({"error": "deadline must be YYYY-MM-DD or null"}), 400
             if parsed_deadline.isoformat() != deadline:
                 return jsonify({"error": "deadline must be YYYY-MM-DD or null"}), 400
+
+    for field, limit in (("title", MAX_TITLE_CHARS), ("location", MAX_LOCATION_CHARS)):
+        if field not in updates:
+            continue
+        value = updates[field]
+        if value is not None and not isinstance(value, str):
+            return jsonify({"error": f"{field} must be text or null"}), 400
+        if isinstance(value, str):
+            value = value.strip()
+            if len(value) > limit:
+                return jsonify({"error": f"{field} must be {limit} characters or fewer"}), 400
+            # an empty box means "unknown", which is null rather than a blank string — the UI
+            # renders those differently and a "" would read as a location the user typed
+            updates[field] = value or None
 
     if "source_url" in updates:
         source_url, url_error = normalize_optional_http_url(updates["source_url"])

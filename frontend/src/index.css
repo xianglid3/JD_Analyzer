@@ -78,9 +78,16 @@ textarea {
 button:not(:disabled) { cursor: pointer; }
 button:disabled { cursor: not-allowed; }
 
-:focus-visible {
-  outline: 2px solid #171717;
-  outline-offset: 2px;
+/* In @layer base for the same reason the font reset is: unlayered CSS beats Tailwind's
+   layered utilities, so this rule overrode every `outline-none` in the app. That is how an
+   input inside a rounded pill drew its own square black ring, narrower than the pill and
+   offset from it. Layered, the default still applies everywhere it should and a component
+   that draws its own focus indicator can say so. */
+@layer base {
+  :focus-visible {
+    outline: 2px solid #171717;
+    outline-offset: 2px;
+  }
 }
 
 ::selection {
@@ -153,8 +160,10 @@ button:disabled { cursor: not-allowed; }
 }
 @media (min-width: 640px) {
   .job-grid {
-    /* role · work setup · fit · posting · added · status · delete */
-    grid-template-columns: minmax(0, 1.3fr) minmax(7rem, 0.6fr) 5.5rem minmax(0, 1fr) 6.5rem 9rem 2.25rem;
+    /* role · location · added · fit · posting · status · delete
+       The narrow columns are sized to their content — a date, a percentage, a status word —
+       so the row's width goes to the title and the link, which are the two that get truncated. */
+    grid-template-columns: minmax(0, 1.4fr) minmax(6rem, 0.55fr) 6rem 5rem minmax(0, 1fr) 7.5rem 2.25rem;
     align-items: center;
   }
 }

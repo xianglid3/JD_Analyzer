@@ -160,3 +160,39 @@ def test_resume_save_recomputes_multiple_jobs_with_display_names(client, _db):
         (["Python"], ["Docker"]),
         (["JavaScript"], ["REST API"]),
     ]
+
+
+def test_job_title_and_location_are_correctable(client, insert_job):
+    """Both are model output. A posting the model titled "Req 155557", or left with no location,
+    is not something the user should be stuck with."""
+    user = login(client)
+    job_id = insert_job(user["id"])
+
+    response = client.patch(f"/api/jobs/{job_id}", json={
+        "title": "  Software Engineer Intern  ", "location": "Charlotte, NC",
+    })
+
+    assert response.status_code == 200
+    job = client.get(f"/api/jobs/{job_id}").get_json()
+    assert job["title"] == "Software Engineer Intern"      # trimmed
+    assert job["location"] == "Charlotte, NC"
+
+
+def test_clearing_a_title_or_location_stores_null_not_blank(client, insert_job):
+    """"Unknown" and "the user typed nothing" render differently; an empty string is neither."""
+    user = login(client)
+    job_id = insert_job(user["id"])
+
+    client.patch(f"/api/jobs/{job_id}", json={"location": "   "})
+
+    assert client.get(f"/api/jobs/{job_id}").get_json()["location"] is None
+
+
+def test_an_overlong_title_is_refused(client, insert_job):
+    user = login(client)
+    job_id = insert_job(user["id"])
+
+    response = client.patch(f"/api/jobs/{job_id}", json={"title": "x" * 301})
+
+    assert response.status_code == 400
+    assert "300 characters" in response.get_json()["error"]

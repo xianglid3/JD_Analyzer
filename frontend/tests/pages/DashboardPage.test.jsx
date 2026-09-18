@@ -110,7 +110,7 @@ describe('DashboardPage', () => {
     expect(link).toHaveAttribute('target', '_blank')
 
     // the actions exist for keyboard and hover, rather than being permanently on show
-    expect(within(row).getByRole('button', { name: /Edit link for/ })).toBeInTheDocument()
+    expect(within(row).getByRole('button', { name: /Edit link for Frontend Engineer/ })).toBeInTheDocument()
     expect(within(row).getByRole('button', { name: /Copy link for/ })).toBeInTheDocument()
   })
 
@@ -119,9 +119,9 @@ describe('DashboardPage', () => {
     renderWithProviders(<DashboardPage />, { route: '/dashboard' })
 
     const row = (await screen.findByText('Frontend Engineer')).closest('li')
-    await user.click(within(row).getByRole('button', { name: /Edit link for/ }))
+    await user.click(within(row).getByRole('button', { name: /Edit link for Frontend Engineer/ }))
 
-    const field = within(row).getByRole('textbox', { name: /Posting link for/ })
+    const field = within(row).getByRole('textbox', { name: /link for Frontend Engineer/ })
     await user.clear(field)
     await user.type(field, 'https://example.com/careers/moved')
     await user.click(within(row).getByRole('button', { name: 'Save' }))
@@ -151,13 +151,13 @@ describe('DashboardPage', () => {
     renderWithProviders(<DashboardPage />, { route: '/dashboard' })
 
     const row = (await screen.findByText('Frontend Engineer')).closest('li')
-    await user.click(within(row).getByRole('button', { name: /Edit link for/ }))
-    await user.type(within(row).getByRole('textbox', { name: /Posting link for/ }), '/typo')
+    await user.click(within(row).getByRole('button', { name: /Edit link for Frontend Engineer/ }))
+    await user.type(within(row).getByRole('textbox', { name: /link for Frontend Engineer/ }), '/typo')
 
     await user.click(document.body)
 
     // a half-typed URL should not follow you around the page
-    expect(within(row).queryByRole('textbox', { name: /Posting link for/ })).not.toBeInTheDocument()
+    expect(within(row).queryByRole('textbox', { name: /link for Frontend Engineer/ })).not.toBeInTheDocument()
     expect(apiFetch).not.toHaveBeenCalledWith('/jobs/7', expect.objectContaining({ method: 'PATCH' }))
   })
 
