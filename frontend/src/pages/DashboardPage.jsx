@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useCallback, useDeferredValue, useEffect, useRef, useState } from 'react'
+import { useCallback, useDeferredValue, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import Dialog from '../components/Dialog'
 import { ButtonLabel, InlineAlert, PageLoader, Spinner } from '../components/Feedback'
@@ -8,6 +8,7 @@ import SelectMenu from '../components/SelectMenu'
 import StatusFilterMenu from '../components/StatusFilterMenu'
 import { SourceLink, TrashIcon } from '../components/SourceLink'
 import { apiFetch } from '../lib/api'
+import { toast } from '../lib/toast'
 import { requestKey } from '../lib/requestKey'
 
 const sortOptions = [
@@ -58,7 +59,6 @@ export default function DashboardPage() {
   const [sortKey, setSortKey] = useState('created_at')
   const [sortDir, setSortDir] = useState('desc')
   const [page, setPage] = useState(1)
-  const [notice, setNotice] = useState(null)
   const [pendingDelete, setPendingDelete] = useState(null)
   const deferredSearch = useDeferredValue(search)
   const analyzeRequestKey = useRef(null)
@@ -66,12 +66,6 @@ export default function DashboardPage() {
   const closeModal = useCallback(() => {
     setShowModal(false)
   }, [])
-
-  useEffect(() => {
-    if (!notice) return undefined
-    const timeout = window.setTimeout(() => setNotice(null), 3200)
-    return () => window.clearTimeout(timeout)
-  }, [notice])
 
   const createDraft = useMutation({
     mutationFn: ({ description, sourceUrl: requestSourceUrl, idempotencyKey }) =>
@@ -92,14 +86,15 @@ export default function DashboardPage() {
   const updateLink = useMutation({
     mutationFn: ({ id, source_url: sourceUrl }) =>
       apiFetch(`/jobs/${id}`, { method: 'PATCH', body: JSON.stringify({ source_url: sourceUrl }) }),
-    onSuccess: (_data, variables) => setNotice({ jobId: variables.id, tone: 'success', message: 'Link saved.' }),
-    onError: (error, variables) => setNotice({ jobId: variables.id, tone: 'error', message: error.message }),
+    onSuccess: () => toast.success('Link saved.'),
+    onError: (error) => toast.error(error.message),
     onSettled: () => queryClient.invalidateQueries({ queryKey: ['jobs'] }),
   })
 
   const deleteJob = useMutation({
     mutationFn: (id) => apiFetch(`/jobs/${id}`, { method: 'DELETE' }),
-    onError: (error, id) => setNotice({ jobId: id, tone: 'error', message: error.message }),
+    onSuccess: () => toast.success('Job deleted.'),
+    onError: (error) => toast.error(error.message),
     onSettled: () => {
       setPendingDelete(null)
       queryClient.invalidateQueries({ queryKey: ['jobs'] })
@@ -110,8 +105,8 @@ export default function DashboardPage() {
   const updateStatus = useMutation({
     mutationFn: ({ id, status }) =>
       apiFetch(`/jobs/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) }),
-    onSuccess: (_data, variables) => setNotice({ jobId: variables.id, tone: 'success', message: 'Status updated.' }),
-    onError: (error, variables) => setNotice({ jobId: variables.id, tone: 'error', message: error.message }),
+    onSuccess: () => toast.success('Status updated.'),
+    onError: (error) => toast.error(error.message),
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['jobs'] })
       queryClient.invalidateQueries({ queryKey: ['jobs-stats'] })
@@ -285,7 +280,6 @@ export default function DashboardPage() {
                         job={job}
                         saving={updateLink.isPending && updateLink.variables?.id === job.id}
                         onSave={(sourceUrl) => {
-                          setNotice(null)
                           updateLink.mutate({ id: job.id, source_url: sourceUrl })
                         }}
                       />
@@ -294,22 +288,12 @@ export default function DashboardPage() {
                         <SelectMenu
                           value={job.status}
                           onChange={(nextStatus) => {
-                            setNotice(null)
-                            updateStatus.mutate({ id: job.id, status: nextStatus })
+                              updateStatus.mutate({ id: job.id, status: nextStatus })
                           }}
                           disabled={updateStatus.isPending && updateStatus.variables?.id === job.id}
                           ariaLabel={`Status for ${job.title || 'job'}`}
                           options={statusOptions.map(([label, value]) => ({ label, value }))}
                         />
-                        {notice?.jobId === job.id && (
-                          <p
-                            role={notice.tone === 'error' ? 'alert' : 'status'}
-                            className={`mt-1.5 text-xs ${notice.tone === 'error' ? 'text-red-700' : 'text-terminal-green'}`}
-                          >
-                            {notice.tone === 'success' && <span aria-hidden="true">✓ </span>}
-                            {notice.message}
-                          </p>
-                        )}
                       </div>
 
                       {/* aligned with the title, and only visible on hover or focus: deleting a

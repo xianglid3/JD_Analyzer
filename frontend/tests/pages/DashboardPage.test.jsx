@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { apiFetch } from '../../src/lib/api'
 import { renderWithProviders } from '../helpers/render'
 import DashboardPage from '../../src/pages/DashboardPage'
+import ToastHost from '../../src/components/Toast'
 
 vi.mock('../../src/lib/api', () => ({ apiFetch: vi.fn() }))
 
@@ -86,16 +87,24 @@ describe('DashboardPage', () => {
     expect(screen.queryByText('Analysis saved to your dashboard.')).not.toBeInTheDocument()
   })
 
-  it('shows status-save feedback beside the status that changed', async () => {
+  it('confirms a status change without moving the page', async () => {
     const user = userEvent.setup()
-    renderWithProviders(<DashboardPage />, { route: '/dashboard' })
+    renderWithProviders(
+      <>
+        <DashboardPage />
+        <ToastHost />
+      </>,
+      { route: '/dashboard' },
+    )
 
-    const title = await screen.findByText('Frontend Engineer')
-    const row = title.closest('li')
+    const row = (await screen.findByText('Frontend Engineer')).closest('li')
     await user.click(within(row).getByRole('combobox', { name: /Status for/ }))
     await user.click(screen.getByRole('option', { name: 'Applied' }))
 
-    expect(await within(row).findByText('Status updated.')).toBeInTheDocument()
+    // in the corner, not under the control: printing it in the row shifted everything below it
+    const toast = await screen.findByRole('status')
+    expect(toast).toHaveTextContent('Status updated.')
+    expect(within(row).queryByText('Status updated.')).not.toBeInTheDocument()
   })
 
   it('opens the posting link, and keeps edit and copy out of the way until wanted', async () => {
@@ -166,5 +175,30 @@ describe('DashboardPage', () => {
 
     const row = (await screen.findByText('Frontend Engineer')).closest('li')
     expect(within(row).getByText(new Date('2026-08-24T12:00:00Z').toLocaleDateString())).toBeInTheDocument()
+  })
+
+  it('says so in red when a change fails', async () => {
+    const user = userEvent.setup()
+    apiFetch.mockImplementation((path, options) => {
+      if (options?.method === 'PATCH') return Promise.reject(new Error('job not found'))
+      if (path === '/jobs/stats') return Promise.resolve(stats)
+      if (path.startsWith('/jobs?')) return Promise.resolve(jobsPage)
+      return Promise.resolve({})
+    })
+    renderWithProviders(
+      <>
+        <DashboardPage />
+        <ToastHost />
+      </>,
+      { route: '/dashboard' },
+    )
+
+    const row = (await screen.findByText('Frontend Engineer')).closest('li')
+    await user.click(within(row).getByRole('combobox', { name: /Status for/ }))
+    await user.click(screen.getByRole('option', { name: 'Applied' }))
+
+    // alert, not status: a failure is worth interrupting a screen reader for
+    const failure = await screen.findByRole('alert')
+    expect(failure).toHaveTextContent('job not found')
   })
 })

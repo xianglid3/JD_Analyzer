@@ -174,35 +174,58 @@ export function InlineField({
 
   if (editing) {
     return (
-      <form
-        ref={box}
-        className={`${shell} animate-soft-in focus-within:border-obsidian ${grow ? growWidth : width}`}
-        onSubmit={(event) => {
-          event.preventDefault()
-          onSave(draft.trim() || null)
-          setEditing(false)
-        }}
-      >
-        <Icon />
-        <input
-          autoFocus
-          value={draft}
-          list={suggest ? listId : undefined}
-          onChange={(event) => setDraft(event.target.value)}
-          placeholder={placeholder}
-          aria-label={label}
-          // the ring is drawn by the box around it, which is the shape the user sees
-          className="min-w-0 flex-1 self-stretch bg-transparent text-sm text-ink outline-none"
-        />
-        {suggest && (
-          <datalist id={listId}>
-            {places.map((place) => <option key={place} value={place} />)}
-          </datalist>
+      // relative, because the suggestion list hangs off this box and has to count as inside it
+      <div ref={box} className={`relative ${grow ? growWidth : width}`}>
+        <form
+          className={`${shell} animate-soft-in w-full focus-within:border-obsidian`}
+          onSubmit={(event) => {
+            event.preventDefault()
+            onSave(draft.trim() || null)
+            setEditing(false)
+          }}
+        >
+          <Icon />
+          <input
+            autoFocus
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder={placeholder}
+            aria-label={label}
+            autoComplete="off"
+            // the ring is drawn by the box around it, which is the shape the user sees
+            className="min-w-0 flex-1 self-stretch bg-transparent text-sm text-ink outline-none"
+          />
+          <button type="submit" className="shrink-0 px-1 text-xs text-ink hover:underline" disabled={saving}>
+            {value ? 'Save' : 'Confirm'}
+          </button>
+        </form>
+
+        {/* A plain list, not a `datalist`. The native one renders outside this subtree, so
+            clicking a suggestion registered as a click *away* — which abandoned the edit and
+            is exactly why picking a city never saved. */}
+        {suggest && places.length > 0 && (
+          <ul
+            id={listId}
+            className="animate-soft-in absolute left-0 right-0 top-full z-20 mt-1 overflow-hidden rounded-[0.625rem] border border-border bg-soft-paper py-1 shadow-sm"
+          >
+            {places.map((place) => (
+              <li key={place}>
+                <button
+                  type="button"
+                  className="flex w-full items-center px-3 py-2 text-left text-sm text-charcoal hover:bg-surface hover:text-ink"
+                  onClick={() => {
+                    onSave(place)
+                    setDraft(place)
+                    setEditing(false)
+                  }}
+                >
+                  {place}
+                </button>
+              </li>
+            ))}
+          </ul>
         )}
-        <button type="submit" className="shrink-0 px-1 text-xs text-ink hover:underline" disabled={saving}>
-          {value ? 'Save' : 'Add'}
-        </button>
-      </form>
+      </div>
     )
   }
 

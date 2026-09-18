@@ -8,6 +8,7 @@ import SelectMenu from '../components/SelectMenu'
 import { InlineField, PenIcon, PinIcon } from '../components/InlineField'
 import { SourceLink, TrashIcon } from '../components/SourceLink'
 import { apiFetch } from '../lib/api'
+import { toast } from '../lib/toast'
 
 // These two were called capability/communication until the rename. `match_detail` is stored
 // JSONB, so jobs scored before it still carry the old keys and only pick up the new ones the
@@ -37,6 +38,9 @@ const requirementState = {
   PARTIAL: { label: 'partial', className: 'text-charcoal' },
   NONE: { label: 'gap', className: 'text-muted' },
 }
+
+// what a saved field is called in the toast, so "Location saved." reads as a sentence
+const SAVED_LABELS = { title: 'Title', location: 'Location', source_url: 'Link', status: 'Status' }
 
 function ChevronIcon() {
   return (
@@ -93,7 +97,8 @@ export default function JobDetailPage() {
       method: 'PATCH',
       body: JSON.stringify(fields),
     }),
-    onError: (error) => setNotice({ tone: 'error', message: error.message }),
+    onSuccess: (_data, fields) => toast.success(`${SAVED_LABELS[Object.keys(fields)[0]] || 'Change'} saved.`),
+    onError: (error) => toast.error(error.message),
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['job', id] })
       // the dashboard lists the same fields; without this it keeps showing the old link and
@@ -127,7 +132,8 @@ export default function JobDetailPage() {
 
   const deleteRun = useMutation({
     mutationFn: (runId) => apiFetch(`/tailoring/runs/${runId}`, { method: 'DELETE' }),
-    onError: (error) => setNotice({ tone: 'error', message: error.message }),
+    onSuccess: () => toast.success('Tailoring run deleted.'),
+    onError: (error) => toast.error(error.message),
     onSettled: () => {
       setPendingRun(null)
       queryClient.invalidateQueries({ queryKey: ['job-tailoring-runs', id] })
