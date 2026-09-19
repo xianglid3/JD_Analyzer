@@ -165,11 +165,7 @@ def build_document(cur, user_id, run_id=None, requirements=None):
     return {
         "header": header,
         "sections": [s for s in sections if s["entries"]],
-        "skills": [
-            bullet["text"]
-            for entry in all_entries if entry["kind"] == "skill"
-            for bullet in entry["bullets"]
-        ],
+        "skills": resume_skills(cur, user_id, all_entries),
         "tailored_count": sum(
             1 for entry in all_entries for bullet in entry["bullets"] if bullet["tailored"]
         ),
@@ -177,6 +173,28 @@ def build_document(cur, user_id, run_id=None, requirements=None):
         # omission is visible rather than silent
         "stale_edits": stale,
     }
+
+
+def resume_skills(cur, user_id, entries):
+    """The skills line, from structured evidence when there is any and the saved list when not.
+
+    The skills entry only exists for resumes extracted after it did, and for those the model
+    actually found a skills block in. Falling back to `resumes.skills` — the list the analyzer
+    already produced — means the section appears for everyone rather than silently disappearing
+    from the export of an older resume.
+    """
+    from_evidence = [
+        bullet["text"]
+        for entry in entries if entry["kind"] == "skill"
+        for bullet in entry["bullets"]
+    ]
+    if from_evidence:
+        return from_evidence
+
+    cur.execute("SELECT skills FROM resumes WHERE user_id = %s", (user_id,))
+    row = cur.fetchone()
+    saved = row[0] if row and isinstance(row[0], list) else []
+    return [skill for skill in (str(item).strip() for item in saved) if skill]
 
 
 def _contact_line(header):

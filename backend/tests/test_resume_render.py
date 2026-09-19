@@ -1,6 +1,8 @@
 """Rendering a tailored resume. The model produced structured edits; this file turns them
 into a document, which is the only place markup is ever written."""
 
+import json
+
 import pytest
 
 from services.openai_services import ResumeEntryExtraction, ResumeHeader, ResumeStructure
@@ -229,3 +231,31 @@ def test_sections_render_education_then_projects_then_work(_db, resume):
             < tex.index(r"\section{Projects}")
             < tex.index(r"\section{Experience}")
             < tex.index(r"\section{Technical Skills}"))
+
+
+def test_the_skills_section_falls_back_to_the_saved_list(_db, resume):
+    """A resume extracted before skills became structured evidence has no skills entry, and its
+    export silently lost the whole section. The analyzer's list is still on file."""
+    with _db.cursor() as cur:
+        cur.execute("DELETE FROM resume_entries WHERE user_id = %s AND kind = 'skill'",
+                    (resume["user_id"],))
+        # the row the analyzer writes when a resume is saved; this fixture builds evidence
+        # directly, so there is none until now
+        cur.execute("INSERT INTO resumes (user_id, skills) VALUES (%s, %s)",
+                    (resume["user_id"], json.dumps(["Python", "PostgreSQL"])))
+        document = build_document(cur, resume["user_id"])
+
+    assert document["skills"] == ["Python", "PostgreSQL"]
+    assert r"\section{Technical Skills}" in render_latex(document)
+    assert "PostgreSQL" in render_html(document)
+
+
+def test_structured_skills_win_over_the_saved_list(_db, resume):
+    """When both exist the reviewed one is the truth — the user edited it."""
+    with _db.cursor() as cur:
+        cur.execute("INSERT INTO resumes (user_id, skills) VALUES (%s, %s)",
+                    (resume["user_id"], json.dumps(["Stale", "Wrong"])))
+        document = build_document(cur, resume["user_id"])
+
+    assert "Stale" not in document["skills"]
+    assert document["skills"] == ["Python", "C++"]
