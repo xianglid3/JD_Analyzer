@@ -1467,3 +1467,25 @@ def test_starting_twice_returns_the_run_that_exists(fixtures, _db):
             (fixtures["user_id"], fixtures["job_id"]),
         )
         assert cur.fetchone()[0] == 1
+
+
+def test_a_proposal_carries_its_reason(monkeypatch, fixtures, k8s_bullet, _db):
+    """A proposal the user cannot interrogate is one they have to take on trust."""
+    script(
+        monkeypatch,
+        response([call("search_resume", {"query": "kubernetes"}, "c1")]),
+        response([call("propose_edit", {
+            "requirement": "Kubernetes",
+            "bullet_id": k8s_bullet,
+            "proposed_text": "Deployed Kubernetes services across three regions",
+            "evidence_bullet_ids": [k8s_bullet],
+            "reason": "The bullet already names Kubernetes; leading with the action makes it scannable.",
+        }, "c2")]),
+        response(content="Done."),
+    )
+
+    result = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
+
+    with _db.cursor() as cur:
+        run = load_run(cur, fixtures["user_id"], result["run_id"])
+    assert run["edits"][0]["reason"].startswith("The bullet already names Kubernetes")

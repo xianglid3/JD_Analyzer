@@ -151,6 +151,7 @@ def surface_skill(cur, user_id, run_id, skill, entry_id, detail):
             "bullet_id": target["bullet_id"],
             "proposed_text": choice.get("proposed_text", ""),
             "evidence_bullet_ids": [target["bullet_id"]],
+            "reason": f"You said you used {skill} on this project, so the bullet can show it.",
         }, surfacing=skill)
     except GroundingError as exc:
         # The checks that refuse the agent refuse this too. Said plainly, because the usual

@@ -78,7 +78,13 @@ def supported_skills(evidence_texts, approved=frozenset()):
 
 
 # 30%, 2M, $1.2k, 15+, 3.5x — the shapes a resume bullet actually uses
-NUMBER = re.compile(r"[$€£]?\d[\d,]*(?:\.\d+)?\s*(?:%|k|m|b|x|\+|hrs?|hours?|ms|s|gb|mb|tb)?", re.I)
+# The trailing lookahead is load-bearing: without it the unit alternation happily matched the "s" of
+# "ROS 2 stack", turning a framework version into "2 seconds" — and a rewrite that kept "ROS 2"
+# was then refused for dropping a measurable result. "Vue 3 app" and "Python 3 script" are the
+# same shape, and all three are ordinary resume words. A lookahead rather than \b, because
+# \b does not hold after "%" and the suffix would be dropped from "30%" — which is the one
+# distinction this function exists to keep.
+NUMBER = re.compile(r"[$€£]?\d[\d,]*(?:\.\d+)?\s*(?:%|k|m|b|x|\+|hrs?|hours?|ms|s|gb|mb|tb)?(?![A-Za-z0-9])", re.I)
 MULTIPLIERS = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}
 
 
@@ -159,6 +165,46 @@ def bullet_quality_gaps(text):
     return gaps
 
 
+# Words that place the writer inside a larger effort rather than behind the whole of it.
+SHARED_CREDIT = {
+    "contributing", "contributed", "contribute", "assisted", "assisting", "helped", "helping",
+    "supported", "supporting", "participated", "participating", "collaborated", "collaborating",
+    "involved", "shadowed", "shadowing",
+}
+# Words that claim the whole of it.
+SOLE_CREDIT = {
+    "architected", "built", "created", "designed", "developed", "engineered", "founded",
+    "implemented", "launched", "led", "owned", "rebuilt", "shipped",
+}
+
+
+def ownership_inflation(original_text, proposed_text):
+    """"Contributing to X" rewritten as "Developed X", or nothing.
+
+    The claim checker verifies technologies and numbers, which leaves the most common way a
+    resume line becomes untrue completely uncovered: keeping every noun and quietly promoting
+    the verb. "Contributing to a work-in-progress stack" and "Developed the stack" cite the same
+    evidence and describe different people.
+
+    Deliberately narrow — it fires only when the original says shared credit *and* the rewrite
+    says sole credit *and* the original never used that stronger word itself. A rewrite that
+    keeps the hedge, or one whose bullet already said "Developed", is left alone.
+    """
+    original = set(_words(original_text))
+    proposed = set(_words(proposed_text))
+    shared = original & SHARED_CREDIT
+    if not shared or original & SOLE_CREDIT:
+        return None
+    claimed = proposed & SOLE_CREDIT
+    if not claimed or proposed & SHARED_CREDIT:
+        return None
+    return (
+        f"the bullet says {sorted(shared)[0]}, and the rewrite says {sorted(claimed)[0]} — "
+        "that claims more of the work than the evidence does. Keep the original's level of "
+        "involvement and improve the wording around it"
+    )
+
+
 def rewrite_quality_issue(original_text, proposed_text, surfacing=None):
     """Explain why a grounded rewrite still adds no useful value, or return ``None``.
 
@@ -175,6 +221,10 @@ def rewrite_quality_issue(original_text, proposed_text, surfacing=None):
     proposed_words = _words(proposed_text)
     if original_words == proposed_words:
         return "the proposed edit is the same as the current bullet"
+
+    inflated = ownership_inflation(original_text, proposed_text)
+    if inflated:
+        return inflated
 
     if len(proposed_words) < len(original_words) * 0.8:
         return (

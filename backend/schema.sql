@@ -250,6 +250,10 @@ CREATE TABLE proposed_edits (
   cited_count   smallint NOT NULL DEFAULT 0 CHECK (cited_count >= 0),
   status        text NOT NULL DEFAULT 'proposed'
                 CHECK (status IN ('proposed', 'accepted', 'rejected')),
+  -- why this rewrite is an improvement, in the model's own words. Stored because a proposal
+  -- the user cannot interrogate is one they have to take on trust, and trust is the thing this
+  -- system is trying not to ask for.
+  reason        text,
   created_at    timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX proposed_edits_run_idx ON proposed_edits (run_id, created_at);

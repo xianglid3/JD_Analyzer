@@ -52,6 +52,8 @@ client = OpenAI(max_retries=0)
 MODEL = "gpt-4o-mini"
 DEFAULT_MAX_STEPS = 12
 MAX_PROPOSED_TEXT_CHARS = 500
+# one sentence; a paragraph of justification is a paragraph nobody reads
+MAX_REASON_CHARS = 300
 MAX_EVIDENCE_PER_EDIT = 5
 MAX_MERGED_BULLETS = 3
 MAX_DETAIL_QUESTION_CHARS = 300
@@ -103,6 +105,12 @@ Never work on a requirement outside the approved candidate list. Missing and unc
 already handled by the fit engine and are not writing tasks.
 
 Hard rules:
+- Every propose_edit and merge_bullets carries a `reason`: one sentence saying what the rewrite
+  improves and which part of the evidence supports it. Write it for the candidate, who will read
+  it while deciding whether to accept — not as a restatement of the new text.
+- Never claim more of the work than the bullet does. "Contributing to", "assisted", "helped" and
+  "supported" describe shared credit; do not rewrite them as "developed", "built" or "led". Keep
+  the candidate's level of involvement and improve the wording around it.
 - Never state an accomplishment, technology, metric, or responsibility that is not in the evidence you retrieved. You may strengthen the wording; you may not strengthen the facts. Numbers especially: never introduce a percentage, count, or multiple that the evidence does not already contain.
 - You may only cite bullet ids returned to you by search_resume in this session.
 - If a safe rewrite is not possible, leave the bullet unchanged.
@@ -171,8 +179,12 @@ TOOLS = [
                         "type": "array", "items": {"type": "string", "pattern": UUID_PATTERN},
                         "description": "All searched bullet ids supporting the combined text.",
                     },
+                    "reason": {
+                        "type": "string",
+                        "description": "One short sentence: what this merge improves and what in the evidence supports it.",
+                    },
                 },
-                "required": ["requirement", "bullet_ids", "proposed_text", "evidence_bullet_ids"],
+                "required": ["requirement", "bullet_ids", "proposed_text", "evidence_bullet_ids", "reason"],
             },
         },
     },
@@ -370,16 +382,18 @@ def _claim_evidence(cur, user_id, run_id, links, requirement):
 
 
 def _record_edit(cur, user_id, run_id, bullet_id, requirement, proposed_text,
-                 links, details, edit_type="rewrite"):
+                 links, details, edit_type="rewrite", reason=None):
     cur.execute(
         """
         INSERT INTO proposed_edits (
-            run_id, user_id, bullet_id, requirement, proposed_text, edit_type, cited_count
+            run_id, user_id, bullet_id, requirement, proposed_text, edit_type, cited_count,
+            reason
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
-        (run_id, user_id, bullet_id, requirement, proposed_text, edit_type, len(links)),
+        (run_id, user_id, bullet_id, requirement, proposed_text, edit_type, len(links),
+         (reason or "").strip()[:MAX_REASON_CHARS] or None),
     )
     edit_id = cur.fetchone()[0]
 
@@ -457,6 +471,7 @@ def tool_propose_edit(cur, user_id, run_id, arguments, surfacing=None):
 
     edit_id = _record_edit(
         cur, user_id, run_id, bullet_id, requirement, proposed_text, links, details,
+        reason=arguments.get("reason"),
     )
 
     return {"edit_id": str(edit_id), "cited_bullets": len(links), "status": "recorded"}
@@ -1692,7 +1707,7 @@ def load_run(cur, user_id, run_id):
     cur.execute(
         """
         SELECT e.id, e.bullet_id, e.requirement, e.proposed_text, e.status,
-               e.edit_type, b.text,
+               e.edit_type, b.text, e.reason,
                COALESCE((
                    SELECT json_agg(json_build_object('bullet_id', l.bullet_id, 'text', eb.text))
                    FROM evidence_links AS l
@@ -1732,17 +1747,18 @@ def load_run(cur, user_id, run_id):
             "status": r[4],
             "edit_type": r[5],
             "original_text": r[6],
+            "reason": r[7],
             "source_bullets": ([{
                 "bullet_id": str(r[1]), "text": r[6],
             }] if r[1] and r[6] else []) + [
-                {"bullet_id": str(item["bullet_id"]), "text": item["text"]} for item in r[8]
+                {"bullet_id": str(item["bullet_id"]), "text": item["text"]} for item in r[9]
             ],
             "evidence": [
-                {"bullet_id": str(item["bullet_id"]), "text": item["text"]} for item in r[7]
+                {"bullet_id": str(item["bullet_id"]), "text": item["text"]} for item in r[8]
             ],
             "confirmed_details": [
                 {"id": str(item["id"]), "question": item["question"], "answer": item["answer"]}
-                for item in r[9]
+                for item in r[10]
             ],
         }
         for r in cur.fetchall()

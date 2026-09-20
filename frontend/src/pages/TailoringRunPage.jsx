@@ -528,6 +528,16 @@ function EditCard({ edit, onDecide, busy, pending, error }) {
         </details>
       )}
 
+      {/* Why, after the evidence: the citation says what it is built on, this says what it is
+          for. Reading them in the other order asks the user to judge a claim before they know
+          what it is claiming. */}
+      {edit.reason && (
+        <p className="mt-3 border-t border-border pt-3 text-xs leading-5 text-muted">
+          <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Why</span>
+          <span className="mt-1 block text-charcoal">{edit.reason}</span>
+        </p>
+      )}
+
       {edit.confirmed_details?.length > 0 && (
         <details className="mt-3 border-t border-border pt-3">
           <summary className="cursor-pointer text-xs text-muted">Includes a detail you confirmed</summary>

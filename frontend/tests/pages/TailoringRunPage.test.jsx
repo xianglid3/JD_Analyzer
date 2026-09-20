@@ -117,6 +117,7 @@ const finished = {
     source_bullets: [{ bullet_id: 'bullet-1', text: 'Deployed services to Kubernetes across three regions' }],
     evidence: [{ bullet_id: 'bullet-1', text: 'Deployed services to Kubernetes across three regions' }],
     confirmed_details: [],
+    reason: 'The bullet already names Kubernetes; leading with the action makes it scannable.',
   }],
   gaps: [{ id: 'gap-1', requirement: 'Terraform', note: 'no IaC work found', searched: ['terraform'] }],
   trace: [
@@ -565,5 +566,12 @@ describe('TailoringRunPage', () => {
     await waitFor(() => expect(screen.getByText(/Lost contact with the server/)).toBeInTheDocument())
     expect(screen.getByText('Proposed changes')).toBeInTheDocument()
     expect(screen.queryByText('Run unavailable')).not.toBeInTheDocument()
+  })
+
+  it('says why each rewrite is an improvement, under the evidence it cites', async () => {
+    apiFetch.mockResolvedValue(finished)
+    renderWithProviders(<TailoringRunPage />)
+
+    expect(await screen.findByText(/leading with the action makes it scannable/)).toBeInTheDocument()
   })
 })
