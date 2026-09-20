@@ -617,7 +617,8 @@ def list_jobs():
 
         cur.execute(
             f"""
-            SELECT id, title, company_name, location, work_type, match_score, status, created_at
+            SELECT id, title, company_name, location, work_type, match_score, status,
+                   created_at, source_url
             FROM jobs
             WHERE {where_clause}
             ORDER BY {order_clause}
@@ -629,7 +630,8 @@ def list_jobs():
 
     jobs = []
     for row in rows:
-        job_id, title, company_name, location, work_type, match_score, status, created_at = row
+        (job_id, title, company_name, location, work_type, match_score, status,
+         created_at, source_url) = row
         jobs.append({
             "id": str(job_id),
             "title": title,
@@ -639,6 +641,9 @@ def list_jobs():
             "match_score": float(match_score) if match_score is not None else None,
             "status": status,
             "created_at": created_at.isoformat(),
+            # the list shows and edits the posting link, so it has to come back with the row —
+            # without it the column rendered "No link" for every job, whatever was saved
+            "source_url": source_url,
         })
 
     total_pages = (total + per_page - 1) // per_page
