@@ -31,7 +31,10 @@ export default function ToastHost() {
 
   return createPortal((
     <div
-      className="pointer-events-none fixed right-4 top-4 z-[60] flex w-[min(22rem,calc(100vw-2rem))] flex-col gap-2"
+      // Centred rather than tucked into a corner: a confirmation in the top right is easy to
+      // miss when your eyes are on the control you just used. `pointer-events-none` on the stack
+      // means it never swallows a click meant for what is underneath it.
+      className="pointer-events-none fixed left-1/2 top-1/2 z-[60] flex w-[min(22rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col gap-2"
       aria-live="polite"
     >
       {items.map((item) => (
