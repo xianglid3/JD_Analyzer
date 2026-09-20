@@ -251,6 +251,8 @@ def test_an_unrecognised_rejection_is_visible_as_other():
      "work than the evidence does", "ownership_inflation"),
     ("this entry has no end date, so the work is still going on, and the rewrite puts it in "
      "the past", "tense_regression"),
+    ('you are already waiting on an answer about this bullet ("What did you use?")',
+     "duplicate_question"),
 ])
 def test_quality_rejections_are_classified(message, expected):
     assert classify(message) == expected

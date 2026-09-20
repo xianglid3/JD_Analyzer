@@ -32,6 +32,7 @@ REASONS = [
     ("unapproved_requirement", re.compile(r"not an approved tailoring candidate")),
     # the fit engine owns these decisions; the model asked to make one itself
     ("agent_overreach", re.compile(r"gaps are determined by the fit engine")),
+    ("duplicate_question", re.compile(r"already (asked|waiting on an answer) about this bullet")),
     ("needs_user_answer", re.compile(
         r"(ask the user for the missing detail|confirm this requirement with the user)")),
     ("invalid_merge", re.compile(

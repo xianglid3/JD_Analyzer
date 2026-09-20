@@ -1558,3 +1558,102 @@ def test_keeping_a_bullet_still_requires_having_looked_at_it(monkeypatch, fixtur
 
     assert refusals, "keeping a bullet before any search should be refused"
     assert "kept" not in states
+
+
+def test_two_questions_about_one_bullet_in_the_same_step_file_one_request(
+    monkeypatch, fixtures, k8s_bullet, _db,
+):
+    """Rewording walks past the unique constraint, which dedupes on exact question text, so
+    one bullet could collect several pending questions — and an ask is recorded as an attempt
+    rather than a failure, so the repeat-failure cap never saw it."""
+    script(
+        monkeypatch,
+        response([call("search_resume", {"query": "kubernetes"}, "c1")]),
+        response([
+            call("request_detail", {
+                "requirement": "Kubernetes",
+                "bullet_id": k8s_bullet,
+                "question": "What technologies or functionality did you use?",
+            }, "c2"),
+            call("request_detail", {
+                "requirement": "Kubernetes",
+                "bullet_id": k8s_bullet,
+                "question": "What functionality did you use?",
+            }, "c3"),
+        ]),
+    )
+
+    result = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
+
+    with _db.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM tailoring_detail_requests WHERE run_id = %s",
+            (result["run_id"],),
+        )
+        assert cur.fetchone()[0] == 1, "the reworded question filed a second request"
+        cur.execute(
+            """
+            SELECT error_message FROM tool_calls
+            WHERE run_id = %s AND tool_name = 'request_detail' AND status = 'failed'
+            """,
+            (result["run_id"],),
+        )
+        refusals = [row[0] for row in cur.fetchall()]
+
+    assert any("already waiting on an answer" in message for message in refusals)
+
+
+def test_an_answered_question_is_handed_back_instead_of_asked_again(
+    monkeypatch, fixtures, k8s_bullet, _db,
+):
+    """The loop a real run hit: the user answers, the run resumes, and the model asks the
+    same thing in different words — parking the run in waiting_for_user again. Once there is
+    an answer, re-asking returns it, because the next move is the rewrite that uses it."""
+    question = "How many clusters did you run?"
+    script(
+        monkeypatch,
+        response([call("search_resume", {"query": "kubernetes"}, "c1")]),
+        response([call("request_detail", {
+            "requirement": "Kubernetes", "bullet_id": k8s_bullet, "question": question,
+        }, "c2")]),
+    )
+    paused = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
+    assert paused["status"] == "waiting_for_user"
+
+    with _db.cursor() as cur:
+        run = load_run(cur, fixtures["user_id"], paused["run_id"])
+    resumed = resolve_detail_request(
+        get_cursor, fixtures["user_id"], run["detail_requests"][0]["id"],
+        answer="Four clusters.",
+    )
+
+    script(
+        monkeypatch,
+        response([call("request_detail", {
+            "requirement": "Kubernetes",
+            "bullet_id": k8s_bullet,
+            "question": "How many clusters was it exactly?",
+        }, "c3")]),
+        response(content="Nothing further."),
+    )
+    execute_run(
+        get_cursor, fixtures["user_id"], fixtures["job_id"], paused["run_id"],
+        resume_from=resumed["steps_used"],
+    )
+
+    with _db.cursor() as cur:
+        cur.execute(
+            """
+            SELECT error_message FROM tool_calls
+            WHERE run_id = %s AND tool_name = 'request_detail' AND status = 'failed'
+            """,
+            (paused["run_id"],),
+        )
+        refusals = [row[0] for row in cur.fetchall()]
+        cur.execute(
+            "SELECT count(*) FROM tailoring_detail_requests WHERE run_id = %s",
+            (paused["run_id"],),
+        )
+        assert cur.fetchone()[0] == 1
+
+    assert any("Four clusters." in message for message in refusals)

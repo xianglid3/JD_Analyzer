@@ -630,6 +630,36 @@ def tool_request_detail(cur, user_id, run_id, arguments):
         raise GroundingError("question must be one line of plain text")
     verify_citation(cur, user_id, run_id, bullet_id)
 
+    # One question per bullet per requirement. The unique constraint below dedupes on the
+    # exact question text, which is no dedup at all against a model that rewords: "what
+    # technologies did you use", "what functionality", "what features" are three strings and
+    # were three pending requests, each one parking the run in waiting_for_user again. The
+    # ask also counts as an attempt rather than a failure, so the repeat-failure cap never
+    # saw it. An answer already given is handed back here so the next move is the rewrite.
+    cur.execute(
+        """
+        SELECT status, answer, question
+        FROM tailoring_detail_requests
+        WHERE run_id = %s AND bullet_id = %s AND requirement = %s
+          AND question <> %s AND status <> 'dismissed'
+        ORDER BY created_at
+        LIMIT 1
+        """,
+        (run_id, bullet_id, requirement, question),
+    )
+    existing = cur.fetchone()
+    if existing:
+        status, answer, asked = existing
+        if status == 'answered':
+            raise GroundingError(
+                f'you already asked about this bullet ("{asked}") and the answer was '
+                f'"{answer}" — use it to propose the rewrite instead of asking again'
+            )
+        raise GroundingError(
+            f'you are already waiting on an answer about this bullet ("{asked}"). '
+            "Rewording the question files a second one — move to another candidate"
+        )
+
     cur.execute(
         """
         INSERT INTO tailoring_detail_requests (
