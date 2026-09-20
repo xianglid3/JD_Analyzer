@@ -981,8 +981,11 @@ def test_a_posting_cannot_close_the_fence_itself():
 
 
 def test_writing_agent_has_no_gap_authority():
+    """An exact set, not a subset: the point is that `flag_gap` cannot come back. Gaps are the
+    fit engine's call. `keep_original` is deciding a bullet needs no edit, which is a judgement
+    about wording and squarely this agent's business."""
     assert {tool["function"]["name"] for tool in tailoring_agent.TOOLS} == {
-        "search_resume", "propose_edit", "merge_bullets", "request_detail",
+        "search_resume", "propose_edit", "merge_bullets", "request_detail", "keep_original",
     }
 
 
@@ -1489,3 +1492,69 @@ def test_a_proposal_carries_its_reason(monkeypatch, fixtures, k8s_bullet, _db):
     with _db.cursor() as cur:
         run = load_run(cur, fixtures["user_id"], result["run_id"])
     assert run["edits"][0]["reason"].startswith("The bullet already names Kubernetes")
+
+
+def test_a_good_bullet_can_be_kept_without_manufacturing_an_edit(monkeypatch, fixtures, k8s_bullet, _db):
+    """The incentive bug behind the reported FSAE rewrite: `handled` was reachable only
+    through propose_edit or merge_bullets, so a candidate whose bullet was already good left
+    the model choosing between padding it and leaving the candidate open. It padded."""
+    script(
+        monkeypatch,
+        response([call("search_resume", {"query": "kubernetes"}, "c1")]),
+        response([call("keep_original", {
+            "requirement": "Kubernetes",
+            "bullet_id": k8s_bullet,
+            "reason": "The bullet already names Kubernetes, the three regions and the outcome.",
+        }, "c2")]),
+        response(content="Nothing worth changing."),
+    )
+
+    result = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
+
+    with get_cursor() as cur:
+        candidates = candidates_state.load(cur, result["run_id"])
+        work = candidates_state.summary(cur, result["run_id"])
+        cur.execute(
+            "SELECT count(*) FROM proposed_edits WHERE run_id = %s", (result["run_id"],),
+        )
+        edits = cur.fetchone()[0]
+
+    kept = [item for item in candidates if item["status"] == "kept"]
+    assert kept, f"expected a kept candidate, got {[c['status'] for c in candidates]}"
+    # the reason is what the user reads in place of a proposal
+    assert "three regions" in kept[0]["outcome"]
+    assert edits == 0, "keeping a bullet must not write a proposal"
+    # counted apart from handled, so the keep rate stays visible
+    assert work["kept"] == 1
+    assert work["handled"] == 0
+
+
+def test_keeping_a_bullet_still_requires_having_looked_at_it(monkeypatch, fixtures, k8s_bullet, _db):
+    """Without the same-run search requirement, declining is cheaper than reading, and the
+    model can close its whole assignment without retrieving anything."""
+    script(
+        monkeypatch,
+        response([call("keep_original", {
+            "requirement": "Kubernetes",
+            "bullet_id": k8s_bullet,
+            "reason": "Looks fine to me.",
+        }, "c1")]),
+        response([call("search_resume", {"query": "kubernetes"}, "c2")]),
+        response(content="Done."),
+    )
+
+    result = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
+
+    with _db.cursor() as cur:
+        cur.execute(
+            "SELECT error_message FROM tool_calls WHERE run_id = %s AND status = 'failed'",
+            (result["run_id"],),
+        )
+        refusals = [row[0] for row in cur.fetchall()]
+        cur.execute(
+            "SELECT status FROM tailoring_candidates WHERE run_id = %s", (result["run_id"],),
+        )
+        states = [row[0] for row in cur.fetchall()]
+
+    assert refusals, "keeping a bullet before any search should be refused"
+    assert "kept" not in states

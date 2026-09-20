@@ -354,7 +354,10 @@ function KeywordOnlyPanel({ items, entries, runId, onSaved }) {
 
 const CANDIDATE_STATES = {
   handled: { label: 'Handled', tone: 'text-ink' },
-  skipped: { label: 'Left as-is', tone: 'text-muted' },
+  // "kept" is a decision the agent made and explained; "skipped" is the run finding nothing to
+  // work with. Same shelf, different meanings, so they do not share a label.
+  kept: { label: 'Kept as-is', tone: 'text-ink' },
+  skipped: { label: 'Nothing to edit', tone: 'text-muted' },
   needs_review: { label: 'Needs you', tone: 'text-ink' },
   pending: { label: 'Not reached', tone: 'text-muted' },
   active: { label: 'Not reached', tone: 'text-muted' },
@@ -515,8 +518,18 @@ function EditCard({ edit, onDecide, busy, pending, error }) {
         <p className="mt-1 text-sm leading-6 text-ink">{edit.proposed_text}</p>
       </div>
 
-      {edit.evidence.length > 0 && (
+      {/* Why first: the question a reader has in front of a rewrite is "what does this buy me",
+          and that has to be answerable before the citation trail is worth opening. Collapsed
+          like the others so a screen of proposals stays skimmable. */}
+      {edit.reason && (
         <details className="mt-4 border-t border-border pt-3">
+          <summary className="cursor-pointer text-xs text-muted">Why this helps</summary>
+          <p className="mt-2 text-xs leading-5 text-charcoal">{edit.reason}</p>
+        </details>
+      )}
+
+      {edit.evidence.length > 0 && (
+        <details className="mt-3 border-t border-border pt-3">
           <summary className="cursor-pointer text-xs text-muted">
             Cited {edit.evidence.length} {edit.evidence.length === 1 ? 'bullet' : 'bullets'} from your resume
           </summary>
@@ -526,16 +539,6 @@ function EditCard({ edit, onDecide, busy, pending, error }) {
             ))}
           </ul>
         </details>
-      )}
-
-      {/* Why, after the evidence: the citation says what it is built on, this says what it is
-          for. Reading them in the other order asks the user to judge a claim before they know
-          what it is claiming. */}
-      {edit.reason && (
-        <p className="mt-3 border-t border-border pt-3 text-xs leading-5 text-muted">
-          <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Why</span>
-          <span className="mt-1 block text-charcoal">{edit.reason}</span>
-        </p>
       )}
 
       {edit.confirmed_details?.length > 0 && (

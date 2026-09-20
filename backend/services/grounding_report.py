@@ -23,6 +23,8 @@ REASONS = [
     ("not_your_bullet", re.compile(r"(is|are) not part of your resume")),
     ("unsupported_claim", re.compile(r"does not appear in the evidence you cited")),
     ("cosmetic_rewrite", re.compile(r"only changes phrasing")),
+    ("ownership_inflation", re.compile(r"claims more of the work")),
+    ("tense_regression", re.compile(r"the work is still going on")),
     ("unchanged_text", re.compile(r"is the same as")),
     ("detail_loss", re.compile(r"(removes too much|removes supported detail|removes a measurable result)")),
     ("unapproved_target", re.compile(

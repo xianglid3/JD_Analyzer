@@ -3,7 +3,12 @@
 `test_tailoring_agent.py` covers the tool boundary; this covers the rules underneath it.
 """
 
-from services.claim_check import numeric_claims, ownership_inflation, rewrite_quality_issue
+from services.claim_check import (
+    numeric_claims,
+    ownership_inflation,
+    rewrite_quality_issue,
+    tense_regression,
+)
 
 
 # ── who did the work ─────────────────────────────────────────────────────────
@@ -57,3 +62,81 @@ def test_a_framework_version_is_not_a_measurement():
     # and the distinction the function exists for still holds
     assert numeric_claims("Cut latency 30%") == {(30.0, "%")}
     assert numeric_claims("12 s response time") == {(12.0, "s")}
+
+
+# ── is the work finished? ────────────────────────────────────────────────────
+
+FSAE = ("Contributing to a work-in-progress ROS 2 autonomous-driving stack in C++ for "
+        "Pitt's FSAE EV driverless program, focused on cone-perception software.")
+
+
+def test_ongoing_work_may_not_be_rewritten_as_finished():
+    """The reported case, and a different rule from ownership: "Contributing" and "Contributed"
+    are both shared credit, so `ownership_inflation` passes them. What changed is whether the
+    work is over, which a recruiter reading a current role takes literally."""
+    proposed = ("Contributed C++ software to a ROS 2 autonomous-driving stack, focusing on "
+                "cone perception and integrating perception components within the robotics "
+                "pipeline.")
+
+    assert ownership_inflation(FSAE, proposed) is None
+    assert tense_regression(FSAE, proposed, entry_is_ongoing=True) is not None
+
+
+def test_a_confirmed_skill_does_not_license_the_tense_change():
+    """`surfacing` exempts the phrasing check, and that exemption is what let the reported
+    bullet through: the padding clause "within the robotics pipeline" contained the word
+    "robotics" and so supplied its own exemption. The factual checks run either way."""
+    proposed = ("Contributed C++ software to a ROS 2 autonomous-driving stack, focusing on "
+                "cone perception and integrating perception components within the robotics "
+                "pipeline.")
+
+    assert rewrite_quality_issue(FSAE, proposed, surfacing="robotics") is None
+    assert rewrite_quality_issue(
+        FSAE, proposed, surfacing="robotics", entry_is_ongoing=True,
+    ) is not None
+
+
+def test_a_finished_project_may_be_put_in_the_past():
+    """The reason this is gated on `end_date` and not on a participle list: this exact rewrite
+    is correct when the entry actually ended."""
+    assert tense_regression(
+        "Implementing a Kubernetes deployment pipeline across three regions.",
+        "Implemented a Kubernetes deployment pipeline across three regions.",
+        entry_is_ongoing=False,
+    ) is None
+
+
+def test_a_rewrite_that_keeps_the_ongoing_sense_is_fine():
+    assert tense_regression(
+        FSAE,
+        "Contributing cone-perception software in C++ to Pitt's in-progress ROS 2 stack.",
+        entry_is_ongoing=True,
+    ) is None
+
+
+def test_a_bullet_that_never_read_as_ongoing_is_not_this_rule_s_business():
+    assert tense_regression(
+        "Built a Kubernetes deployment pipeline across three regions.",
+        "Built and operated a Kubernetes deployment pipeline across three regions.",
+        entry_is_ongoing=True,
+    ) is None
+
+
+
+def test_an_ongoing_bullet_can_be_strengthened_without_changing_tense():
+    """The deadlock this pair of checks used to make: on a current role the past-tense rewrite
+    was refused for changing the tense, and every ongoing rewrite was refused as phrasing,
+    because only past-tense verbs counted as a strong opening."""
+    assert rewrite_quality_issue(
+        "Contributing to internal dashboards in React for the support team to track tickets",
+        "Building internal dashboards in React for the support team to track ticket volume",
+        entry_is_ongoing=True,
+    ) is None
+
+
+def test_an_ongoing_bullet_that_already_opens_strong_is_still_refused_a_synonym_swap():
+    assert "only changes phrasing" in rewrite_quality_issue(
+        "Building internal dashboards in React for the support team to track ticket volume",
+        "Developing internal dashboards in React for the support team to track ticket counts",
+        entry_is_ongoing=True,
+    )

@@ -23,7 +23,25 @@ STRONG_ACTION_VERBS = {
     "increased", "integrated", "launched", "led", "managed", "migrated", "optimized",
     "operated", "produced", "reduced", "shipped", "streamlined",
 }
+# The same verbs as they appear in work that has not finished. A bullet on a current role
+# keeps the ongoing sense (see `tense_regression`), so without these "Contributing to X" ->
+# "Building X" is a real improvement that reads as a phrasing change and gets refused, while
+# the past-tense rewrite that would pass is refused for changing the tense. Both doors shut.
+STRONG_ACTION_GERUNDS = {
+    "achieving", "analyzing", "architecting", "automating", "building", "creating",
+    "delivering", "deploying", "designing", "developing", "engineering", "implementing",
+    "improving", "increasing", "integrating", "launching", "leading", "managing",
+    "migrating", "optimizing", "operating", "producing", "reducing", "shipping",
+    "streamlining",
+}
 MIN_STRONG_BULLET_WORDS = 10
+
+
+def opens_with_action(words):
+    """Whether a bullet's first word is a concrete action verb, in either tense."""
+    return bool(words) and (words[0] in STRONG_ACTION_VERBS or words[0] in STRONG_ACTION_GERUNDS)
+
+
 def _phrase_length(term):
     return len(term.split())
 
@@ -145,7 +163,7 @@ def bullet_is_already_strong(text):
     words = _words(text)
     return bool(
         len(words) >= MIN_STRONG_BULLET_WORDS
-        and words[0] in STRONG_ACTION_VERBS
+        and opens_with_action(words)
         and (named_skills(text) or numeric_claims(text))
     )
 
@@ -156,7 +174,7 @@ def bullet_quality_gaps(text):
     gaps = []
     if not words:
         return ["the bullet is empty"]
-    if words[0] not in STRONG_ACTION_VERBS:
+    if not opens_with_action(words):
         gaps.append("it does not open with a concrete action verb")
     if len(words) < MIN_STRONG_BULLET_WORDS:
         gaps.append("it gives very little context or outcome detail")
@@ -205,7 +223,44 @@ def ownership_inflation(original_text, proposed_text):
     )
 
 
-def rewrite_quality_issue(original_text, proposed_text, surfacing=None):
+# Phrases that say the work has not finished. Checked against the raw text, not the word
+# list, because "work-in-progress" and "in progress" are multi-word.
+ONGOING_MARKERS = ("work-in-progress", "work in progress", "in progress", "currently", "ongoing")
+
+
+def _reads_as_ongoing(text):
+    lowered = (text or "").lower()
+    if any(marker in lowered for marker in ONGOING_MARKERS):
+        return True
+    words = _words(text)
+    # a bullet that opens "Contributing to…" / "Building…" is describing live work
+    return bool(words) and words[0].endswith("ing")
+
+
+def tense_regression(original_text, proposed_text, entry_is_ongoing):
+    """Live work rewritten as finished work, or nothing.
+
+    `ownership_inflation` covers *how much* of the work is claimed. This covers *whether it is
+    over*, which is a separate axis and equally a factual change: "Contributing to" and
+    "Contributed" describe different situations to a recruiter reading a current role.
+
+    Gated on `entry_is_ongoing` — a fact from `resume_entries.end_date`, not a guess from the
+    sentence. A participle word-list alone would reject "Implementing X" -> "Implemented X" on
+    a project that genuinely shipped last year, which is a correct edit.
+    """
+    if not entry_is_ongoing:
+        return None
+    if not _reads_as_ongoing(original_text):
+        return None
+    if _reads_as_ongoing(proposed_text):
+        return None
+    return (
+        "this entry has no end date, so the work is still going on, and the rewrite puts it in "
+        "the past. Keep the ongoing sense the bullet already has"
+    )
+
+
+def rewrite_quality_issue(original_text, proposed_text, surfacing=None, entry_is_ongoing=False):
     """Explain why a grounded rewrite still adds no useful value, or return ``None``.
 
     Grounding answers "is it true?". This answers the separate question "is it better?".
@@ -215,7 +270,9 @@ def rewrite_quality_issue(original_text, proposed_text, surfacing=None):
     `surfacing` is a skill the user has just told us they used on this entry. Its first
     appearance in the bullet counts as new evidence even when it is not a term the graph
     knows — otherwise the whole point of asking ("show this skill in the work") reads as a
-    phrasing change and gets refused.
+    phrasing change and gets refused. It exempts the phrasing check ONLY; the factual checks
+    above it run either way, because "the user confirmed this skill" is not permission to
+    change who did the work or whether it is finished.
     """
     original_words = _words(original_text)
     proposed_words = _words(proposed_text)
@@ -225,6 +282,10 @@ def rewrite_quality_issue(original_text, proposed_text, surfacing=None):
     inflated = ownership_inflation(original_text, proposed_text)
     if inflated:
         return inflated
+
+    regressed = tense_regression(original_text, proposed_text, entry_is_ongoing)
+    if regressed:
+        return regressed
 
     if len(proposed_words) < len(original_words) * 0.8:
         return (
@@ -249,8 +310,8 @@ def rewrite_quality_issue(original_text, proposed_text, surfacing=None):
             "Numbers are the strongest thing on a resume — keep every one of them"
         )
 
-    original_opens_strong = bool(original_words and original_words[0] in STRONG_ACTION_VERBS)
-    proposed_opens_strong = bool(proposed_words and proposed_words[0] in STRONG_ACTION_VERBS)
+    original_opens_strong = opens_with_action(original_words)
+    proposed_opens_strong = opens_with_action(proposed_words)
     stronger_action = proposed_opens_strong and not original_opens_strong
     added_skills = proposed_skills - original_skills
     added_numbers = proposed_numbers - original_numbers
@@ -272,7 +333,7 @@ def merge_quality_issue(original_texts, proposed_text):
         return "a merge requires at least two source bullets"
     if any(proposed_words == _words(text) for text in originals):
         return "the merged bullet is the same as one source bullet"
-    if not proposed_words or proposed_words[0] not in STRONG_ACTION_VERBS:
+    if not opens_with_action(proposed_words):
         return "the merged bullet must open with a concrete action verb"
 
     original_word_count = sum(len(_words(text)) for text in originals)

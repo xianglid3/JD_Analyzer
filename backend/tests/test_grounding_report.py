@@ -247,6 +247,10 @@ def test_an_unrecognised_rejection_is_visible_as_other():
     ("the merge removes too much of the source bullets' detail", "detail_loss"),
     ("the merge removes supported detail: pytest", "detail_loss"),
     ("the merge removes a measurable result from its source bullets", "detail_loss"),
+    ("the bullet says contributing, and the rewrite says developed — that claims more of the "
+     "work than the evidence does", "ownership_inflation"),
+    ("this entry has no end date, so the work is still going on, and the rewrite puts it in "
+     "the past", "tense_regression"),
 ])
 def test_quality_rejections_are_classified(message, expected):
     assert classify(message) == expected

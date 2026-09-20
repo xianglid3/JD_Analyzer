@@ -434,7 +434,7 @@ CREATE TABLE tailoring_candidates (
   action        text NOT NULL
                 CHECK (action IN ('rewrite', 'strengthen', 'confirm', 'show_in_bullet')),
   status        text NOT NULL DEFAULT 'pending'
-                CHECK (status IN ('pending', 'active', 'handled', 'skipped', 'needs_review')),
+                CHECK (status IN ('pending', 'active', 'handled', 'kept', 'skipped', 'needs_review')),
   -- why it ended where it did, for the run summary
   outcome       text,
   attempts      smallint NOT NULL DEFAULT 0 CHECK (attempts >= 0),

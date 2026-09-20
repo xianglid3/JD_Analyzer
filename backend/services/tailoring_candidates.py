@@ -9,18 +9,24 @@ Now the assignment is state. The orchestrator hands out one candidate at a time,
 happened to it, and refuses to call a run complete while any are still pending. The model's
 opinion that it is done is a hint, not a decision.
 
-    pending ─→ active ─→ handled       an edit, merge, or question was recorded
-                      ├→ skipped       the model looked and left it alone
+    pending ─→ active ─→ handled       an edit or merge was recorded
+                      ├→ kept          the model read it and judged the original better
+                      ├→ skipped       no evidence could be retrieved, so there was nothing to do
                       └→ needs_review  it failed grounding twice, or the run ran out of budget
+
+`kept` is deliberately separate from `handled`. Both are successful decisions, but "I improved
+this" and "I judged this fine" are different facts about a run, and the ratio between them is
+the only number that shows whether the decline is being used honestly or as a cheap exit.
 """
 
 PENDING = "pending"
 ACTIVE = "active"
 HANDLED = "handled"
+KEPT = "kept"
 SKIPPED = "skipped"
 NEEDS_REVIEW = "needs_review"
 
-TERMINAL = (HANDLED, SKIPPED, NEEDS_REVIEW)
+TERMINAL = (HANDLED, KEPT, SKIPPED, NEEDS_REVIEW)
 
 
 def create(cur, user_id, run_id, candidates):
@@ -105,7 +111,7 @@ def resolve(cur, run_id, normalized, status, outcome=None):
         """
         UPDATE tailoring_candidates
         SET status = %s, outcome = %s, resolved_at = now()
-        WHERE run_id = %s AND normalized = %s AND status NOT IN ('handled', 'skipped')
+        WHERE run_id = %s AND normalized = %s AND status NOT IN ('handled', 'kept', 'skipped')
         RETURNING id
         """,
         (status, outcome, run_id, normalized),
@@ -122,15 +128,15 @@ def is_finished(cur, run_id, normalized):
 
     `needs_review` is deliberately not counted. It means the run ran out of budget or the
     action failed twice — the work is still owed, and a resumed run must be able to pick it
-    back up. Only `handled` and `skipped` are decisions, which is the same line `resolve`
-    draws when it declines to reopen a candidate.
+    back up. Only `handled`, `kept` and `skipped` are decisions, which is the same line
+    `resolve` draws when it declines to reopen a candidate.
     """
     cur.execute(
         """
         SELECT 1 FROM tailoring_candidates
         WHERE run_id = %s AND normalized = %s AND status IN %s
         """,
-        (run_id, normalized, (HANDLED, SKIPPED)),
+        (run_id, normalized, (HANDLED, KEPT, SKIPPED)),
     )
     return cur.fetchone() is not None
 
@@ -182,7 +188,7 @@ def close_out(cur, run_id, outcome):
 
 def summary(cur, run_id):
     """What the run was asked to do and what became of it. This is what makes an empty run
-    readable: `assigned 4, handled 1, skipped 0, needs_review 3` says something that
+    readable: `assigned 4, handled 1, kept 2, needs_review 1` says something that
     `completed` never did."""
     cur.execute(
         """
@@ -194,6 +200,7 @@ def summary(cur, run_id):
     return {
         "assigned": sum(counts.values()),
         "handled": counts.get(HANDLED, 0),
+        "kept": counts.get(KEPT, 0),
         "skipped": counts.get(SKIPPED, 0),
         "needs_review": counts.get(NEEDS_REVIEW, 0),
         "unfinished": counts.get(PENDING, 0) + counts.get(ACTIVE, 0),
