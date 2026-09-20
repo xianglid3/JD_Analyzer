@@ -1,8 +1,4 @@
 {
-  "$schema": "https://openapi.vercel.sh/vercel.json",
-
-  "//": "Every path that is not a real file is the SPA. Without this, React Router's routes exist only in memory: /tailoring/<id> works when you click to it and 404s when you reload, because Vercel is asked for a file that was never built. Static assets match before rewrites, so hashed bundles still resolve normally.",
-
   "rewrites": [
     { "source": "/(.*)", "destination": "/index.html" }
   ]
