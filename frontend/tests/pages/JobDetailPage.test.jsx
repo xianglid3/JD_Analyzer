@@ -79,6 +79,28 @@ describe('JobDetailPage', () => {
     }))
   })
 
+  it('writes a saved link straight into the list\'s cache', async () => {
+    // invalidation alone only refetches mounted queries, and the dashboard is not mounted while
+    // you are on this page — it kept showing the old link until something remounted it
+    const user = userEvent.setup()
+    const { queryClient } = renderPage()
+    queryClient.setQueryData(['jobs', 1, '', '', 'created_at', 'desc'], {
+      jobs: [{ id: 42, title: 'Platform Engineer', source_url: 'https://old.example' }],
+    })
+
+    await screen.findByText('Platform Engineer')
+    await user.click(screen.getByRole('button', { name: /Edit link for/ }))
+    const field = screen.getByRole('textbox', { name: /link for/ })
+    await user.clear(field)
+    await user.type(field, 'https://new.example/posting')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      const cached = queryClient.getQueryData(['jobs', 1, '', '', 'created_at', 'desc'])
+      expect(cached.jobs[0].source_url).toBe('https://new.example/posting')
+    })
+  })
+
   it('requires confirmation before deleting a job', async () => {
     const user = userEvent.setup()
     renderPage()

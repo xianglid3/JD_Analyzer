@@ -86,7 +86,14 @@ export default function DashboardPage() {
   const updateLink = useMutation({
     mutationFn: ({ id, source_url: sourceUrl }) =>
       apiFetch(`/jobs/${id}`, { method: 'PATCH', body: JSON.stringify({ source_url: sourceUrl }) }),
-    onSuccess: () => toast.success('Link saved.'),
+    onSuccess: (_data, variables) => {
+      toast.success('Link saved.')
+      // the other direction of the same problem: the job page is not mounted, so its cached
+      // copy would keep the old link until it remounted
+      queryClient.setQueryData(['job', String(variables.id)], (job) => (
+        job ? { ...job, source_url: variables.source_url } : job
+      ))
+    },
     onError: (error) => toast.error(error.message),
     onSettled: () => queryClient.invalidateQueries({ queryKey: ['jobs'] }),
   })
@@ -105,7 +112,12 @@ export default function DashboardPage() {
   const updateStatus = useMutation({
     mutationFn: ({ id, status }) =>
       apiFetch(`/jobs/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) }),
-    onSuccess: () => toast.success('Status updated.'),
+    onSuccess: (_data, variables) => {
+      toast.success('Status updated.')
+      queryClient.setQueryData(['job', String(variables.id)], (job) => (
+        job ? { ...job, status: variables.status } : job
+      ))
+    },
     onError: (error) => toast.error(error.message),
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['jobs'] })
@@ -238,6 +250,7 @@ export default function DashboardPage() {
               <div className="job-grid hidden border-b border-border px-4 py-3 font-mono text-[11px] uppercase tracking-[0.06em] text-muted sm:grid">
                 <span>Role</span>
                 <span>Location</span>
+                <span>Setup</span>
                 <span>Added</span>
                 <span>Fit</span>
                 <span>Source</span>
@@ -262,9 +275,20 @@ export default function DashboardPage() {
                         </p>
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
-                        <span>{job.location || 'Location not listed'}</span>
-                        {job.work_type && <span className="rounded-full border border-border bg-soft-paper px-2.5 py-1">{job.work_type.replace('_', ' ')}</span>}
+                      <p className="truncate text-xs text-muted" title={job.location || undefined}>
+                        {job.location || 'Not listed'}
+                      </p>
+
+                      {/* its own column: remote-or-not is the thing people scan a list for, and
+                          stacked behind the city it was the last thing they found */}
+                      <div>
+                        {job.work_type ? (
+                          <span className="inline-flex items-center rounded-full border border-border bg-soft-paper px-2.5 py-1 text-xs capitalize text-muted">
+                            {job.work_type.replace('_', ' ')}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-muted">—</span>
+                        )}
                       </div>
 
                       <p className="text-xs text-muted">{new Date(job.created_at).toLocaleDateString()}</p>

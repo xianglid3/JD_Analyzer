@@ -160,10 +160,10 @@ button:disabled { cursor: not-allowed; }
 }
 @media (min-width: 640px) {
   .job-grid {
-    /* role · location · added · fit · posting · status · delete
+    /* role · location · setup · added · fit · posting · status · delete
        The narrow columns are sized to their content — a date, a percentage, a status word —
        so the row's width goes to the title and the link, which are the two that get truncated. */
-    grid-template-columns: minmax(0, 1.4fr) minmax(6rem, 0.55fr) 6rem 5rem minmax(0, 1fr) 7.5rem 2.25rem;
+    grid-template-columns: minmax(0, 1.3fr) minmax(5.5rem, 0.5fr) 5.5rem 6rem 4.5rem minmax(0, 0.95fr) 7.5rem 2.25rem;
     align-items: center;
   }
 }

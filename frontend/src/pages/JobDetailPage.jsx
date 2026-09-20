@@ -97,7 +97,19 @@ export default function JobDetailPage() {
       method: 'PATCH',
       body: JSON.stringify(fields),
     }),
-    onSuccess: (_data, fields) => toast.success(`${SAVED_LABELS[Object.keys(fields)[0]] || 'Change'} saved.`),
+    onSuccess: (_data, fields) => {
+      toast.success(`${SAVED_LABELS[Object.keys(fields)[0]] || 'Change'} saved.`)
+      // Patch the list's cache as well as invalidating it. Invalidation only refetches queries
+      // that are *mounted*, and the dashboard is not — it would keep showing the old link until
+      // something happened to remount it, which is exactly what "not synced" looked like.
+      queryClient.setQueriesData({ queryKey: ['jobs'] }, (cached) => (
+        cached?.jobs
+          ? { ...cached, jobs: cached.jobs.map((job) => (
+              String(job.id) === String(id) ? { ...job, ...fields } : job
+            )) }
+          : cached
+      ))
+    },
     onError: (error) => toast.error(error.message),
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['job', id] })
