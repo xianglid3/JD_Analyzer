@@ -72,11 +72,25 @@ const MIN_QUERY = 2
 // touch. The import is cached, so the wait happens once.
 let providerPromise = null
 
+const RELOADED = 'jobmatcha:chunk-reload'
+
 function geocoder() {
   if (!providerPromise) {
-    providerPromise = import('leaflet-geosearch').then(({ OpenStreetMapProvider }) => (
-      new OpenStreetMapProvider({ params: { addressdetails: 1, 'accept-language': 'en', limit: 5 } })
-    ))
+    providerPromise = import('leaflet-geosearch')
+      .then(({ OpenStreetMapProvider }) => (
+        new OpenStreetMapProvider({ params: { addressdetails: 1, 'accept-language': 'en', limit: 5 } })
+      ))
+      .catch((error) => {
+        // A tab left open across a deploy asks for a chunk whose hashed filename no longer
+        // exists. One reload picks up the new build; the flag stops it becoming a loop when the
+        // chunk is genuinely missing rather than merely stale.
+        providerPromise = null
+        if (!sessionStorage.getItem(RELOADED)) {
+          sessionStorage.setItem(RELOADED, '1')
+          window.location.reload()
+        }
+        throw error
+      })
   }
   return providerPromise
 }
