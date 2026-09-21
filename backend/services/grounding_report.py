@@ -19,7 +19,8 @@ import re
 # pins that coupling.
 REASONS = [
     ("uncited_bullet", re.compile(
-        r"(was not returned by a search in this run|call search_resume first)")),
+        r"(was not returned by a search in this run|call search_resume first|"
+        r"did not reach this run)")),
     ("not_your_bullet", re.compile(r"(is|are) not part of your resume")),
     ("unsupported_claim", re.compile(r"does not appear in the evidence you cited")),
     ("cosmetic_rewrite", re.compile(r"only changes phrasing")),

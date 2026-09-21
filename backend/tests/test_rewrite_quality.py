@@ -122,7 +122,9 @@ def test_the_refusal_says_what_to_do_not_only_what_was_wrong():
     kept shortening, because nothing in that sentence says the job is additive."""
     issue = rewrite_quality_issue(DENSE, "Implemented a state machine with data structures.")
     assert "add to it" in issue
-    assert "should not be shorter" in issue
+    # …and it no longer says "a rewrite should not be shorter than what it replaces", because
+    # that stopped being true: shortening is allowed, dropping evidence to do it is not.
+    assert "not by dropping" in issue
 
 
 def test_dropping_a_number_names_the_number_that_was_dropped():

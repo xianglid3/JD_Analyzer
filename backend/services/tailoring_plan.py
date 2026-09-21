@@ -45,15 +45,17 @@ def _weakness(text, structural):
 
 
 def _rewrite_targets(item, already_claimed=frozenset()):
-    """Target text without ids: useful direction without bypassing citation search."""
+    """Bullets this candidate may rewrite, each with the id the run will be handed."""
     targets = []
     for evidence in item.get("evidence", []):
         text = evidence.get("text") or ""
-        if not evidence.get("bullet_id") or bullet_is_already_strong(text):
+        bullet_id = evidence.get("bullet_id")
+        if not bullet_id or bullet_is_already_strong(text):
             continue
-        if text in already_claimed:
+        if str(bullet_id) in already_claimed:
             continue
         targets.append({
+            "bullet_id": str(bullet_id),
             "text": text,
             "weakness": _weakness(text, bullet_quality_gaps(text)),
         })
@@ -64,6 +66,7 @@ def _confirmation_targets(item, already_claimed=frozenset()):
     """Editable evidence the user can confirm without the model asserting the answer."""
     return [
         {
+            "bullet_id": str(evidence["bullet_id"]),
             "text": evidence.get("text") or "",
             "weakness": _weakness(
                 evidence.get("text") or "",
@@ -73,7 +76,7 @@ def _confirmation_targets(item, already_claimed=frozenset()):
         }
         for evidence in item.get("evidence", [])
         if evidence.get("bullet_id") and evidence.get("text")
-        and (evidence.get("text") or "") not in already_claimed
+        and str(evidence["bullet_id"]) not in already_claimed
     ]
 
 
@@ -85,13 +88,15 @@ def _strengthening_targets(item, already_selected):
     """
     for evidence in item.get("evidence", []):
         text = evidence.get("text") or ""
+        bullet_id = evidence.get("bullet_id")
         if (
-            evidence.get("bullet_id")
-            and text not in already_selected
+            bullet_id
+            and str(bullet_id) not in already_selected
             and bullet_is_already_strong(text)
             and not numeric_claims(text)
         ):
             return [{
+                "bullet_id": str(bullet_id),
                 "text": text,
                 "weakness": _weakness(text, []),
             }]
@@ -132,6 +137,7 @@ def _show_in_bullet_targets(item, bullets_by_entry):
     for evidence in _affirmed_entries(item):
         for bullet in bullets_by_entry.get(evidence["entry_id"], []):
             targets.append({
+                "bullet_id": str(bullet["id"]),
                 "text": bullet["text"],
                 # Unlike a rewrite candidate, this bullet is not weak — it was chosen
                 # because the user said the skill belongs to its entry. So the job is purely
@@ -171,11 +177,11 @@ def build_tailoring_plan(assessment, approved=frozenset(), bullets_by_entry=None
     """
     plan = []
     bullets_by_entry = bullets_by_entry or {}
-    # One bullet, one candidate. A posting lists "java or golang or python or c++…" and
-    # "c# or c++ or java" as separate requirements, and the same C++ bullet is the evidence
-    # for both — so the agent was sent to fight the same rewrite twice, spending a step each
-    # time on work it had already decided. Cross-requirement de-duplication existed for
-    # strengthening targets only; the same argument applies to every kind of target.
+    # One bullet, one candidate — held as a set of bullet ids. A posting lists "java or golang
+    # or python or c++…" and "c# or c++ or java" as separate requirements, and the same C++
+    # bullet is the evidence for both, so the agent was sent to fight the same rewrite twice.
+    # Cross-requirement de-duplication existed for strengthening targets only; the same
+    # argument applies to every kind of target.
     claimed_targets = set()
     # Asking for every missing metric would turn one run into a questionnaire. One focused
     # strengthening opportunity is enough; partial requirements can still ask for confirmation.
@@ -243,8 +249,12 @@ def build_tailoring_plan(assessment, approved=frozenset(), bullets_by_entry=None
             action = "only_in_skills"
             reason = _outside_bullets_reason(item)
 
-        # whatever this candidate took, no later one may take again
-        claimed_targets.update(target["text"] for target in targets if target.get("text"))
+        # whatever this candidate took, no later one may take again. Keyed on bullet id, not
+        # text: two entries can carry word-for-word identical bullets, and keying on the words
+        # silently dropped the second one's candidate.
+        claimed_targets.update(
+            target["bullet_id"] for target in targets if target.get("bullet_id")
+        )
 
         plan.append({
             "position": position,

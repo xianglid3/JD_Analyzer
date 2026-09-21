@@ -5,6 +5,9 @@
 
 from services.claim_check import (
     abstraction_padding,
+    compression_only,
+    improvements,
+    bullet_is_already_strong,
     bullet_quality_gaps,
     numeric_claims,
     ownership_inflation,
@@ -216,3 +219,77 @@ def test_a_version_number_is_not_a_quantity():
     assert recruiter_doubt(
         "Engineered the backend with raw psycopg2 and pooled PostgreSQL connections."
     )[0] == "impact"
+
+
+def test_strength_and_gaps_cannot_disagree():
+    """They did. After `bullet_quality_gaps` stopped treating shared credit as a defect,
+    `bullet_is_already_strong` still called the same bullet weak through `opens_with_action` —
+    so it was sent to the model as a rewrite target while the brief listed nothing wrong with
+    it, and every rewrite it produced was refused. One is now defined as the absence of the
+    other, which is the only way they stay in step."""
+    for text in [
+        FSAE,
+        "Built a Kubernetes deployment pipeline across three regions, cutting deploy time 40%.",
+        "Building a Kubernetes deployment pipeline across three regions.",
+        "Worked on the frontend.",
+        "Helped out.",
+        "",
+    ]:
+        assert bullet_is_already_strong(text) == (bool(text) and not bullet_quality_gaps(text)), text
+
+
+# ── concision is allowed, and its limits are stated ──────────────────────────
+
+def test_a_faithful_shorter_rewrite_is_no_longer_refused():
+    """The 0.8 word-count floor and the cosmetic check both refused this: shorter tripped the
+    floor, and adding no skill or number made it "only changes phrasing". Saying the same
+    thing in fewer words is usually the improvement."""
+    original = ("Contributing to a work-in-progress ROS 2 autonomous-driving stack in C++ for "
+                "Pitt's FSAE EV driverless program, focused on cone-perception software.")
+    proposed = ("Contributing cone-perception software in C++ to a work-in-progress ROS 2 "
+                "autonomous-driving stack for Pitt.")
+
+    assert rewrite_quality_issue(original, proposed) is None
+
+
+def test_a_synonym_swap_at_the_same_length_is_still_refused():
+    assert rewrite_quality_issue(
+        "Deployed Kubernetes services across three regions.",
+        "Deployed Kubernetes services through three regions.",
+    ) is not None
+
+
+def test_shortening_may_not_drop_a_technology():
+    issue = rewrite_quality_issue(
+        "Built a Python service backed by PostgreSQL for ingestion.",
+        "Built a Python service for ingestion.",
+    )
+    assert issue is not None and "postgresql" in issue
+
+
+def test_shortening_may_not_drop_a_number():
+    issue = rewrite_quality_issue(
+        "Cut deploy time 40% across three regions.",
+        "Cut deploy time across regions.",
+    )
+    assert issue is not None and "measurable result" in issue
+
+
+def test_shortening_that_deletes_context_passes_and_is_marked():
+    """The limitation, pinned rather than papered over. "Pitt's FSAE EV driverless program" is
+    neither a technology nor a number, so nothing here detects its loss. The edit is allowed
+    and flagged, because the alternative is a warning-free proposal implying there is nothing
+    to check."""
+    proposed = "Contributing to a ROS 2 autonomous-driving stack in C++, focused on cone perception."
+
+    assert rewrite_quality_issue(FSAE, proposed) is None
+    assert compression_only(FSAE, proposed) is True
+
+
+def test_compression_only_means_compression_and_nothing_else():
+    """Derived from the same signals the acceptance check reads. Computing it from a subset
+    would mark an edit that also strengthened the verb as having nothing but length."""
+    stronger_and_shorter = "Built cone-perception software in C++ for a ROS 2 stack."
+
+    assert improvements(FSAE, stronger_and_shorter)["stronger_action"] is True
+    assert compression_only(FSAE, stronger_and_shorter) is False

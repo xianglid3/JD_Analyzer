@@ -159,13 +159,14 @@ def bullet_is_already_strong(text):
     quantity should not be sent through an AI merely to swap synonyms. This does not attempt
     to grade the whole resume; it only identifies bullets where automatic rewriting has little
     safe upside without asking the user for new facts.
+
+    Defined as "has no quality gap" rather than repeating the conditions, because the two
+    were able to disagree and did: after `bullet_quality_gaps` stopped treating shared credit
+    as a defect, this still called "Contributing to a ROS 2 stack…" not-strong through
+    `opens_with_action`. The bullet was sent to the model as needing work while the brief
+    listed nothing wrong with it, and every rewrite it tried was refused.
     """
-    words = _words(text)
-    return bool(
-        len(words) >= MIN_STRONG_BULLET_WORDS
-        and opens_with_action(words)
-        and (named_skills(text) or numeric_claims(text))
-    )
+    return bool(text) and not bullet_quality_gaps(text)
 
 
 def bullet_quality_gaps(text):
@@ -415,6 +416,51 @@ def abstraction_padding(original_text, proposed_text):
     )
 
 
+# A rewrite has to be better for at least one of these reasons. Compression is last and
+# weakest: the others are evidence that something was *added*, while being shorter is only
+# evidence that something was *removed*. See `improvements` for what that costs us.
+COMPRESSION_RATIO = 0.8          # a rewrite must be at least a fifth shorter to count as concise
+
+
+def improvements(original_text, proposed_text, surfacing=None):
+    """Every reason this rewrite might be an improvement, as a dict of flags.
+
+    One function because two callers need the same answer and a subset is a wrong answer:
+    `rewrite_quality_issue` asks "is any of these true", and the compression-only mark asks
+    "is compression the ONLY one true". Deriving the second from a subset of the signals
+    would mark an edit that also strengthened the verb.
+    """
+    original_words = _words(original_text)
+    proposed_words = _words(proposed_text)
+    original_skills = set(named_skills(original_text))
+    proposed_skills = set(named_skills(proposed_text))
+    named = (surfacing or "").strip().lower()
+    return {
+        "stronger_action": opens_with_action(proposed_words) and not opens_with_action(original_words),
+        "added_skills": bool(proposed_skills - original_skills),
+        "added_numbers": bool(numeric_claims(proposed_text) - numeric_claims(original_text)),
+        "surfaced": bool(named)
+                    and named in (proposed_text or "").lower()
+                    and named not in (original_text or "").lower(),
+        "compressed": bool(original_words)
+                      and len(proposed_words) <= len(original_words) * COMPRESSION_RATIO,
+    }
+
+
+def compression_only(original_text, proposed_text, surfacing=None):
+    """True when being shorter is the only thing this rewrite has going for it.
+
+    Such an edit passed the factual checks, which means it dropped no technology and no
+    number — but those are not every fact. "Pitt's FSAE EV driverless program" is neither, and
+    a rewrite may delete it and still arrive here. The flag exists so the user is told that
+    plainly, rather than the system implying a guarantee it does not provide.
+    """
+    signals = improvements(original_text, proposed_text, surfacing)
+    return signals["compressed"] and not any(
+        signals[name] for name in ("stronger_action", "added_skills", "added_numbers", "surfaced")
+    )
+
+
 def rewrite_quality_issue(original_text, proposed_text, surfacing=None, entry_is_ongoing=False):
     """Explain why a grounded rewrite still adds no useful value, or return ``None``.
 
@@ -446,18 +492,22 @@ def rewrite_quality_issue(original_text, proposed_text, surfacing=None, entry_is
     if padded:
         return padded
 
-    if len(proposed_words) < len(original_words) * 0.8:
-        return (
-            f"the rewrite drops detail the bullet already had ({len(proposed_words)} words "
-            f"against {len(original_words)}). Keep every fact, technology and number that is "
-            "already there and add to it — a rewrite should not be shorter than what it replaces"
-        )
-
+    # There was a word-count floor here, refusing any rewrite under 80% of the original's
+    # length. It was a proxy for evidence loss, and the two checks below measure evidence loss
+    # directly — so all it actually blocked was saying the same thing in fewer words, which is
+    # usually the improvement.
     original_skills = set(named_skills(original_text))
     proposed_skills = set(named_skills(proposed_text))
     removed_skills = original_skills - proposed_skills
     if removed_skills:
-        return f"the rewrite removes supported detail: {', '.join(sorted(removed_skills))}"
+        # Naming what is missing is not the same as saying what to do about it. The model was
+        # told "removes too much detail" three times in one run and kept shortening, because
+        # nothing in that sentence says the job is additive.
+        return (
+            f"the rewrite removes supported detail: {', '.join(sorted(removed_skills))}. "
+            "Keep what is already there and add to it — a rewrite may be shorter, but not by "
+            "dropping a technology the bullet had earned"
+        )
 
     original_numbers = numeric_claims(original_text)
     proposed_numbers = numeric_claims(proposed_text)
@@ -469,17 +519,14 @@ def rewrite_quality_issue(original_text, proposed_text, surfacing=None, entry_is
             "Numbers are the strongest thing on a resume — keep every one of them"
         )
 
-    original_opens_strong = opens_with_action(original_words)
-    proposed_opens_strong = opens_with_action(proposed_words)
-    stronger_action = proposed_opens_strong and not original_opens_strong
-    added_skills = proposed_skills - original_skills
-    added_numbers = proposed_numbers - original_numbers
-    named = (surfacing or "").strip().lower()
-    surfaced = bool(named) and named in proposed_text.lower() and named not in original_text.lower()
-    if not stronger_action and not added_skills and not added_numbers and not surfaced:
+    # Reaching here means nothing measurable was lost, so saying it in fewer words counts as
+    # an improvement in its own right. It is the weakest of the five and the only one that is
+    # not evidence of something added, which is why `compression_only` marks it for the user.
+    if not any(improvements(original_text, proposed_text, surfacing).values()):
         return (
-            "the rewrite only changes phrasing; strengthen the action or surface new supported "
-            "evidence, otherwise leave the bullet unchanged"
+            "the rewrite only changes phrasing; strengthen the action, surface new supported "
+            "evidence, or say the same thing in meaningfully fewer words — otherwise leave the "
+            "bullet unchanged"
         )
     return None
 

@@ -518,6 +518,17 @@ function EditCard({ edit, onDecide, busy, pending, error }) {
         <p className="mt-1 text-sm leading-6 text-ink">{edit.proposed_text}</p>
       </div>
 
+      {/* The one category of edit with no positive evidence behind it. The factual checks
+          passed, so no technology or number was lost — but those are not every fact, and a
+          rewrite can drop "Pitt's FSAE EV driverless program" and still arrive here. Saying so
+          is more honest than letting the absence of a warning imply there is nothing to check. */}
+      {edit.compression_only && (
+        <p className="mt-4 border-t border-border pt-3 text-xs leading-5 text-muted">
+          <span className="text-ink">Shorter than the original.</span>{' '}
+          Nothing measurable was dropped — check that nothing important was.
+        </p>
+      )}
+
       {/* Why first: the question a reader has in front of a rewrite is "what does this buy me",
           and that has to be answerable before the citation trail is worth opening. Collapsed
           like the others so a screen of proposals stays skimmable. */}

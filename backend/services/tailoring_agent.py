@@ -7,6 +7,7 @@ bullet belongs to this user and was returned by a search in this same run, so th
 cite what it never found. Rejections go back to it as tool results, to search again.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -16,7 +17,12 @@ from uuid import UUID
 
 from openai import OpenAI
 from psycopg2.errors import UniqueViolation
-from services.claim_check import merge_quality_issue, rewrite_quality_issue, unsupported_claims
+from services.claim_check import (
+    compression_only,
+    merge_quality_issue,
+    rewrite_quality_issue,
+    unsupported_claims,
+)
 from services.match import normalize_skill
 from services.openai_services import usd
 from services.resume_evidence import (
@@ -85,14 +91,13 @@ If the evidence needs a missing metric or scope detail to become stronger, reque
 the user a focused question. Never guess the answer.
 
 You receive only approved tailoring candidates. Work ONE candidate at a time:
-1. Read the supplied target text and why it is weak, then ALWAYS call search_resume first.
-   The first tool call you make in a run is always search_resume, with no other call beside it.
-   request_detail, propose_edit and merge_bullets each need a bullet_id, and
-   search_resume is the only thing that returns one — the brief above deliberately contains none,
-   so there is nothing you can ask about or rewrite until you have searched.
-2. If needed, search ONCE more using distinctive words from that target.
-3. Copy the exact bullet_id UUID returned by search_resume. Candidate positions such as 1, 2, or 3
-   are never bullet ids, and target excerpts do not contain ids.
+1. Read the supplied target text and why it is weak. Each candidate comes with the exact
+   `bullet_id` of the bullet you may edit — use that one. You do not need to search for it, and
+   searching for a bullet you have already been given wastes a step.
+2. Call search_resume only when you need something the brief did not give you: a second bullet
+   in the same entry that merge_bullets could combine, or evidence for a [confirm] candidate.
+3. Copy bullet ids exactly as given, whether from the brief or from a search_resume result.
+   Candidate positions such as 1, 2, or 3 are never bullet ids.
 4. For [confirm], after searching, call request_detail to verify what the user personally did with
    the requirement. Ask what they implemented, modified, debugged, tested or operated — a specific
    component, query, service or algorithm, and the data or result involved. "Which technologies did
@@ -289,16 +294,23 @@ def strip_fence_markers(value):
 
 
 def job_brief(job, assessment=None, plan=None):
-    """The opening message: the posting, plus the fit we already computed.
+    """The opening message: the posting, the fit we already computed, and the bullet each
+    candidate may edit.
 
-    Handing over the assessment saves the agent from rediscovering it by search. No bullet ids
-    though — citations still have to come from a real search, or the prompt itself would
-    satisfy the grounding check.
+    The brief used to withhold bullet ids so citations had to come from a real search. That
+    was never the guarantee — it was a proxy for "the model looked at the evidence" — and it
+    cost real steps: a production run spent three of twelve rediscovering a bullet the planner
+    had already chosen, twice picking the wrong one first. What `verify_citation` actually
+    needs is that the id reached this run through a recorded channel, and a row written by the
+    server is a better record than a search the model happened to run.
 
-    The posting is fenced. The tools are what actually stop an injected instruction — they take
-    no ids from the model, search is scoped in SQL, and citations are verified — but the fence
-    closes the softer half: steering which requirements get attention, and wording the claim
-    checker can't see. Our own assessment stays outside the fence, because we computed it.
+    The id sits on the candidate line, outside the fence: it is our data, not the resume's.
+    Only the bullet's own words go inside.
+
+    The posting is fenced. The tools are what actually stop an injected instruction — search is
+    scoped in SQL, targets are authorised per candidate, and citations are verified — but the
+    fence closes the softer half: steering which requirements get attention, and wording the
+    claim checker can't see. Our own assessment stays outside the fence, because we computed it.
     """
     title, company, summary, skills = job
     lines = [POSTING_OPEN, f"Job title: {strip_fence_markers(title) or 'unknown'}",
@@ -322,6 +334,8 @@ def job_brief(job, assessment=None, plan=None):
                 note += f" — evidence names {', '.join(item['inferred_from'])}"
             lines.append(note)
             for target in item.get("targets") or []:
+                if target.get("bullet_id"):
+                    lines.append(f"  bullet_id: {target['bullet_id']}")
                 lines.extend([
                     f"  {RESUME_OPEN}",
                     f"  Target: {strip_fence_markers(target['text'])}",
@@ -339,6 +353,64 @@ def job_brief(job, assessment=None, plan=None):
 
 
 # The two model tools. user_id comes from the server; the model never names a user.
+
+SUPPLIED = "evidence_supplied"
+
+
+def record_supplied_evidence(cur, run_id, plan):
+    """Write down exactly which bullets this run handed the model, and return them.
+
+    `verify_citation` asks the database how a bullet reached this run. Before the brief
+    carried ids the only answer was "a search returned it"; now the planner's own choice is
+    an answer too, and it has to be a row rather than prompt text — a brief is rebuilt on
+    every resume and proves nothing after the fact.
+
+    Keyed by a hash of the evidence itself, so the row is immutable per revision. A retry
+    supplies the same bullets, hashes the same, and `ON CONFLICT DO NOTHING` is then correct.
+    A resumed run whose resume has changed since supplies different bullets, hashes
+    differently, and writes a second row — both survive, and the trace shows what was true
+    when. Overwriting one row would have destroyed that history; ignoring the conflict would
+    have left a record that no longer matched the brief.
+    """
+    seen, results = set(), []
+    for item in agent_candidates(plan):
+        for target in item.get("targets") or []:
+            bullet_id = target.get("bullet_id")
+            if not bullet_id or bullet_id in seen:
+                continue
+            seen.add(bullet_id)
+            results.append({"bullet_id": bullet_id, "text": target.get("text") or ""})
+    if not results:
+        return []
+
+    payload = {"results": results, "count": len(results)}
+    revision = hashlib.sha256(
+        json.dumps(results, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:16]
+    cur.execute(
+        """
+        INSERT INTO tool_calls (run_id, step_number, call_id, tool_name, arguments, result, status)
+        VALUES (%s, 1, %s, %s, %s, %s, 'completed')
+        ON CONFLICT (run_id, call_id) DO NOTHING
+        """,
+        (run_id, f"supplied:{revision}", SUPPLIED,
+         json.dumps({"source": "planner"}), json.dumps(payload)),
+    )
+    return results
+
+
+def supplied_bullet_ids(cur, run_id):
+    """Every bullet this run has been handed by the planner, across revisions."""
+    cur.execute(
+        """
+        SELECT jsonb_array_elements(result -> 'results') ->> 'bullet_id'
+        FROM tool_calls
+        WHERE run_id = %s AND tool_name = %s AND status = 'completed'
+        """,
+        (run_id, SUPPLIED),
+    )
+    return {row[0] for row in cur.fetchall() if row[0]}
+
 
 def tool_search_resume(cur, user_id, run_id, arguments):
     query = arguments.get("query")
@@ -366,7 +438,7 @@ def verify_citation(cur, user_id, run_id, bullet_id):
         SELECT id
         FROM tool_calls
         WHERE run_id = %s
-          AND tool_name = 'search_resume'
+          AND tool_name IN ('search_resume', 'evidence_supplied')
           AND status = 'completed'
           AND result -> 'results' @> jsonb_build_array(jsonb_build_object('bullet_id', %s::text))
         ORDER BY step_number
@@ -376,7 +448,11 @@ def verify_citation(cur, user_id, run_id, bullet_id):
     )
     row = cur.fetchone()
     if row is None:
-        raise GroundingError(f"bullet {bullet_id} was not returned by a search in this run — search for it first")
+        raise GroundingError(
+            f"bullet {bullet_id} did not reach this run — it was neither supplied with a "
+            "candidate nor returned by a search here. Use a bullet_id from your brief, or "
+            "search for one."
+        )
     return row[0]
 
 
@@ -438,6 +514,42 @@ def _claim_evidence(cur, user_id, run_id, links, requirement):
     # for these bullets and no others.
     texts += sorted(skills_affirmed_for_bullets(cur, user_id, list(links)))
     return texts + [answer for _detail_id, answer in details], details
+
+
+def _refuse_if_already_consumed(cur, run_id, bullet_ids):
+    """Refuse a second proposal over a bullet this run has already spoken for.
+
+    `proposed_edits_one_accepted_per_bullet` covers the primary `bullet_id` only, and a
+    merge's extra sources live in `tailoring_edit_bullets` — so two merges in one run could
+    each consume the same sibling and both be accepted, leaving the renderer to pick.
+
+    `proposed` and `accepted` hold a bullet; `rejected` releases it, so turning a proposal
+    down frees its sources for a better one in the same run. `FOR UPDATE` because the model
+    sends its calls in a batch: without it two calls in one step both read "free" before
+    either writes.
+    """
+    ids = [str(value) for value in bullet_ids if value]
+    if not ids:
+        return
+    cur.execute(
+        """
+        SELECT e.id, e.requirement
+        FROM proposed_edits AS e
+        LEFT JOIN tailoring_edit_bullets AS mb ON mb.edit_id = e.id
+        WHERE e.run_id = %s
+          AND e.status IN ('proposed', 'accepted')
+          AND (e.bullet_id = ANY(%s::uuid[]) OR mb.bullet_id = ANY(%s::uuid[]))
+        LIMIT 1
+        FOR UPDATE OF e
+        """,
+        (run_id, ids, ids),
+    )
+    row = cur.fetchone()
+    if row is not None:
+        raise GroundingError(
+            f"one of those bullets is already part of a proposal in this run (for "
+            f"{row[1]}). Two edits to the same bullet would conflict — leave it and move on."
+        )
 
 
 def _record_edit(cur, user_id, run_id, bullet_id, requirement, proposed_text,
@@ -550,6 +662,7 @@ def tool_propose_edit(cur, user_id, run_id, arguments, surfacing=None):
     if quality_issue:
         raise GroundingError(quality_issue)
 
+    _refuse_if_already_consumed(cur, run_id, [bullet_id])
     edit_id = _record_edit(
         cur, user_id, run_id, bullet_id, requirement, proposed_text, links, details,
         reason=arguments.get("reason"),
@@ -611,6 +724,7 @@ def tool_merge_bullets(cur, user_id, run_id, arguments):
     if quality_issue:
         raise GroundingError(quality_issue)
 
+    _refuse_if_already_consumed(cur, run_id, bullet_ids)
     edit_id = _record_edit(
         cur, user_id, run_id, bullet_ids[0], requirement, proposed_text,
         links, details, edit_type="merge", reason=arguments.get("reason"),
@@ -757,31 +871,54 @@ def _tool_bullet_ids(name, arguments):
     return []
 
 
-def _verify_approved_target(cur, user_id, requirement, bullet_ids, allowed_targets):
-    """The model may choose among supplied targets, but not quietly switch bullets."""
-    expected = allowed_targets.get(normalize_skill(requirement), set())
+def _verify_approved_target(cur, user_id, requirement, bullet_ids, allowed_targets,
+                            merging=False):
+    """The model may choose among supplied targets, but not quietly switch bullets.
+
+    Two sets per requirement. `edit` is what the planner actually chose. `merge` widens that
+    to the targets' entry siblings, because a merge partner is by definition a bullet the
+    planner did not single out — requiring every merged bullet to be a chosen target would
+    forbid merging altogether.
+
+    A merge must satisfy both halves: every bullet it consumes is authorised, AND at least one
+    of them is a real target for this candidate. Without the anchor the model can combine two
+    siblings and never touch the bullet it was assigned.
+    """
+    scope = allowed_targets.get(normalize_skill(requirement)) or {}
+    anchors = scope.get("edit", set())
+    expected = scope.get("merge", set()) if merging else anchors
     try:
         ids = [str(UUID(str(value).strip())) for value in bullet_ids if value]
     except (TypeError, ValueError, AttributeError):
         # Deliberately not "search first": a search usually HAS run and come back empty, and
-        # telling the model to repeat it is what put runs into a loop. A bullet id can only
-        # come from a search result, so with none there is nothing to act on here.
+        # telling the model to repeat it is what put runs into a loop.
         raise GroundingError(
-            "that is not a bullet id — a bullet id is a UUID from a search_resume result. "
-            "If no search returned any bullets, there is nothing to edit for this "
-            "requirement: leave it alone and move to the next candidate."
+            "that is not a bullet id — a bullet id is a UUID from the candidate in your brief "
+            "or a search_resume result. If neither gave you one for this requirement, there "
+            "is nothing to edit: leave it alone and move to the next candidate."
         ) from None
     if not expected or not ids:
         raise GroundingError("the action does not name an approved target bullet")
     cur.execute(
-        "SELECT id, text FROM resume_bullets WHERE user_id = %s AND id = ANY(%s::uuid[])",
+        "SELECT id FROM resume_bullets WHERE user_id = %s AND id = ANY(%s::uuid[])",
         (user_id, ids),
     )
-    rows = cur.fetchall()
-    if len(rows) != len(set(ids)):
+    found = {str(row[0]) for row in cur.fetchall()}
+    if len(found) != len(set(ids)):
         raise GroundingError("one or more selected bullets are not part of your resume")
-    if not any(row[1] in expected for row in rows):
-        raise GroundingError("the selected bullet is not an approved tailoring target")
+    outside = [bullet_id for bullet_id in ids if bullet_id not in expected]
+    if outside:
+        raise GroundingError(
+            "the selected bullet is not an approved tailoring target for this requirement"
+            if not merging else
+            "a bullet you are merging is not part of this candidate's entry, so it is not "
+            "authorised for this merge"
+        )
+    if merging and not any(bullet_id in anchors for bullet_id in ids):
+        raise GroundingError(
+            "a merge has to include the bullet this candidate was assigned — merging two "
+            "other bullets leaves the assigned one untouched"
+        )
 
 
 def _answered_detail_exists(cur, user_id, run_id, requirement, bullet_ids):
@@ -893,24 +1030,28 @@ def execute_tool(
             ):
                 result, error = None, "ask the user for the missing detail before proposing wording"
             else:
+                # This gate exists to stop the model acting before it holds a real bullet id.
+                # Supplied evidence gives it one without searching, so either channel clears it.
                 cur.execute(
                     """
                     SELECT EXISTS (
                       SELECT 1 FROM tool_calls
-                      WHERE run_id = %s AND tool_name = 'search_resume' AND status = 'completed'
+                      WHERE run_id = %s AND status = 'completed'
+                        AND tool_name IN ('search_resume', 'evidence_supplied')
                     )
                     """,
                     (run_id,),
                 )
                 if not cur.fetchone()[0]:
                     result, error = None, (
-                        f"{name} needs a bullet_id and only search_resume returns one, so "
-                        "call search_resume first, then copy the exact bullet_id UUID it returns"
+                        f"{name} needs a bullet_id. Use the one given with the candidate in "
+                        "your brief, or call search_resume and copy the exact UUID it returns"
                     )
                 else:
                     try:
                         _verify_approved_target(
-                            cur, user_id, requirement, _tool_bullet_ids(name, arguments), allowed_targets,
+                            cur, user_id, requirement, _tool_bullet_ids(name, arguments),
+                            allowed_targets, merging=name == "merge_bullets",
                         )
                         result, error = implementation(cur, user_id, run_id, arguments), None
                     except GroundingError as exc:
@@ -938,11 +1079,15 @@ def execute_tool(
     return result if error is None else {"error": error}
 
 
-def searches_found_nothing(cur, run_id, requirement):
-    """True when the searches that could have served this requirement all came back empty.
+def searches_found_nothing(cur, run_id, requirement, supplied=frozenset()):
+    """True when this requirement has no usable evidence from any permitted source.
 
     There is no legal action for such a candidate — no bullet id exists to cite — so leaving
     it open just lets the model invent one and spend the rest of the budget being refused.
+
+    `supplied` is what the planner handed this run. A candidate that already holds a target
+    and then searches unsuccessfully for a merge partner has not run out of evidence; closing
+    it on that empty search would retire work the model could still do, or keep.
 
     Scoped to the requirement by the query the model typed. Reading it across the whole run is
     the wrong question once a run has several candidates: one good search for Python would
@@ -950,6 +1095,9 @@ def searches_found_nothing(cur, run_id, requirement):
     would close Python. The whole-run reading survives only as the fallback for a requirement
     nothing was searched for by name, where it is the only evidence available.
     """
+    if supplied:
+        return False
+
     cur.execute(
         """
         SELECT coalesce(arguments ->> 'query', ''), coalesce((result ->> 'count')::int, 0)
@@ -1016,7 +1164,11 @@ def failure_key(tool_name, raw_arguments, error):
 
 
 def replay_messages(cur, run_id):
-    """Rebuild the conversation from `tool_calls`.
+    """Rebuild the conversation from `tool_calls`, minus the rows the model never called.
+
+    `evidence_supplied` is a record of something the server did, not a tool the model
+    invoked. Replaying it would hand the model an assistant message calling a tool that is
+    not in its schema.
 
     Every step was already written down for the audit trail — the assistant's tool call with
     its arguments, and what the tool answered. That is exactly the shape the API wants back,
@@ -1029,10 +1181,10 @@ def replay_messages(cur, run_id):
         """
         SELECT step_number, call_id, tool_name, arguments, result, status, error_message
         FROM tool_calls
-        WHERE run_id = %s
+        WHERE run_id = %s AND tool_name <> %s
         ORDER BY step_number, created_at
         """,
-        (run_id,),
+        (run_id, SUPPLIED),
     )
 
     messages, current_step, pending = [], None, []
@@ -1471,11 +1623,15 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
     """
     max_steps = max(1, min(int(max_steps), 20))
 
-    with get_cursor() as cur:
+    with get_cursor(commit=True) as cur:
         job, assessment = load_job_assessment(cur, user_id, job_id)
-        plan = build_tailoring_plan(
-            assessment, bullets_by_entry=bullets_by_entry(cur, user_id),
-        )
+        # kept, not discarded: the merge scope below needs each target's entry siblings
+        entry_bullets = bullets_by_entry(cur, user_id)
+        plan = build_tailoring_plan(assessment, bullets_by_entry=entry_bullets)
+        # written before the brief is built, and the brief is built from this plan — so the
+        # record and what the model was told cannot disagree
+        record_supplied_evidence(cur, run_id, plan)
+        supplied = supplied_bullet_ids(cur, run_id)
         # the opening two messages are rebuilt, not stored: they are derived from rows we
         # still have, and storing them would mean a stale brief after the resume is edited
         replayed = replay_messages(cur, run_id) if resume_from else []
@@ -1510,11 +1666,27 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
         _candidate_key(item): (item.get("agent_label") or item["requirement"])
         for item in candidates
     }
+    # Two scopes per candidate, both sets of bullet ids. `edit` is what the planner chose;
+    # `merge` widens it to those bullets' entry siblings, since a merge partner is by
+    # definition a bullet the planner did not single out. Ids rather than text, so two
+    # identically worded bullets in different entries stay distinguishable.
+    entry_of = {
+        bullet["id"]: entry_id
+        for entry_id, bullets in entry_bullets.items()
+        for bullet in bullets
+    }
     allowed_targets = {}
     for item in candidates:
-        allowed_targets.setdefault(_candidate_key(item), set()).update(
-            target["text"] for target in item.get("targets") or []
-        )
+        key = _candidate_key(item)
+        scope = allowed_targets.setdefault(key, {"edit": set(), "merge": set()})
+        for target in item.get("targets") or []:
+            bullet_id = target.get("bullet_id")
+            if not bullet_id:
+                continue
+            scope["edit"].add(bullet_id)
+            scope["merge"].add(bullet_id)
+            siblings = entry_bullets.get(entry_of.get(bullet_id), [])
+            scope["merge"].update(sibling["id"] for sibling in siblings)
     for (_tool, requirement, _error), count in prior_failures.items():
         if count >= 2:
             allowed_requirements.discard(requirement)
@@ -1677,7 +1849,7 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
                             candidates_state.record_attempt(cur, run_id, requirement)
                         if call.function.name in ACTION_TOOLS and outcome.get("error"):
                             candidates_state.record_attempt(cur, run_id, requirement)
-                            if searches_found_nothing(cur, run_id, requirement):
+                            if searches_found_nothing(cur, run_id, requirement, supplied):
                                 # nothing to cite, so nothing to do: close it honestly rather
                                 # than let the model keep guessing at ids
                                 allowed_requirements.discard(requirement)
@@ -1944,7 +2116,12 @@ def load_run(cur, user_id, run_id):
                    FROM tailoring_edit_details AS d
                    JOIN tailoring_detail_requests AS q ON q.id = d.detail_request_id
                    WHERE d.edit_id = e.id
-               ), '[]')
+               ), '[]'),
+               -- the source as it was cited, not as it reads now. Classifying the edit
+               -- against a bullet that has since changed would describe a comparison that
+               -- never happened.
+               (SELECT l.bullet_text FROM evidence_links AS l
+                 WHERE l.edit_id = e.id AND l.bullet_id = e.bullet_id LIMIT 1)
         FROM proposed_edits AS e
         LEFT JOIN resume_bullets AS b ON b.id = e.bullet_id
         WHERE e.run_id = %s AND e.user_id = %s
@@ -1962,6 +2139,10 @@ def load_run(cur, user_id, run_id):
             "edit_type": r[5],
             "original_text": r[6],
             "reason": r[7],
+            # Shorter, and nothing else to recommend it. The factual checks passed, which
+            # means no technology and no number was lost — but those are not every fact, so
+            # this says plainly that the judgement is the user's.
+            "compression_only": compression_only(r[11], r[3]) if r[11] else False,
             "source_bullets": ([{
                 "bullet_id": str(r[1]), "text": r[6],
             }] if r[1] and r[6] else []) + [
@@ -2014,8 +2195,13 @@ def load_run(cur, user_id, run_id):
 
     cur.execute(
         """
+        -- what the MODEL did. `evidence_supplied` is a row the server wrote, and it is
+        -- excluded here for the same reason `replay_messages` excludes it: the trace is the
+        -- agent's actions, and the supplied targets are already on screen with each candidate.
         SELECT step_number, tool_name, arguments, status, error_message
-        FROM tool_calls WHERE run_id = %s ORDER BY step_number, created_at
+        FROM tool_calls
+        WHERE run_id = %s AND tool_name <> 'evidence_supplied'
+        ORDER BY step_number, created_at
         """,
         (run_id,),
     )

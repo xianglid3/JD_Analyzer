@@ -120,7 +120,10 @@ def test_only_one_strong_bullet_per_run_becomes_a_detail_candidate():
     assert len(agent_candidates(plan)) == 1
 
 
-def test_rewrite_candidate_carries_target_text_and_specific_weakness_but_no_id():
+def test_rewrite_candidate_carries_its_target_text_weakness_and_id():
+    """The id is the planner's own record of which bullet it chose, and what the run later
+    hands to the model. Whether the model is told is `job_brief`'s decision, not this one —
+    the plan itself has always known, it just used to throw the id away and match on text."""
     plan = build_tailoring_plan({"requirements": [
         requirement(
             "Kubernetes", "EXPLICIT",
@@ -131,7 +134,7 @@ def test_rewrite_candidate_carries_target_text_and_specific_weakness_but_no_id()
     target = plan[0]["targets"][0]
     assert target["text"] == "Worked on Kubernetes deployments"
     assert "action verb" in target["weakness"]
-    assert "bullet-1" not in str(target)
+    assert target["bullet_id"] == "bullet-1"
 
 
 # ── a candidate has to be addressable ────────────────────────────────────────
@@ -180,3 +183,24 @@ def test_one_bullet_is_not_fought_over_by_two_candidates():
     with_targets = [item for item in plan if item["targets"]]
 
     assert len(with_targets) == 1, "the same bullet was offered to two candidates"
+
+
+def test_two_entries_with_identical_wording_each_keep_their_candidate():
+    """The de-duplication used to key on bullet text, so a bullet worded the same way under
+    two different entries looked like the same bullet and the second candidate lost its
+    target. Keying on the id tells them apart."""
+    same = "Built REST APIs in Python."
+    assessment = {"requirements": [
+        {"requirement": "python", "agent_label": "python", "state": "EXPLICIT",
+         "importance": "required", "inferred_from": [], "satisfied_by": [],
+         "evidence": [{"bullet_id": "bullet-a", "text": same}]},
+        {"requirement": "rest", "agent_label": "rest", "state": "EXPLICIT",
+         "importance": "required", "inferred_from": [], "satisfied_by": [],
+         "evidence": [{"bullet_id": "bullet-b", "text": same}]},
+    ]}
+
+    plan = build_tailoring_plan(assessment)
+
+    assert [item["targets"][0]["bullet_id"] for item in plan if item["targets"]] == [
+        "bullet-a", "bullet-b",
+    ]
