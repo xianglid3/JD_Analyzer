@@ -112,17 +112,19 @@ You receive only approved tailoring candidates. Work ONE candidate at a time:
    established that this bullet involved the requirement, the only intent available is
    `establish_use` — the server writes that question, so send the requirement and bullet_id and
    do not draft it yourself. Once use IS established (the bullet names it, or the user has said
-   so), ask with `implementation` or `impact`: which component, query or service they built or
-   changed, or what improved. "Which technologies did you use?" is a wasted question — the
+   so), the only other question is `implementation`: which part was theirs, or which component,
+   query or service they built or changed — and only when the bullet does not already say.
+   Never ask what improved, how much, or for a metric: a result or size the bullet lacks is
+   not a reason to ask. "Which technologies did you use?" is a wasted question too — the
    bullet already answers it, so the reply restates the bullet.
    When a requirement lists alternatives ("go or typescript or python"), every request_detail
    names the ONE alternative it is about in `skill`. If the bullet already shows enough of
    them, there is nothing to establish — do not ask.
    For [confirm] specifically: you are finding out whether they used it, not assuming they did.
+   If the bullet already shows it, there is nothing to ask at all — propose_edit from what the
+   bullet says, or keep_original.
 5. For [strengthen], the requirement is already on the page. Propose an edit only if it makes
-   the bullet genuinely better from what it already says; a missing number is a hint, not a
-   reason to ask. Ask with `implementation` or `impact` only when one specific missing fact
-   would clearly improve it. Otherwise keep_original.
+   the bullet genuinely better from what it already says. Otherwise keep_original.
 6. For [rewrite], after searching, use propose_edit for one grounded structural improvement, merge_bullets for two
    or three repetitive bullets in the same entry, or request_detail when a useful fact is missing.
 7. If none is appropriate, call keep_original. That FINISHES the candidate successfully — it is
@@ -258,13 +260,14 @@ TOOLS = [
                     },
                     "intent": {
                         "type": "string",
-                        "enum": ["establish_use", "implementation", "impact"],
+                        "enum": ["establish_use", "implementation"],
                         "description": (
                             "What the question is for. 'establish_use' asks whether the "
                             "requirement was used on this bullet at all — use it whenever "
                             "nothing has established that yet. 'implementation' asks which "
-                            "component or service they built or changed, and 'impact' asks "
-                            "what improved; both are refused until use is established."
+                            "part was theirs, or which component or service they built or "
+                            "changed; refused until use is established. Questions about "
+                            "impact, scale or metrics are not asked."
                         ),
                     },
                     "skill": {
@@ -800,7 +803,8 @@ def tool_merge_bullets(cur, user_id, run_id, arguments):
 # an instruction in the prompt is guidance, and guidance is what produced "How did Redis
 # improve this project?" about a bullet that names PostgreSQL.
 ESTABLISH_USE = "establish_use"
-DETAIL_INTENTS = (ESTABLISH_USE, "implementation", "impact")
+IMPACT = "impact"
+DETAIL_INTENTS = (ESTABLISH_USE, "implementation", IMPACT)
 
 
 def establish_use_question(requirement):
@@ -920,7 +924,7 @@ def _condition_viable(condition, denied):
     return len(open_items) >= min(condition.get("minimum") or 1, len(items))
 
 
-def tool_request_detail(cur, user_id, run_id, arguments, condition=None):
+def tool_request_detail(cur, user_id, run_id, arguments, condition=None, action=None):
     requirement = (arguments.get("requirement") or "").strip()
     bullet_id = (arguments.get("bullet_id") or "").strip()
     question = (arguments.get("question") or "").strip()
@@ -930,6 +934,14 @@ def tool_request_detail(cur, user_id, run_id, arguments, condition=None):
         raise GroundingError("requirement and bullet_id are required")
     if intent not in DETAIL_INTENTS:
         raise GroundingError(f"intent must be one of: {', '.join(DETAIL_INTENTS)}")
+    if intent == IMPACT:
+        # Still a valid stored intent — older rows carry it — but no longer one to ask. "What
+        # improvements did X bring?" came back about bullets that already said, and a metric
+        # nobody measured is an invitation to invent one.
+        raise GroundingError(
+            "questions about impact, scale or metrics are not asked. Improve the bullet from "
+            "what it already says, or keep_original"
+        )
     try:
         bullet_id = str(UUID(bullet_id))
     except (TypeError, ValueError, AttributeError):
@@ -952,6 +964,14 @@ def tool_request_detail(cur, user_id, run_id, arguments, condition=None):
         skill = items[0] if items else normalize_skill(requirement)
 
     established = _established_skills(cur, user_id, run_id, items or [skill], [bullet_id])
+    if action == "confirm" and _condition_satisfied(condition, established):
+        # A confirm candidate exists to find out whether they used it. Once the bullet shows
+        # it, that question is answered, and what is left is not a reason for a new one: LLM
+        # establishes AI, and "what improvements did the platform provide?" filled the gap.
+        raise GroundingError(
+            f"this bullet already shows {requirement}, so there is nothing to confirm or ask. "
+            "Use propose_edit with only what the bullet states, or keep_original"
+        )
     if intent == ESTABLISH_USE:
         satisfied = _condition_satisfied(condition, established)
         if skill in established:
@@ -1307,6 +1327,7 @@ def execute_tool(
                             result = tool_request_detail(
                                 cur, user_id, run_id, arguments,
                                 condition=_candidate_condition(allowed_conditions, requirement),
+                                action=allowed_actions.get(requirement),
                             )
                         else:
                             result = implementation(cur, user_id, run_id, arguments)

@@ -85,14 +85,15 @@ def world(_db):
     return {"user_id": user_id, "job_id": job_id, "run_id": run_id, "b": bullets}
 
 
-def ask(world, bullet, requirement, intent, skill=None, condition=None, question="What did you build?"):
+def ask(world, bullet, requirement, intent, skill=None, condition=None, question="What did you build?",
+        action=None):
     arguments = {"requirement": requirement, "bullet_id": world["b"][bullet],
                  "intent": intent, "question": question}
     if skill:
         arguments["skill"] = skill
     with get_cursor(commit=True) as cur:
         return tool_request_detail(cur, world["user_id"], world["run_id"], arguments,
-                                   condition=condition)
+                                   condition=condition, action=action)
 
 
 def answer(world, bullet, requirement, skill, outcome, text="Yes.", intent="establish_use"):
@@ -137,6 +138,20 @@ def test_llm_establishes_ai_so_nobody_asks(world):
     INFERRED — so the gate may not disagree with it."""
     with pytest.raises(GroundingError, match="already shows ai"):
         ask(world, LLM, "ai", "establish_use")
+
+
+def test_an_established_confirm_candidate_asks_nothing_at_all(world):
+    """The post-patch run: establish_use was refused for LLM → AI, so the model asked "what
+    improvements did the LLM-powered platform provide?" instead. The confirm candidate's only
+    question was answered by the bullet; that is not a reason for another one."""
+    with pytest.raises(GroundingError, match="nothing to confirm or ask"):
+        ask(world, LLM, "ai", "implementation", action="confirm",
+            question="Which part of the platform used AI?")
+    assert pending_questions(world) == 0
+
+
+def test_an_unestablished_confirm_candidate_can_still_ask(world):
+    assert ask(world, MOBILE, "go", "establish_use", action="confirm")["status"] == "awaiting_user"
 
 
 def test_a_group_question_must_name_one_of_its_alternatives(world):
@@ -194,11 +209,11 @@ def test_all_of_asks_for_the_member_still_missing(world):
 
 
 def test_a_question_that_assumes_an_unused_alternative_is_refused(world):
-    """Met by TypeScript does not make "what did Go improve?" answerable."""
+    """Met by TypeScript does not make "which Go service did you write?" answerable."""
     with pytest.raises(GroundingError, match="nothing establishes that this bullet involved go"):
-        ask(world, FASTAPI, "go or typescript", "impact", skill="go",
+        ask(world, FASTAPI, "go or typescript", "implementation", skill="go",
             condition={"operator": "any_of", "minimum": 1, "items": ["go", "typescript"]},
-            question="What did Go improve?")
+            question="Which Go service did you write?")
 
 
 def test_rewording_is_still_a_repeat(world):

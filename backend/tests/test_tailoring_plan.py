@@ -51,7 +51,9 @@ def test_empty_assessment_produces_no_agent_work_or_fake_gaps():
     assert deterministic_gaps([]) == []
 
 
-def test_already_strong_unmeasured_bullet_asks_for_detail_not_cosmetic_rewriting():
+def test_a_strong_bullet_without_a_number_is_kept():
+    """It used to become a `strengthen` task, and the model filled it with "what improvements
+    did X bring?" about a bullet that already said. A missing number is not a missing fact."""
     assessment = {"requirements": [
         requirement(
             "FastAPI",
@@ -65,10 +67,8 @@ def test_already_strong_unmeasured_bullet_asks_for_detail_not_cosmetic_rewriting
 
     plan = build_tailoring_plan(assessment)
 
-    assert plan[0]["action"] == "strengthen"
-    assert rewrite_candidates(plan) == []
-    assert agent_candidates(plan) == [plan[0]]
-    assert "impact or scale" in plan[0]["reason"]
+    assert plan[0]["action"] == "keep"
+    assert agent_candidates(plan) == []
 
 
 def test_strong_measured_bullet_needs_no_agent_work():
@@ -113,20 +113,31 @@ def test_inferred_evidence_without_write_permission_asks_for_confirmation():
     assert agent_candidates(plan) == [plan[0]]
 
 
-def test_only_one_strong_bullet_per_run_becomes_a_detail_candidate():
+def test_the_idempotency_bullet_is_kept():
+    """The post-patch run asked "what improvements did the idempotency implementation bring?"
+    The bullet states its outcome; the outcome regex just does not recognise the wording."""
     plan = build_tailoring_plan({"requirements": [
         requirement(
-            "React", "EXPLICIT",
-            evidence_text="Built a React application for daily nutrition tracking and meal planning",
-        ),
-        requirement(
-            "TypeScript", "EXPLICIT",
-            evidence_text="Developed a TypeScript calendar interface for customers across multiple locations",
+            "LLM", "EXPLICIT",
+            evidence_text=(
+                "Implemented reserve-before-spend idempotency for job-draft creation so "
+                "duplicate requests cannot trigger duplicate LLM calls, with stored-response "
+                "replay after completion."
+            ),
         ),
     ]})
 
-    assert [item["action"] for item in plan] == ["strengthen", "keep"]
-    assert len(agent_candidates(plan)) == 1
+    assert [item["action"] for item in plan] == ["keep"]
+    assert agent_candidates(plan) == []
+
+
+def test_a_missing_result_is_never_a_reason_to_ask():
+    """Impact and scale doubts still describe the bullet; only ownership and mechanism may
+    suggest a question, because only they name a specific missing fact."""
+    from services.tailoring_plan import _weakness
+
+    assert "do not ask" in _weakness("Built a Flask API for order tracking", [])
+    assert "if you need to ask" in _weakness("Helped with the checkout redesign", [])
 
 
 def test_rewrite_candidate_carries_its_target_text_weakness_and_id():

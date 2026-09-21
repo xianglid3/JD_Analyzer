@@ -7,7 +7,6 @@ that already have citable evidence; it never decides whether a requirement is mi
 from services.claim_check import (
     bullet_is_already_strong,
     bullet_quality_gaps,
-    numeric_claims,
     recruiter_doubt,
 )
 from services.match import normalize_skill
@@ -39,9 +38,21 @@ def _weakness(text, structural):
     doubt = recruiter_doubt(text)
     parts = list(structural)
     if doubt:
-        _name, reads_as, ask_for = doubt
-        parts.append(f"{reads_as} — if you need to ask, {ask_for}")
+        name, reads_as, ask_for = doubt
+        if name in QUESTION_DOUBTS:
+            parts.append(f"{reads_as} — if you need to ask, {ask_for}")
+        else:
+            # "What improved?" and "how big?" were the generic questions that came back about
+            # bullets which already said. A missing result or size is fixed from the evidence
+            # or left alone; it is never a reason to ask.
+            parts.append(f"{reads_as} — improve it from what the bullet already says, or keep it; do not ask")
     return "; ".join(part for part in parts if part) or "it could be clearer"
+
+
+# The doubts that name a specific missing fact: whose part it was, and what the thing was.
+# Impact and scale ask for a metric, and a metric the user never measured is an invitation
+# to invent one.
+QUESTION_DOUBTS = {"ownership", "mechanism"}
 
 
 def _rewrite_targets(item, already_claimed=frozenset()):
@@ -78,29 +89,6 @@ def _confirmation_targets(item, already_claimed=frozenset()):
         if evidence.get("bullet_id") and evidence.get("text")
         and str(evidence["bullet_id"]) not in already_claimed
     ]
-
-
-def _strengthening_targets(item, already_selected):
-    """Choose at most one strong, unmeasured bullet for a grounded detail question.
-
-    The cap and cross-requirement de-duplication prevent one React/TypeScript bullet from
-    generating several versions of the same question.
-    """
-    for evidence in item.get("evidence", []):
-        text = evidence.get("text") or ""
-        bullet_id = evidence.get("bullet_id")
-        if (
-            bullet_id
-            and str(bullet_id) not in already_selected
-            and bullet_is_already_strong(text)
-            and not numeric_claims(text)
-        ):
-            return [{
-                "bullet_id": str(bullet_id),
-                "text": text,
-                "weakness": _weakness(text, []),
-            }]
-    return []
 
 
 def _can_surface_inference(item, approved=frozenset()):
@@ -191,12 +179,8 @@ def build_tailoring_plan(assessment, approved=frozenset(), bullets_by_entry=None
     # One bullet, one candidate — held as a set of bullet ids. A posting lists "java or golang
     # or python or c++…" and "c# or c++ or java" as separate requirements, and the same C++
     # bullet is the evidence for both, so the agent was sent to fight the same rewrite twice.
-    # Cross-requirement de-duplication existed for strengthening targets only; the same
-    # argument applies to every kind of target.
+    # The argument applies to every kind of target.
     claimed_targets = set()
-    # Asking for every missing metric would turn one run into a questionnaire. One focused
-    # strengthening opportunity is enough; partial requirements can still ask for confirmation.
-    strengthening_slots = 1
     for position, item in enumerate((assessment or {}).get("requirements") or []):
         state = item.get("state")
         citable = _has_citable_evidence(item)
@@ -245,19 +229,11 @@ def build_tailoring_plan(assessment, approved=frozenset(), bullets_by_entry=None
             reason = "The requirement is explicit, but at least one supporting bullet could be clearer."
             targets = _rewrite_targets(item, claimed_targets)
         elif state == EXPLICIT and citable:
-            detail_targets = (
-                _strengthening_targets(item, claimed_targets)
-                if strengthening_slots > 0 and item.get("importance", "required") == "required"
-                else []
-            )
-            if detail_targets:
-                action = "strengthen"
-                reason = "The wording is already strong; ask for one real impact or scale detail."
-                targets = detail_targets
-                strengthening_slots -= 1
-            else:
-                action = "keep"
-                reason = "The supporting bullet is already specific; automatic rewording would be cosmetic."
+            # There was a `strengthen` action here: any strong bullet without a number became a
+            # task, and the model filled it with "what improvements did X bring?" about bullets
+            # that already said. A missing number is not a missing fact.
+            action = "keep"
+            reason = "The supporting bullet is already specific; automatic rewording would be cosmetic."
         else:
             # Met, but nothing demonstrates it. This used to be `keep`, which renders as
             # nothing at all — so the single most useful thing the fit engine knew about a

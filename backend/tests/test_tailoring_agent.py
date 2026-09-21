@@ -495,9 +495,10 @@ def test_brief_contains_only_preapproved_rewrite_work(monkeypatch, fixtures):
     assert "accounted for all 2 scored requirements" in brief
 
 
-def test_strong_unmeasured_evidence_still_starts_agent_for_one_detail(
+def test_strong_unmeasured_evidence_starts_no_agent_work(
     monkeypatch, fixtures, k8s_bullet, _db,
 ):
+    """No number used to be a task: the model was sent to ask "what did it change?" and did."""
     strong = (
         "Designed Kubernetes deployment workflows across global regions for reliable "
         "customer-facing services"
@@ -506,15 +507,36 @@ def test_strong_unmeasured_evidence_still_starts_agent_for_one_detail(
         cur.execute("UPDATE resume_bullets SET text = %s WHERE id = %s", (strong, k8s_bullet))
         cur.execute("UPDATE jobs SET match_detail = NULL WHERE id = %s", (fixtures["job_id"],))
     _db.commit()
-    sent = script(monkeypatch, response(content="A concrete impact detail would help."))
+    sent = script(monkeypatch)
 
     result = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
 
-    assert result["steps_used"] == 1
-    assert "[strengthen]" in sent[0][1]["content"]
-    # the brief names what a reader would not believe, not which field is empty: a model told
-    # "no measurable result" asks for a number, and gets the bullet back in words
-    assert "not what it changed" in sent[0][1]["content"]
+    assert sent == []
+    assert result.get("steps_used", 0) == 0
+
+
+def test_impact_questions_are_refused(monkeypatch, fixtures, k8s_bullet, _db):
+    script(
+        monkeypatch,
+        response([call("request_detail", {
+            "requirement": "Kubernetes", "bullet_id": k8s_bullet, "intent": "impact",
+            "question": "What improvements did this bring?",
+        }, "c1")]),
+        response(content="Done."),
+    )
+
+    result = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
+
+    with _db.cursor() as cur:
+        cur.execute(
+            "SELECT error_message FROM tool_calls WHERE run_id = %s AND status = 'failed'",
+            (result["run_id"],),
+        )
+        refusals = [row[0] for row in cur.fetchall()]
+        cur.execute("SELECT count(*) FROM tailoring_detail_requests WHERE run_id = %s",
+                    (result["run_id"],))
+        assert cur.fetchone()[0] == 0
+    assert any("impact, scale or metrics are not asked" in message for message in refusals)
 
 
 def test_prompt_states_the_positive_target_and_rejects_synonym_swaps():
@@ -542,12 +564,12 @@ def test_list_positions_without_search_stop_after_two_failures(monkeypatch, fixt
     script(
         monkeypatch,
         response([call("request_detail", {
-            "requirement": "Kubernetes", "bullet_id": "1", "intent": "impact",
-            "question": "What impact did this work have?",
+            "requirement": "Kubernetes", "bullet_id": "1", "intent": "implementation",
+            "question": "Which part of the deployment work was yours?",
         }, "c1")]),
         response([call("request_detail", {
-            "requirement": "Kubernetes", "bullet_id": "2", "intent": "impact",
-            "question": "What scale did this work support?",
+            "requirement": "Kubernetes", "bullet_id": "2", "intent": "implementation",
+            "question": "Which service did you deploy?",
         }, "c2")]),
     )
 
@@ -609,8 +631,8 @@ def test_a_batch_of_identical_refusals_counts_as_one_strike(monkeypatch, fixture
     arrives twice. Counting that as "it was told and did it again" retired a candidate on step
     1 — the one step where it cannot hold a bullet id, because only search_resume returns one.
     """
-    asked = {"requirement": "kubernetes", "intent": "impact",
-             "question": "How many clusters did you run?"}
+    asked = {"requirement": "kubernetes", "intent": "implementation",
+             "question": "Which cluster setup did you build?"}
     script(
         monkeypatch,
         response([
@@ -923,12 +945,12 @@ def test_agent_can_merge_repetitive_bullets_in_one_entry(monkeypatch, fixtures, 
 def test_agent_pauses_for_a_detail_and_resumes_with_the_answer(
     monkeypatch, fixtures, k8s_bullet, _db,
 ):
-    question = "How much time did these deployments save?"
+    question = "Which part of these deployments did you build?"
     script(
         monkeypatch,
         response([call("search_resume", {"query": "kubernetes"}, "c1")]),
         response([call("request_detail", {
-            "requirement": "Kubernetes", "bullet_id": k8s_bullet, "intent": "impact",
+            "requirement": "Kubernetes", "bullet_id": k8s_bullet, "intent": "implementation",
             "question": question,
         }, "c2")]),
     )
@@ -945,7 +967,7 @@ def test_agent_pauses_for_a_detail_and_resumes_with_the_answer(
 
     resumed = resolve_detail_request(
         get_cursor, fixtures["user_id"], detail["id"],
-        answer="Reduced deployment time by 40%.",
+        answer="I wrote the Helm charts, which reduced deployment time by 40%.",
     )
     assert resumed["resume"] is True and resumed["steps_used"] == 2
 
@@ -970,7 +992,7 @@ def test_agent_pauses_for_a_detail_and_resumes_with_the_answer(
     assert "40%" in sent[0][-1]["content"]
     with _db.cursor() as cur:
         run = load_run(cur, fixtures["user_id"], paused["run_id"])
-    assert run["edits"][0]["confirmed_details"][0]["answer"] == "Reduced deployment time by 40%."
+    assert run["edits"][0]["confirmed_details"][0]["answer"] == "I wrote the Helm charts, which reduced deployment time by 40%."
 
 
 def test_sweep_closes_only_runs_no_worker_can_rescue(_db, fixtures):
@@ -1481,8 +1503,8 @@ def test_asking_a_question_does_not_count_as_finishing_the_work(monkeypatch, fix
         response([call("request_detail", {
             "requirement": "Kubernetes",
             "bullet_id": k8s_bullet,
-            "intent": "impact",
-            "question": "How many clusters did you run?",
+            "intent": "implementation",
+            "question": "Which cluster setup did you build?",
         }, "c2")]),
     )
 
@@ -1550,8 +1572,8 @@ def test_the_refusal_names_the_tool_that_needs_an_id(monkeypatch, fixtures, _db)
         response([call("request_detail", {
             "requirement": "Kubernetes",
             "bullet_id": "1",
-            "intent": "impact",
-            "question": "What scale did you operate at?",
+            "intent": "implementation",
+            "question": "Which part did you build?",
         }, "c1")]),
         response(content="Done."),
     )
@@ -1802,12 +1824,12 @@ def test_an_answered_question_is_handed_back_instead_of_asked_again(
     """The loop a real run hit: the user answers, the run resumes, and the model asks the
     same thing in different words — parking the run in waiting_for_user again. Once there is
     an answer, re-asking returns it, because the next move is the rewrite that uses it."""
-    question = "How many clusters did you run?"
+    question = "Which cluster setup did you build?"
     script(
         monkeypatch,
         response([call("search_resume", {"query": "kubernetes"}, "c1")]),
         response([call("request_detail", {
-            "requirement": "Kubernetes", "bullet_id": k8s_bullet, "intent": "impact",
+            "requirement": "Kubernetes", "bullet_id": k8s_bullet, "intent": "implementation",
             "question": question,
         }, "c2")]),
     )
@@ -1818,7 +1840,7 @@ def test_an_answered_question_is_handed_back_instead_of_asked_again(
         run = load_run(cur, fixtures["user_id"], paused["run_id"])
     resumed = resolve_detail_request(
         get_cursor, fixtures["user_id"], run["detail_requests"][0]["id"],
-        answer="Four clusters.",
+        answer="The Helm charts for the four clusters.",
     )
 
     script(
@@ -1826,8 +1848,8 @@ def test_an_answered_question_is_handed_back_instead_of_asked_again(
         response([call("request_detail", {
             "requirement": "Kubernetes",
             "bullet_id": k8s_bullet,
-            "intent": "impact",
-            "question": "How many clusters was it exactly?",
+            "intent": "implementation",
+            "question": "Which cluster setup was it exactly?",
         }, "c3")]),
         response(content="Nothing further."),
     )
@@ -1851,7 +1873,7 @@ def test_an_answered_question_is_handed_back_instead_of_asked_again(
         )
         assert cur.fetchone()[0] == 1
 
-    assert any("Four clusters." in message for message in refusals)
+    assert any("The Helm charts for the four clusters." in message for message in refusals)
 
 
 def test_a_merge_must_include_the_bullet_the_candidate_was_assigned(monkeypatch, fixtures, _db):
@@ -2089,8 +2111,8 @@ def test_a_question_cannot_assume_use_that_nothing_establishes(
         response([call("request_detail", {
             "requirement": "redux",
             "bullet_id": k8s_bullet,
-            "intent": "impact",
-            "question": "How did Redux improve this project?",
+            "intent": "implementation",
+            "question": "Which Redux store did you build?",
         }, "c2")]),
         response(content="Understood."),
     )
@@ -2124,7 +2146,7 @@ def test_the_server_writes_the_establish_use_question(
             "requirement": "redux",
             "bullet_id": k8s_bullet,
             "intent": "establish_use",
-            "question": "How did Redux improve this project?",
+            "question": "Which Redux store did you build?",
         }, "c2")]),
         response(content="Asked."),
     )
