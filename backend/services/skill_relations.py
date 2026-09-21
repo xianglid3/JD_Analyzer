@@ -43,7 +43,7 @@ PROMPT = """You map technical skills onto the more general skills they demonstra
 
 For each term you are given, return:
 - "implies": general skills that experience with the term genuinely demonstrates. Tailwind implies css. Flask implies python and backend. Pytest implies testing. Be willing to include the obvious ones. Use [] when the term is already general.
-- "evidenced_by": specific technologies, tools, or frameworks whose use would demonstrate the term. For css: tailwind, scss, bootstrap. For testing: pytest, jest, junit. Use [] when nothing more specific exists.
+- "evidenced_by": specific technologies, tools, or frameworks whose use would demonstrate the term. For css: tailwind, scss, bootstrap. For testing: pytest, jest, junit. Use [] when nothing more specific exists. This is the exact mirror of "implies" and the same direction rule applies: every entry must be MORE specific than the term, never more general. Kafka is not evidenced_by "messaging", and postgresql is not evidenced_by "database" — those are the categories they belong to, not evidence of them. A named tool usually has nothing more specific, so [] is the common answer.
 - "writeable": the subset of "implies" that is fair to state outright in a resume bullet. This is much stricter. Tailwind -> css is fair, because using Tailwind IS writing css. React -> javascript is NOT fair to write, even though it is true for scoring, because a resume claiming "JavaScript" asserts something the person did not say. When unsure, leave it out.
 
 Rules:
@@ -51,6 +51,8 @@ Rules:
 - At most 8 entries per list.
 - Only real, defensible relations. Do not invent tools.
 - Never point from general to specific in "implies": python does NOT imply flask.
+- Never point from specific to general in "evidenced_by": kafka is NOT evidenced_by messaging.
+- The two lists must not overlap. If the term implies X, then X cannot be evidence of the term.
 - Return ONLY valid JSON of this shape:
 {"terms": [{"term": "<the term>", "implies": ["..."], "evidenced_by": ["..."], "writeable": ["..."]}]}"""
 
@@ -126,6 +128,13 @@ def unknown_terms(terms, seed_known):
         ]
 
 
+def seed_generals(term):
+    """What the hand-written graph already says this term is a kind of."""
+    from services.skill_graph import seed_implied_by
+
+    return seed_implied_by(term)
+
+
 def _ask(terms, complete, budget=None):
     response = complete(
         [
@@ -143,15 +152,48 @@ def _ask(terms, complete, budget=None):
         if term not in terms:
             continue
         implies = _clean(item.get("implies"))
+        # Everything this term is already a *kind of*, in this answer and in the seed graph.
+        # Nothing in there can also be evidence OF the term — that inverts the relation, and
+        # `_persist` stores `evidenced_by` as an edge pointing the other way. Asked what
+        # demonstrates Kafka, a model answers "messaging"; stored unchecked, that makes an
+        # encrypted-chat bullet count as Kafka experience.
+        generals = set(implies) | set(seed_generals(term))
         answers[term] = {
             "implies": implies,
             "evidenced_by": [
-                name for name in _clean(item.get("evidenced_by")) if name != term
+                name for name in _clean(item.get("evidenced_by"))
+                if name != term and name not in generals
             ],
             # a claim the model can't already justify as an implication is not writeable
             "writeable": [name for name in _clean(item.get("writeable")) if name in implies],
         }
     return answers
+
+
+def _without_contradictions(rows):
+    """Drop edges that assert the opposite of something already believed.
+
+    An edge (S, G) says S is a kind of G. If the seed table says the reverse, or the same
+    batch does, one of the two is wrong and neither is worth trusting — a graph that holds
+    both directions makes every term evidence of every other term within three hops.
+
+    The seed table wins outright, because it was written by a person.
+    """
+    from services.skill_graph import seed_implied_by
+
+    asserted = {(specific, general) for specific, general, _ in rows}
+    kept = []
+    for specific, general, rewriteable in rows:
+        if specific in seed_implied_by(general):
+            logger.info("dropping learned edge %s -> %s: the seed table says the reverse",
+                        specific, general)
+            continue
+        if (general, specific) in asserted:
+            logger.info("dropping learned edge %s -> %s: this answer asserts both directions",
+                        specific, general)
+            continue
+        kept.append((specific, general, rewriteable))
+    return kept
 
 
 def _persist(cur, terms, answers):
@@ -168,6 +210,8 @@ def _persist(cur, terms, answers):
         for specific in answer["evidenced_by"]:
             if specific != term:
                 rows.append((specific, term, False))
+
+    rows = _without_contradictions(rows)
 
     if rows:
         cur.executemany(

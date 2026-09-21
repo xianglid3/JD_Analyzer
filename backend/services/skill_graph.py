@@ -197,6 +197,30 @@ def _parents(skill):
     return parents
 
 
+def seed_implied_by(skill):
+    """Generals reachable from the hand-written table alone, transitively.
+
+    Deliberately excludes learned edges: this is used while *validating* a learned answer, and
+    checking a new edge against edges of the same provenance would let one bad answer vouch
+    for the next.
+    """
+    from services.match import normalize_skill
+
+    skill = normalize_skill(skill)
+    seen, frontier = [], [skill]
+    for _ in range(MAX_DEPTH):
+        nxt = []
+        for item in frontier:
+            for parent in _IMPLIES_FLAT.get(flatten_punctuation(item), ()):
+                if parent not in seen and parent != skill:
+                    seen.append(parent)
+                    nxt.append(parent)
+        if not nxt:
+            break
+        frontier = nxt
+    return seen
+
+
 def implied_by(skill):
     """Everything this skill is evidence of for matching. Transitive
     (supabase → postgresql → sql), depth-capped so a bad edge can't loop forever.

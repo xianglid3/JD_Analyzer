@@ -290,3 +290,64 @@ def test_one_user_approving_does_not_grant_it_to_another(_db):
     with get_cursor() as cur:
         assert approved_rewrites(cur, first) == {("remix", "react")}
         assert approved_rewrites(cur, second) == set()      # containment is the point
+
+
+# ── direction (the run of 2026-09-21) ────────────────────────────────────────
+# An encrypted-chat bullet counted as Kafka experience, and the agent asked about Kafka. The
+# seed table only ever points specific → general, but a learned `evidenced_by` entry is stored
+# as an edge pointing the other way, and nothing checked which way it pointed.
+
+def test_a_general_concept_cannot_be_evidence_of_a_specific_tool():
+    """Asked what demonstrates Kafka, a model answers "messaging". Stored unchecked that means
+    messaging implies Kafka, and every chat app becomes broker experience."""
+    answers = skill_relations._ask(
+        ["kafka"],
+        lambda messages, budget=None: answer([{
+            "term": "kafka",
+            "implies": ["messaging", "distributed systems"],
+            "evidenced_by": ["messaging", "pub sub"],
+            "writeable": [],
+        }]),
+    )
+
+    # the true direction survives — Kafka *is* messaging experience
+    assert "messaging" in answers["kafka"]["implies"]
+    # the inversion does not
+    assert "messaging" not in answers["kafka"]["evidenced_by"]
+    assert answers["kafka"]["evidenced_by"] == ["pub sub"]
+
+
+def test_the_seed_table_settles_the_direction():
+    """"database" is what Redis is a kind of, per the hand-written table. It cannot also be
+    evidence of Redis, whatever the model says."""
+    answers = skill_relations._ask(
+        ["redis"],
+        lambda messages, budget=None: answer([{
+            "term": "redis", "implies": ["database"],
+            "evidenced_by": ["database"], "writeable": [],
+        }]),
+    )
+
+    assert answers["redis"]["evidenced_by"] == []
+
+
+def test_an_edge_that_contradicts_the_seed_table_is_dropped():
+    """The seed says aws → cloud. An edge saying cloud → aws would make every deployment
+    bullet AWS experience, which is how the LiDAR bullet matched in the first place."""
+    kept = skill_relations._without_contradictions([
+        ("cloud", "aws", False),
+        ("tailwind", "css", True),
+    ])
+
+    assert kept == [("tailwind", "css", True)]
+
+
+def test_asserting_both_directions_discards_both():
+    """A graph holding X → Y and Y → X makes everything evidence of everything within three
+    hops. Neither edge is trustworthy, so neither is kept."""
+    kept = skill_relations._without_contradictions([
+        ("kafka", "messaging", False),
+        ("messaging", "kafka", False),
+    ])
+
+    assert kept == []
