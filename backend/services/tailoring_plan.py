@@ -285,6 +285,8 @@ def build_tailoring_plan(assessment, approved=frozenset(), bullets_by_entry=None
             "reason": reason,
             "inferred_from": item.get("inferred_from") or [],
             "satisfied_by": item.get("satisfied_by") or [],
+            # absent on assessments stored before it existed; the agent rebuilds it
+            "condition": item.get("condition"),
             "evidence_count": len(item.get("evidence") or []),
             "targets": targets,
         })

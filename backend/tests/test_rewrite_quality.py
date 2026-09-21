@@ -1,3 +1,5 @@
+import pytest
+
 from services.claim_check import (
     bullet_is_already_strong,
     bullet_quality_gaps,
@@ -159,3 +161,103 @@ def test_rewrite_that_drops_one_side_of_a_slash_pair_is_refused():
     )
     issue = rewrite_quality_issue(SLASH_ORIGINAL, proposed)
     assert issue and "react" in issue
+
+
+# ── two narrow tripwires, and what they do not catch ─────────────────────────
+# Neither is fact checking. The limits below are pinned so nobody reads them as more.
+
+FAITHFUL_PYTHON = (
+    "Designed a Python/FastAPI backend with Supabase and REST APIs for event creation, "
+    "updates, and geocoded location storage; integrated it with a React/TypeScript calendar "
+    "and Mapbox interface."
+)
+
+
+def test_naming_the_confirmed_backend_language_passes():
+    assert rewrite_quality_issue(SLASH_ORIGINAL, FAITHFUL_PYTHON) is None
+
+
+def test_dropping_an_unfamiliar_name_is_refused():
+    proposed = (
+        "Designed a FastAPI backend with Supabase and REST APIs for event creation, updates, "
+        "and geocoded location storage, feeding a React/TypeScript calendar interface."
+    )
+    issue = rewrite_quality_issue(SLASH_ORIGINAL, proposed)
+    assert issue and "mapbox" in issue
+
+
+def test_an_appended_benefit_is_refused():
+    """The accepted rewrite from 2026-09-21, minus the React loss the slash fix catches."""
+    proposed = (
+        "Designed a FastAPI backend with Supabase and REST APIs for event creation, updates, "
+        "and geocoded location storage, integrated with a React/TypeScript calendar and Mapbox "
+        "interface, enhancing the efficiency of event management."
+    )
+    issue = rewrite_quality_issue(SLASH_ORIGINAL, proposed)
+    assert issue and "result the bullet never claimed" in issue
+
+
+def test_a_result_the_user_gave_may_be_stated():
+    original = "Worked on request deduplication for the LLM analysis endpoint in Flask."
+    proposed = "Built request deduplication for the Flask LLM analysis endpoint, reducing duplicate LLM calls."
+    assert rewrite_quality_issue(original, proposed) is not None
+    assert rewrite_quality_issue(
+        original, proposed, answers=["It reduced duplicate LLM calls."],
+    ) is None
+
+
+def test_limit_any_answered_result_licenses_any_result():
+    """Documented limit: the check sees result language, not which result. An answer about
+    duplicate calls still lets an accuracy claim through."""
+    original = "Worked on request deduplication for the LLM analysis endpoint in Flask."
+    proposed = "Built request deduplication for the Flask LLM analysis endpoint, improving recommendation accuracy."
+    assert rewrite_quality_issue(
+        original, proposed, answers=["It reduced duplicate LLM calls."],
+    ) is None
+
+
+def test_limit_a_dropped_lowercase_detail_is_not_seen():
+    """"calendar" is gone and nothing notices."""
+    proposed = (
+        "Designed a FastAPI/Supabase backend with REST APIs for events and geocoded locations "
+        "behind a React/TypeScript and Mapbox interface."
+    )
+    assert rewrite_quality_issue(SLASH_ORIGINAL, proposed) is None
+
+
+def test_limit_a_technology_moved_to_another_component_is_not_seen():
+    """TypeScript moves from the interface to the backend; every name survives, so it passes."""
+    proposed = (
+        "Designed a TypeScript FastAPI/Supabase backend with REST APIs for events and geocoded "
+        "locations behind a React calendar and Mapbox interface."
+    )
+    assert rewrite_quality_issue(SLASH_ORIGINAL, proposed) is None
+
+
+@pytest.mark.parametrize("original, proposed", [
+    ("Operated Kubernetes clusters on AWS for three teams.",
+     "Ran k8s clusters on AWS serving three teams."),
+    # multiword aliases: judged against the whole phrase, not word by word
+    ("Deployed services on Google Cloud for three teams.",
+     "Deployed services on GCP for three teams."),
+    ("Deployed services on Amazon Web Services for three teams.",
+     "Deployed services on AWS for three teams."),
+    ("Built extensions for Visual Studio Code used by three teams.",
+     "Built extensions for VS Code used by three teams."),
+    ("Maintained Supabase's row-level security policies for the Mapbox layer.",
+     "Wrote and maintained supabase row-level security policies for the mapbox layer."),
+])
+def test_casing_aliases_and_possessives_are_not_lost_names(original, proposed):
+    issue = rewrite_quality_issue(original, proposed)
+    assert issue is None or "drops names" not in issue
+
+
+def test_a_merge_may_not_append_a_benefit():
+    originals = [
+        "Built the ingestion service in Python for event data.",
+        "Wrote the Python ingestion service's retry logic for event data.",
+    ]
+    issue = merge_quality_issue(
+        originals, "Built the Python ingestion service and its retry logic, boosting reliability.",
+    )
+    assert issue and "result the bullet never claimed" in issue

@@ -246,8 +246,7 @@ def test_a_faithful_shorter_rewrite_is_no_longer_refused():
     thing in fewer words is usually the improvement."""
     original = ("Contributing to a work-in-progress ROS 2 autonomous-driving stack in C++ for "
                 "Pitt's FSAE EV driverless program, focused on cone-perception software.")
-    proposed = ("Contributing cone-perception software in C++ to a work-in-progress ROS 2 "
-                "autonomous-driving stack for Pitt.")
+    proposed = "Contributing C++ cone perception to Pitt's FSAE EV ROS 2 autonomous-driving stack."
 
     assert rewrite_quality_issue(original, proposed) is None
 
@@ -275,12 +274,20 @@ def test_shortening_may_not_drop_a_number():
     assert issue is not None and "measurable result" in issue
 
 
-def test_shortening_that_deletes_context_passes_and_is_marked():
-    """The limitation, pinned rather than papered over. "Pitt's FSAE EV driverless program" is
-    neither a technology nor a number, so nothing here detects its loss. The edit is allowed
-    and flagged, because the alternative is a warning-free proposal implying there is nothing
-    to check."""
+def test_shortening_that_deletes_a_program_name_is_refused():
+    """"Pitt's FSAE EV" is neither a technology nor a number, and its loss used to pass
+    unnoticed. The unfamiliar-name check catches capitalised names like these."""
     proposed = "Contributing to a ROS 2 autonomous-driving stack in C++, focused on cone perception."
+
+    issue = rewrite_quality_issue(FSAE, proposed)
+    assert issue is not None and "fsae" in issue and "pitt" in issue
+
+
+def test_shortening_that_deletes_lowercase_context_passes_and_is_marked():
+    """The limitation that remains, pinned rather than papered over. "work-in-progress" and
+    "driverless" are lowercase, so no check sees them go. The edit is allowed and flagged,
+    because the alternative is a warning-free proposal implying there is nothing to check."""
+    proposed = "Contributing C++ cone perception to a ROS 2 stack for Pitt's FSAE EV."
 
     assert rewrite_quality_issue(FSAE, proposed) is None
     assert compression_only(FSAE, proposed) is True

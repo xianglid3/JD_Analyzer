@@ -266,6 +266,9 @@ def evaluate_requirements(requirements, bullets):
         evaluated["requirement"] = condition_label(item, condition)
         # what the agent is asked to name; never a sentence
         evaluated["agent_label"] = short_condition_label(condition)
+        # the shape, not just the name: tailoring has to know "a or b" from "a and b" to
+        # tell which questions are still worth asking
+        evaluated["condition"] = condition
         evaluated["importance"] = importance
         results.append(evaluated)
 
@@ -307,6 +310,7 @@ def evaluate_requirements(requirements, bullets):
                 "inferred_from": r["inferred_from"],
                 # which alternative carried it, so the user can see why it counted
                 "satisfied_by": r["satisfied_by"],
+                "condition": r["condition"],
                 "evidence": [
                     {
                         "bullet_id": e["bullet_id"], "text": e["text"],

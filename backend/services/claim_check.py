@@ -58,8 +58,13 @@ def named_skills(text):
     the claim checker contradict itself: a rewrite could name `programming` without any
     evidence naming it on its own.
     """
+    return _skill_spans(text)[0]
+
+
+def _skill_spans(text):
+    """`named_skills`, plus the words those skills occupy in the text."""
     if not text:
-        return []
+        return [], set()
 
     indexed = index(text)
     claimed = set()
@@ -74,7 +79,14 @@ def named_skills(text):
         canonical = normalize_skill(term)
         if canonical not in found:
             found.append(canonical)
-    return found
+
+    # a slash item is reported as (position, offset); either way the word is whole[position]
+    words = set()
+    for coordinate in claimed:
+        token = indexed["whole"][coordinate[0] if isinstance(coordinate, tuple) else coordinate]
+        words.add(token)
+        words.update(piece for piece in re.split(r"[/-]", token) if piece)
+    return found, words
 
 
 def supported_skills(evidence_texts, approved=frozenset()):
@@ -234,6 +246,89 @@ _OUTCOME = re.compile(
     r"saved|saving|so that|enabling|unblocked|from .* to )\b",
     re.IGNORECASE,
 )
+# Wider than `_OUTCOME`, for one job: spotting a benefit clause a rewrite tacked on.
+# "…, enhancing the efficiency of event management" is the shape that got through.
+_RESULT_LANGUAGE = re.compile(
+    r"\b(enhanc\w*|boost\w*|streamlin\w*|resulting in|leading to|driving|prevent\w*)\b",
+    re.IGNORECASE,
+)
+
+
+def states_a_result(text):
+    return bool(text) and bool(_OUTCOME.search(text) or _RESULT_LANGUAGE.search(text))
+
+
+def added_result_language(original_texts, proposed_text, answers=()):
+    """A result clause in the rewrite that neither the bullets nor an answer had.
+
+    A tripwire, not outcome validation. It catches the move of appending a benefit nobody
+    stated; it cannot tell whether a stated result is the one the answer supports. An answer
+    saying "reduced duplicate LLM calls" still lets "improved recommendation accuracy" through.
+    """
+    if not states_a_result(proposed_text):
+        return None
+    if any(states_a_result(text) for text in original_texts):
+        return None
+    if any(states_a_result(answer) for answer in answers):
+        return None
+    return (
+        "the rewrite adds a result the bullet never claimed. State only outcomes the bullet "
+        "or the user's answer gives — ask with intent 'impact' if one is genuinely missing, "
+        "or keep the bullet as it is"
+    )
+
+
+# Capitalised words that are grammar, not names.
+_NOT_NAMES = {
+    "i", "a", "an", "the", "and", "or", "of", "for", "with", "to", "in", "on", "at", "by",
+    "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
+}
+_NAME_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9+#.']*[A-Za-z0-9+#]|[A-Za-z]")
+
+
+def _bare(token):
+    token = token.lower().rstrip(".")
+    return token[:-2] if token.endswith("'s") else token
+
+
+def unfamiliar_names(text):
+    """Names in a bullet the skill vocabulary does not know: Mapbox, FSAE, FullCalendar.
+
+    Capitalised mid-sentence, or mixed case anywhere. Every word a recognised skill phrase
+    covers in the whole text is left to the skill check, which already compares by canonical
+    name — so Kubernetes → k8s and Google Cloud → GCP are not lost names. Judged against the
+    whole text, not word by word: "Google" alone is no skill, but in "Google Cloud" it is.
+    Lowercase details ("calendar") are invisible here by design.
+    """
+    _skills, covered = _skill_spans(text)
+    names = []
+    for match in _NAME_TOKEN.finditer(text or ""):
+        token = match.group(0)
+        before = (text[:match.start()].rstrip() or ".")[-1]
+        sentence_start = before in ".;:!?"
+        mixed = any(ch.isupper() for ch in token[1:]) and any(ch.islower() for ch in token)
+        capitalised = token[0].isupper() and not sentence_start
+        bare = _bare(token)
+        if not (mixed or capitalised) or bare in _NOT_NAMES or len(bare) < 2:
+            continue
+        if bare in covered or token.lower() in covered:
+            continue
+        names.append(bare)
+    return list(dict.fromkeys(names))
+
+
+def dropped_names(original_text, proposed_text):
+    """Unfamiliar names the original had and the rewrite does not.
+
+    Protects unfamiliar names only. It is not factual preservation: moving TypeScript from
+    the frontend to the backend keeps every name and passes.
+    """
+    proposed = {_bare(token) for token in _NAME_TOKEN.findall(proposed_text or "")}
+    squashed = re.sub(r"[^a-z0-9+#]", "", (proposed_text or "").lower())
+    return [
+        name for name in unfamiliar_names(original_text)
+        if name not in proposed and name.replace("'", "") not in squashed
+    ]
 
 
 # A number a reader would treat as a measurement. `numeric_claims` deliberately accepts
@@ -461,7 +556,8 @@ def compression_only(original_text, proposed_text, surfacing=None):
     )
 
 
-def rewrite_quality_issue(original_text, proposed_text, surfacing=None, entry_is_ongoing=False):
+def rewrite_quality_issue(original_text, proposed_text, surfacing=None, entry_is_ongoing=False,
+                          answers=()):
     """Explain why a grounded rewrite still adds no useful value, or return ``None``.
 
     Grounding answers "is it true?". This answers the separate question "is it better?".
@@ -474,6 +570,9 @@ def rewrite_quality_issue(original_text, proposed_text, surfacing=None, entry_is
     phrasing change and gets refused. It exempts the phrasing check ONLY; the factual checks
     above it run either way, because "the user confirmed this skill" is not permission to
     change who did the work or whether it is finished.
+
+    `answers` are the user's own answers this rewrite may draw on; only they can license a
+    result clause the bullet did not have.
     """
     original_words = _words(original_text)
     proposed_words = _words(proposed_text)
@@ -509,6 +608,13 @@ def rewrite_quality_issue(original_text, proposed_text, surfacing=None, entry_is
             "dropping a technology the bullet had earned"
         )
 
+    lost_names = dropped_names(original_text, proposed_text)
+    if lost_names:
+        return (
+            f"the rewrite drops names the bullet had: {', '.join(lost_names)}. Keep every "
+            "product, program and tool the bullet names"
+        )
+
     original_numbers = numeric_claims(original_text)
     proposed_numbers = numeric_claims(proposed_text)
     missing_numbers = original_numbers - proposed_numbers
@@ -518,6 +624,10 @@ def rewrite_quality_issue(original_text, proposed_text, surfacing=None, entry_is
             f"({', '.join(f'{value:g}{suffix}' for value, suffix in sorted(missing_numbers))}). "
             "Numbers are the strongest thing on a resume — keep every one of them"
         )
+
+    invented_result = added_result_language([original_text], proposed_text, answers)
+    if invented_result:
+        return invented_result
 
     # Reaching here means nothing measurable was lost, so saying it in fewer words counts as
     # an improvement in its own right. It is the weakest of the five and the only one that is
@@ -531,7 +641,7 @@ def rewrite_quality_issue(original_text, proposed_text, surfacing=None, entry_is
     return None
 
 
-def merge_quality_issue(original_texts, proposed_text):
+def merge_quality_issue(original_texts, proposed_text, answers=()):
     """Reject concatenation or detail loss when several thin bullets become one."""
     originals = [text for text in original_texts if text]
     proposed_words = _words(proposed_text)
@@ -556,4 +666,4 @@ def merge_quality_issue(original_texts, proposed_text):
     original_numbers = set().union(*(numeric_claims(text) for text in originals))
     if original_numbers - numeric_claims(proposed_text):
         return "the merge removes a measurable result from its source bullets"
-    return None
+    return added_result_language(originals, proposed_text, answers)

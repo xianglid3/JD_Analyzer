@@ -314,6 +314,10 @@ CREATE TABLE tailoring_detail_requests (
   -- "I didn't use Redis" contains the word Redis, and used to make Redis a supported term.
   -- NULL means the distinction was never captured, which is not the same as "yes".
   outcome      text CHECK (outcome IS NULL OR outcome IN ('yes', 'no', 'unclear')),
+  -- The one skill a question is about. `requirement` names the candidate, and for
+  -- "go or typescript or python" a yes to the group said nothing about which one. NULL on
+  -- rows from before it existed; those count only when their requirement is a single skill.
+  skill        text,
   status       text NOT NULL DEFAULT 'pending'
                CHECK (status IN ('pending', 'answered', 'dismissed')),
   created_at   timestamptz NOT NULL DEFAULT now(),

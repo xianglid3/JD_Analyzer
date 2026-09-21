@@ -513,3 +513,15 @@ def test_a_protected_compound_suppresses_only_its_own_occurrence():
 
     only_points = bullet("Processed point clouds from the LiDAR rig", "b-points")
     assert evaluate_requirement("cloud", [only_points])["state"] == NONE
+
+
+def test_each_requirement_keeps_its_shape_for_tailoring():
+    """Tailoring has to tell "typescript and go" from "typescript or go"; the label alone
+    cannot be trusted to say which."""
+    result = evaluate_requirements(
+        [{"condition": {"operator": "all_of", "items": ["TypeScript", "Go"]}}],
+        [bullet("Built a TypeScript dashboard")],
+    )
+    assert result["requirements"][0]["condition"] == {
+        "operator": "all_of", "minimum": 1, "items": ["TypeScript", "Go"],
+    }

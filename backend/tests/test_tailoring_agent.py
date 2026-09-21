@@ -158,7 +158,7 @@ def test_a_supplied_bullet_needs_no_search_of_its_own(monkeypatch, fixtures, k8s
         response([call("propose_edit", {
             "requirement": "Kubernetes",
             "bullet_id": k8s_bullet,
-            "proposed_text": "Deployed Kubernetes services across three regions, cutting release time",
+            "proposed_text": "Deployed Kubernetes services across three regions",
             "evidence_bullet_ids": [k8s_bullet],
         }, "c1")]),
         response(content="Understood."),
@@ -400,9 +400,12 @@ def test_run_without_evidence_stops_before_spending(monkeypatch, fixtures, _db):
     assert called == []
 
 
-def test_inferred_javascript_requires_confirmation_before_a_rewrite(
+def test_javascript_implied_by_react_needs_no_confirmation(
     monkeypatch, fixtures, k8s_bullet, _db,
 ):
+    """React implies JavaScript through the hand-written table, which is the same rule the fit
+    engine used to call it INFERRED. Asking "did you use javascript?" about a React bullet is
+    the redundant question from the 2026-09-21 run (there it was LLM and AI)."""
     with _db.cursor() as cur:
         cur.execute(
             "UPDATE resume_bullets SET text = 'Built the frontend with React and TypeScript' WHERE user_id = %s",
@@ -424,22 +427,24 @@ def test_inferred_javascript_requires_confirmation_before_a_rewrite(
         response([call("request_detail", {
             "requirement": "javascript",
             "bullet_id": str(k8s_bullet),
-            # nothing establishes JavaScript on this bullet, so this is the only legal intent
-            # and the server writes the sentence
             "intent": "establish_use",
-            "question": "What JavaScript work did you personally do in this frontend?",
+            "question": "Did you write JavaScript here?",
         }, "c2")]),
+        response(content="Nothing to ask."),
     )
 
     result = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
 
-    assert result["status"] == "waiting_for_user" and result["steps_used"] == 2
     with _db.cursor() as cur:
         run = load_run(cur, fixtures["user_id"], result["run_id"])
+        cur.execute(
+            "SELECT error_message FROM tool_calls WHERE run_id = %s AND status = 'failed'",
+            (result["run_id"],),
+        )
+        refusals = [row[0] for row in cur.fetchall()]
     assert run["outcomes"][0]["action"] == "confirm"
-    assert run["edits"] == []
-    assert run["detail_requests"][0]["requirement"] == "javascript"
-    assert run["gaps"] == []
+    assert run["detail_requests"] == []
+    assert any("already shows javascript" in message for message in refusals), refusals
 
 
 def test_load_run_is_ownership_scoped(monkeypatch, fixtures, _db):
@@ -1268,8 +1273,8 @@ def test_an_answer_cannot_support_a_different_requirement(fixtures, k8s_bullet, 
 
     links = {k8s_bullet: None}
     with get_cursor() as cur:
-        same, _ = _claim_evidence(cur, fixtures["user_id"], run_id, links, "user scale")
-        other, _ = _claim_evidence(cur, fixtures["user_id"], run_id, links, "team leadership")
+        same, *_ = _claim_evidence(cur, fixtures["user_id"], run_id, links, "user scale")
+        other, *_ = _claim_evidence(cur, fixtures["user_id"], run_id, links, "team leadership")
 
     assert "About 10 customers" in same          # available to the question it answered
     assert "About 10 customers" not in other     # and to nothing else
@@ -2043,9 +2048,18 @@ def test_a_merge_partner_still_has_to_have_reached_this_run(monkeypatch, fixture
 # PostgreSQL. Patch 1 stops that requirement reaching the agent at all; these cover the second
 # line, where the candidate IS legitimate but the use still is not established.
 
-def _inferred_javascript_job(fixtures, k8s_bullet, _db):
-    """TypeScript implies JavaScript, so this is real assigned work — and the bullet still
-    never says the person wrote JavaScript."""
+def _learned_redux_job(monkeypatch, fixtures, k8s_bullet, _db):
+    """A learned edge says React implies Redux, so this is real assigned work — and the bullet
+    still never says the person used Redux. Learned on purpose: an inference through the
+    hand-written table (React → JavaScript) counts as established and needs no question."""
+    from services import skill_graph
+
+    real = skill_graph._learned
+    monkeypatch.setattr(
+        skill_graph, "_learned",
+        lambda direction, skill: (["redux"] if direction == "implies" and skill == "react"
+                                  else real(direction, skill)),
+    )
     with _db.cursor() as cur:
         cur.execute(
             "UPDATE resume_bullets SET text = %s WHERE id = %s",
@@ -2053,8 +2067,8 @@ def _inferred_javascript_job(fixtures, k8s_bullet, _db):
         )
         cur.execute(
             """
-            UPDATE jobs SET skills = '["javascript"]'::jsonb,
-                requirements = '[{"skill":"javascript","importance":"required","type":"skill"}]'::jsonb,
+            UPDATE jobs SET skills = '["redux"]'::jsonb,
+                requirements = '[{"skill":"redux","importance":"required","type":"skill"}]'::jsonb,
                 match_detail = NULL
             WHERE id = %s
             """,
@@ -2068,15 +2082,15 @@ def test_a_question_cannot_assume_use_that_nothing_establishes(
 ):
     """An intent label is not enough on its own: the backend checks it, and refuses impact and
     implementation until something says the technology was used here."""
-    _inferred_javascript_job(fixtures, k8s_bullet, _db)
+    _learned_redux_job(monkeypatch, fixtures, k8s_bullet, _db)
     script(
         monkeypatch,
-        response([call("search_resume", {"query": "javascript"}, "c1")]),
+        response([call("search_resume", {"query": "redux"}, "c1")]),
         response([call("request_detail", {
-            "requirement": "javascript",
+            "requirement": "redux",
             "bullet_id": k8s_bullet,
             "intent": "impact",
-            "question": "How did JavaScript improve this project?",
+            "question": "How did Redux improve this project?",
         }, "c2")]),
         response(content="Understood."),
     )
@@ -2102,15 +2116,15 @@ def test_the_server_writes_the_establish_use_question(
 ):
     """A model can label "How did X improve this project?" as establish_use and walk past the
     intent check, so for that intent its wording is discarded and ours is stored."""
-    _inferred_javascript_job(fixtures, k8s_bullet, _db)
+    _learned_redux_job(monkeypatch, fixtures, k8s_bullet, _db)
     script(
         monkeypatch,
-        response([call("search_resume", {"query": "javascript"}, "c1")]),
+        response([call("search_resume", {"query": "redux"}, "c1")]),
         response([call("request_detail", {
-            "requirement": "javascript",
+            "requirement": "redux",
             "bullet_id": k8s_bullet,
             "intent": "establish_use",
-            "question": "How did JavaScript improve this project?",
+            "question": "How did Redux improve this project?",
         }, "c2")]),
         response(content="Asked."),
     )
@@ -2125,7 +2139,7 @@ def test_the_server_writes_the_establish_use_question(
         question, intent = cur.fetchone()
 
     assert intent == "establish_use"
-    assert question == "Did you use javascript in this project? If so, what did you use it for?"
+    assert question == "Did you use redux in this project? If so, what did you use it for?"
     assert "improve" not in question
 
 
@@ -2164,8 +2178,8 @@ def test_a_denial_does_not_become_evidence(fixtures, k8s_bullet, _db):
 
     links = {k8s_bullet: None}
     with get_cursor() as cur:
-        denied, _ = _claim_evidence(cur, fixtures["user_id"], run_id, links, "redis")
-        affirmed, _ = _claim_evidence(cur, fixtures["user_id"], run_id, links, "kafka")
+        denied, *_ = _claim_evidence(cur, fixtures["user_id"], run_id, links, "redis")
+        affirmed, *_ = _claim_evidence(cur, fixtures["user_id"], run_id, links, "kafka")
 
     # a "no" contributes nothing at all
     assert not any("redis" in text.lower() for text in denied)
@@ -2178,12 +2192,12 @@ def test_a_denial_does_not_become_evidence(fixtures, k8s_bullet, _db):
 def test_saying_no_finishes_the_candidate(monkeypatch, fixtures, k8s_bullet, _db):
     """"No, I didn't use this here" is an answer, not a skipped question. Without closing the
     candidate the resumed run rebuilds the plan, finds it open, and asks again."""
-    _inferred_javascript_job(fixtures, k8s_bullet, _db)
+    _learned_redux_job(monkeypatch, fixtures, k8s_bullet, _db)
     script(
         monkeypatch,
-        response([call("search_resume", {"query": "javascript"}, "c1")]),
+        response([call("search_resume", {"query": "redux"}, "c1")]),
         response([call("request_detail", {
-            "requirement": "javascript",
+            "requirement": "redux",
             "bullet_id": k8s_bullet,
             "intent": "establish_use",
             "question": "ignored — the server writes this one",
@@ -2209,4 +2223,4 @@ def test_saying_no_finishes_the_candidate(monkeypatch, fixtures, k8s_bullet, _db
         states = {item["normalized"]: item["status"]
                   for item in candidates_state.load(cur, paused["run_id"])}
 
-    assert states.get("javascript") == "skipped"
+    assert states.get("redux") == "skipped"
