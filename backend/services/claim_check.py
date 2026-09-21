@@ -169,18 +169,113 @@ def bullet_is_already_strong(text):
 
 
 def bullet_quality_gaps(text):
-    """Small, explainable reasons a bullet is eligible for automatic improvement."""
+    """Small, explainable reasons a bullet is eligible for automatic improvement.
+
+    Every gap here has to be repairable. A defect whose only fix another check refuses is a
+    trap: the planner sends the bullet over as weak, the model tries the one repair available,
+    and gets refused for it. That is what happened to "Contributing to a work-in-progress ROS 2
+    stack" — its only stated defect was the opening verb, and every verb that would have fixed
+    it is a word `ownership_inflation` forbids. `test_every_gap_has_a_legal_repair` pins it.
+    """
     words = _words(text)
     gaps = []
     if not words:
         return ["the bullet is empty"]
-    if not opens_with_action(words):
+    # Shared credit is an honest opening, not a weak one. It reads as weak against the action
+    # list, but the only way to satisfy that list is to claim more of the work.
+    if not opens_with_action(words) and words[0] not in SHARED_CREDIT:
         gaps.append("it does not open with a concrete action verb")
     if len(words) < MIN_STRONG_BULLET_WORDS:
         gaps.append("it gives very little context or outcome detail")
     if not named_skills(text) and not numeric_claims(text):
         gaps.append("it names no concrete technology or measurable result")
     return gaps
+
+
+# What a skeptical reader challenges first, and the question that resolves it. Four, not the
+# nine a reviewer can name, because the model has to *choose* one — and a list long enough to
+# have near-duplicates in it gets picked from arbitrarily.
+#
+# Order matters: this returns the first doubt that applies, so the cheapest thing to fix that
+# a reader would raise soonest comes first.
+RECRUITER_DOUBTS = (
+    (
+        "ownership",
+        "the bullet places you inside a larger effort without saying which part was yours",
+        "ask which piece of it they personally built, changed, or owned",
+    ),
+    (
+        "mechanism",
+        "the bullet names the area but not the thing you actually worked on",
+        "ask what specific component, service, query or algorithm they implemented, "
+        "modified, debugged or tested, and what data or output it involved",
+    ),
+    (
+        "impact",
+        "the bullet says what was done but not what it changed",
+        "ask what got faster, cheaper, more reliable or newly possible because of it",
+    ),
+    (
+        "scale",
+        "the bullet gives no sense of size",
+        "ask how much it handled — users, records, requests, services, or how often",
+    ),
+)
+
+# Verbs that describe touching a thing, as opposed to being near one.
+_HANDS_ON = STRONG_ACTION_VERBS | STRONG_ACTION_GERUNDS | {
+    "wrote", "writing", "debugged", "debugging", "tested", "testing", "profiled",
+    "profiling", "refactored", "refactoring", "instrumented", "benchmarked",
+}
+# Words that say something changed as a result.
+_OUTCOME = re.compile(
+    r"\b(cut|cutting|reduced|reducing|improved|improving|increased|increasing|eliminated|"
+    r"saved|saving|so that|enabling|unblocked|from .* to )\b",
+    re.IGNORECASE,
+)
+
+
+# A number a reader would treat as a measurement. `numeric_claims` deliberately accepts
+# version numbers — "ROS 2", "Vue 3" — because a rewrite must not drop them. For "does this
+# bullet say how big it was", those are noise: "psycopg2" is not a quantity.
+_QUANTITY = re.compile(
+    r"(?<![A-Za-z0-9-])\d[\d,.]*\s*%?(?![A-Za-z0-9])|"
+    r"\b(one|two|three|four|five|six|seven|eight|nine|ten|dozens?|hundreds?|thousands?|millions?)\b",
+    re.IGNORECASE,
+)
+
+
+def _has_quantity(text):
+    return bool(_QUANTITY.search(text or ""))
+
+
+def recruiter_doubt(text):
+    """The first thing a skeptical engineer would challenge about this bullet, or ``None``.
+
+    The planner used to describe a bullet by what it structurally lacked — "no measurable
+    result or concrete scale" — and a model told that asks for a measurement. That produced
+    questions like "what technologies did you apply?", whose honest answer restates the
+    bullet. Naming the *doubt* instead changes the question, because the model is answering a
+    reader rather than filling a field.
+
+    Returns ``(name, doubt, ask_for)`` so the caller can put the doubt in the brief and the
+    instruction in the question.
+    """
+    words = _words(text)
+    if not words:
+        return None
+    lowered = (text or "").lower()
+
+    hands_on = bool(set(words) & _HANDS_ON)
+    if set(words) & SHARED_CREDIT and not hands_on:
+        return RECRUITER_DOUBTS[0]
+    if not hands_on:
+        return RECRUITER_DOUBTS[1]
+    if not _OUTCOME.search(lowered) and not _has_quantity(text):
+        return RECRUITER_DOUBTS[2]
+    if not _has_quantity(text):
+        return RECRUITER_DOUBTS[3]
+    return None
 
 
 # Words that place the writer inside a larger effort rather than behind the whole of it.
@@ -260,6 +355,66 @@ def tense_regression(original_text, proposed_text, entry_is_ongoing):
     )
 
 
+# Nouns that sound like engineering and name nothing. Each is fine when the sentence says
+# what it refers to — "Built a CI/CD pipeline", "Designed a data pipeline consuming Kafka
+# events" — and empty when it does not. The word is never the problem; the missing referent is.
+ABSTRACT_NOUNS = {
+    "architecture", "component", "components", "ecosystem", "framework", "functionality",
+    "infrastructure", "integration", "lifecycle", "pipeline", "pipelines", "process",
+    "processes", "solution", "solutions", "system", "systems", "workflow",
+}
+
+# Splits a sentence into the spans a reader takes as one idea, so an abstract noun is judged
+# against the words around it rather than against the whole bullet.
+_CLAUSE = re.compile(r"[,;:]| and | with | within | into | across | through ")
+
+
+def _concrete_terms(clause, opens_sentence=False):
+    """Things in this clause a reader could look up: a known technology, a number, or a
+    capitalised name.
+
+    Only the sentence's own first word is skipped. Skipping the first word of *every* clause
+    lost "Euclidean clustering in the perception pipeline", where the proper noun is exactly
+    what makes the phrase concrete.
+    """
+    if named_skills(clause) or numeric_claims(clause):
+        return True
+    tokens = clause.split()
+    if opens_sentence:
+        tokens = tokens[1:]
+    return any(token[:1].isupper() for token in tokens)
+
+
+def abstraction_padding(original_text, proposed_text):
+    """A rewrite that adds professional-sounding nouns referring to nothing, or ``None``.
+
+    This is the hole the reported FSAE rewrite went through. `surfacing` exempts a rewrite
+    from the phrasing check so a confirmed skill can enter the bullet — but the exemption only
+    asks whether the skill's *name* appears, so "integrating perception components within the
+    robotics pipeline" contained the word "robotics" and licensed itself. Running this before
+    that exemption means a confirmed skill buys the skill, not the padding around it.
+    """
+    original = (original_text or "").lower()
+    empty = []
+    for position, clause in enumerate(_CLAUSE.split(proposed_text or "")):
+        clause = clause.strip()
+        if not clause:
+            continue
+        added = {
+            word for word in _words(clause)
+            if word in ABSTRACT_NOUNS and word not in original
+        }
+        if added and not _concrete_terms(clause, opens_sentence=position == 0):
+            empty.append(sorted(added)[0])
+    if not empty:
+        return None
+    return (
+        f"\u201c{empty[0]}\u201d is added without saying what it refers to. Name the actual "
+        "component, service or data, or leave the phrase out — a rewrite that trades a "
+        "specific noun for a general one reads as filler"
+    )
+
+
 def rewrite_quality_issue(original_text, proposed_text, surfacing=None, entry_is_ongoing=False):
     """Explain why a grounded rewrite still adds no useful value, or return ``None``.
 
@@ -286,6 +441,10 @@ def rewrite_quality_issue(original_text, proposed_text, surfacing=None, entry_is
     regressed = tense_regression(original_text, proposed_text, entry_is_ongoing)
     if regressed:
         return regressed
+
+    padded = abstraction_padding(original_text, proposed_text)
+    if padded:
+        return padded
 
     if len(proposed_words) < len(original_words) * 0.8:
         return (

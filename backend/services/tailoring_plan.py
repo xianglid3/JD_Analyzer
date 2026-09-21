@@ -4,7 +4,12 @@ The fit engine owns capability and gaps. The model is only invited to rewrite re
 that already have citable evidence; it never decides whether a requirement is missing.
 """
 
-from services.claim_check import bullet_is_already_strong, bullet_quality_gaps, numeric_claims
+from services.claim_check import (
+    bullet_is_already_strong,
+    bullet_quality_gaps,
+    numeric_claims,
+    recruiter_doubt,
+)
 from services.match import normalize_skill
 from services.skill_evidence import EXPLICIT, INFERRED, NONE, PARTIAL
 from services.skill_graph import rewrite_implied_by
@@ -21,32 +26,54 @@ def _has_weak_citable_evidence(item):
     )
 
 
-def _rewrite_targets(item):
+def _weakness(text, structural):
+    """What to tell the model is wrong with a bullet.
+
+    Structural facts ("opens with no action verb", "names no technology") describe the
+    sentence; a model handed those asks a question about the sentence — "what technologies did
+    you apply?" — whose honest answer restates the bullet. `recruiter_doubt` describes what a
+    reader would not believe, which is a different question with a more useful answer.
+
+    Both go in: the structural note still says what a rewrite may fix without asking anybody.
+    """
+    doubt = recruiter_doubt(text)
+    parts = list(structural)
+    if doubt:
+        _name, reads_as, ask_for = doubt
+        parts.append(f"{reads_as} — if you need to ask, {ask_for}")
+    return "; ".join(part for part in parts if part) or "it could be clearer"
+
+
+def _rewrite_targets(item, already_claimed=frozenset()):
     """Target text without ids: useful direction without bypassing citation search."""
     targets = []
     for evidence in item.get("evidence", []):
         text = evidence.get("text") or ""
         if not evidence.get("bullet_id") or bullet_is_already_strong(text):
             continue
+        if text in already_claimed:
+            continue
         targets.append({
             "text": text,
-            "weakness": "; ".join(bullet_quality_gaps(text)),
+            "weakness": _weakness(text, bullet_quality_gaps(text)),
         })
     return targets
 
 
-def _confirmation_targets(item):
+def _confirmation_targets(item, already_claimed=frozenset()):
     """Editable evidence the user can confirm without the model asserting the answer."""
     return [
         {
             "text": evidence.get("text") or "",
-            "weakness": (
-                f"related evidence does not prove {item.get('requirement') or 'this requirement'}; "
-                "ask the user to confirm what they actually used"
+            "weakness": _weakness(
+                evidence.get("text") or "",
+                [f"related evidence does not prove "
+                 f"{item.get('requirement') or 'this requirement'}"],
             ),
         }
         for evidence in item.get("evidence", [])
         if evidence.get("bullet_id") and evidence.get("text")
+        and (evidence.get("text") or "") not in already_claimed
     ]
 
 
@@ -66,7 +93,7 @@ def _strengthening_targets(item, already_selected):
         ):
             return [{
                 "text": text,
-                "weakness": "it is relevant but has no measurable result or concrete scale",
+                "weakness": _weakness(text, []),
             }]
     return []
 
@@ -144,7 +171,12 @@ def build_tailoring_plan(assessment, approved=frozenset(), bullets_by_entry=None
     """
     plan = []
     bullets_by_entry = bullets_by_entry or {}
-    selected_detail_targets = set()
+    # One bullet, one candidate. A posting lists "java or golang or python or c++…" and
+    # "c# or c++ or java" as separate requirements, and the same C++ bullet is the evidence
+    # for both — so the agent was sent to fight the same rewrite twice, spending a step each
+    # time on work it had already decided. Cross-requirement de-duplication existed for
+    # strengthening targets only; the same argument applies to every kind of target.
+    claimed_targets = set()
     # Asking for every missing metric would turn one run into a questionnaire. One focused
     # strengthening opportunity is enough; partial requirements can still ask for confirmation.
     strengthening_slots = 1
@@ -165,7 +197,7 @@ def build_tailoring_plan(assessment, approved=frozenset(), bullets_by_entry=None
         elif state == PARTIAL and citable:
             action = "confirm"
             reason = "Related evidence exists; ask the user before stating this specific requirement."
-            targets = _confirmation_targets(item)
+            targets = _confirmation_targets(item, claimed_targets)
         elif state == PARTIAL:
             action = "confirm"
             reason = "Related evidence exists, but it is not attached to an editable resume bullet."
@@ -184,14 +216,14 @@ def build_tailoring_plan(assessment, approved=frozenset(), bullets_by_entry=None
                 "Specific evidence earns match credit, but the wording is not authorized yet; "
                 "ask the user to confirm what they actually used before drafting a change."
             )
-            targets = _confirmation_targets(item)
+            targets = _confirmation_targets(item, claimed_targets)
         elif state == EXPLICIT and citable and _has_weak_citable_evidence(item):
             action = "rewrite"
             reason = "The requirement is explicit, but at least one supporting bullet could be clearer."
-            targets = _rewrite_targets(item)
+            targets = _rewrite_targets(item, claimed_targets)
         elif state == EXPLICIT and citable:
             detail_targets = (
-                _strengthening_targets(item, selected_detail_targets)
+                _strengthening_targets(item, claimed_targets)
                 if strengthening_slots > 0 and item.get("importance", "required") == "required"
                 else []
             )
@@ -199,7 +231,6 @@ def build_tailoring_plan(assessment, approved=frozenset(), bullets_by_entry=None
                 action = "strengthen"
                 reason = "The wording is already strong; ask for one real impact or scale detail."
                 targets = detail_targets
-                selected_detail_targets.add(detail_targets[0]["text"])
                 strengthening_slots -= 1
             else:
                 action = "keep"
@@ -211,6 +242,9 @@ def build_tailoring_plan(assessment, approved=frozenset(), bullets_by_entry=None
             # the run looked empty for no stated reason.
             action = "only_in_skills"
             reason = _outside_bullets_reason(item)
+
+        # whatever this candidate took, no later one may take again
+        claimed_targets.update(target["text"] for target in targets if target.get("text"))
 
         plan.append({
             "position": position,

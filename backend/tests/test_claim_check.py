@@ -4,8 +4,11 @@
 """
 
 from services.claim_check import (
+    abstraction_padding,
+    bullet_quality_gaps,
     numeric_claims,
     ownership_inflation,
+    recruiter_doubt,
     rewrite_quality_issue,
     tense_regression,
 )
@@ -83,17 +86,18 @@ def test_ongoing_work_may_not_be_rewritten_as_finished():
 
 
 def test_a_confirmed_skill_does_not_license_the_tense_change():
-    """`surfacing` exempts the phrasing check, and that exemption is what let the reported
-    bullet through: the padding clause "within the robotics pipeline" contained the word
-    "robotics" and so supplied its own exemption. The factual checks run either way."""
-    proposed = ("Contributed C++ software to a ROS 2 autonomous-driving stack, focusing on "
-                "cone perception and integrating perception components within the robotics "
-                "pipeline.")
+    """`surfacing` exempts the phrasing check so a confirmed skill can enter the bullet. It
+    does not exempt the factual ones. This proposal is clean apart from the tense, so the
+    phrasing check would have let it pass on the exemption alone."""
+    proposed = ("Contributed cone-perception software in C++ to Pitt's ROS 2 "
+                "autonomous-driving stack for the FSAE EV driverless program, applying "
+                "robotics throughout.")
 
     assert rewrite_quality_issue(FSAE, proposed, surfacing="robotics") is None
-    assert rewrite_quality_issue(
+    issue = rewrite_quality_issue(
         FSAE, proposed, surfacing="robotics", entry_is_ongoing=True,
-    ) is not None
+    )
+    assert issue is not None and "still going on" in issue
 
 
 def test_a_finished_project_may_be_put_in_the_past():
@@ -140,3 +144,75 @@ def test_an_ongoing_bullet_that_already_opens_strong_is_still_refused_a_synonym_
         "Developing internal dashboards in React for the support team to track ticket counts",
         entry_is_ongoing=True,
     )
+
+
+# ── the planner and the checker must agree ───────────────────────────────────
+
+def test_every_gap_has_a_legal_repair():
+    """The trap behind the FSAE run: `bullet_quality_gaps` called the bullet weak for opening
+    with "Contributing", and every verb that would have satisfied it is a word
+    `ownership_inflation` refuses. A defect whose only repair is banned is worse than no
+    defect — the model is sent to fix something and punished for trying."""
+    shared_credit_bullet = FSAE
+
+    gaps = bullet_quality_gaps(shared_credit_bullet)
+
+    assert "it does not open with a concrete action verb" not in gaps
+
+
+def test_a_gerund_opening_is_not_a_defect():
+    """`bullet_is_already_strong` has always accepted gerunds through `opens_with_action`.
+    Reading the two functions differently meant one called a bullet strong while the other
+    called the same opening weak."""
+    assert "it does not open with a concrete action verb" not in bullet_quality_gaps(
+        "Building a Kubernetes deployment pipeline across three regions."
+    )
+
+
+# ── abstraction that refers to nothing ───────────────────────────────────────
+
+def test_padding_cannot_license_itself_through_a_confirmed_skill():
+    """The actual hole the reported bullet went through. `surfacing` skips the phrasing check
+    so a confirmed skill can enter the bullet, and it only asks whether the skill's *name*
+    appears — so "within the robotics pipeline" contained "robotics" and exempted itself."""
+    proposed = ("Contributed C++ software to a ROS 2 autonomous-driving stack, focusing on "
+                "cone perception and integrating perception components within the robotics "
+                "pipeline.")
+
+    assert abstraction_padding(FSAE, proposed) is not None
+    assert rewrite_quality_issue(FSAE, proposed, surfacing="robotics") is not None
+
+
+def test_an_abstract_noun_with_a_referent_is_fine():
+    """The word is never the problem. Each of these says what it is talking about."""
+    for original, proposed in [
+        ("Ran deploys by hand.", "Built a CI/CD pipeline that deploys 12 services on merge."),
+        ("Processed events nightly.", "Designed a data pipeline consuming Kafka events."),
+        ("Worked on perception.",
+         "Implemented VLP-16 point-cloud filtering and Euclidean clustering in the perception pipeline."),
+    ]:
+        assert abstraction_padding(original, proposed) is None, proposed
+
+
+# ── what a reader would challenge ────────────────────────────────────────────
+
+def test_the_doubt_matches_what_is_actually_missing():
+    cases = [
+        (FSAE, "ownership"),
+        ("Worked on the frontend.", "mechanism"),
+        ("Implemented VLP-16 point-cloud filtering for cone perception.", "impact"),
+        ("Built a Kubernetes deployment pipeline across three regions, cutting deploy time 40%.",
+         None),
+    ]
+    for text, expected in cases:
+        doubt = recruiter_doubt(text)
+        assert (doubt[0] if doubt else None) == expected, text
+
+
+def test_a_version_number_is_not_a_quantity():
+    """`numeric_claims` accepts "ROS 2" and "psycopg2" on purpose — a rewrite must not drop
+    them. For "does this bullet say how big it was" they are noise, and treating them as
+    measurements made a bullet with no scale at all look measured."""
+    assert recruiter_doubt(
+        "Engineered the backend with raw psycopg2 and pooled PostgreSQL connections."
+    )[0] == "impact"

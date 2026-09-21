@@ -469,7 +469,9 @@ def test_strong_unmeasured_evidence_still_starts_agent_for_one_detail(
 
     assert result["steps_used"] == 1
     assert "[strengthen]" in sent[0][1]["content"]
-    assert "measurable result or concrete scale" in sent[0][1]["content"]
+    # the brief names what a reader would not believe, not which field is empty: a model told
+    # "no measurable result" asks for a number, and gets the bullet back in words
+    assert "not what it changed" in sent[0][1]["content"]
 
 
 def test_prompt_states_the_positive_target_and_rejects_synonym_swaps():

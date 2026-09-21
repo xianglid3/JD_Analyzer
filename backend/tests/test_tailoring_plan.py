@@ -164,3 +164,19 @@ def test_a_plain_requirement_needs_no_separate_handle():
         requirement("Kubernetes", "EXPLICIT"),
     ]})
     assert plan[0]["agent_label"] == plan[0]["requirement"]
+
+
+def test_one_bullet_is_not_fought_over_by_two_candidates():
+    """A posting lists "java or golang or python or c++…" and "c# or c++ or java" as separate
+    requirements, and the same C++ bullet is the evidence for both. The agent was sent at it
+    twice, spending a step each time re-deciding work it had already done."""
+    shared = "Contributing to a ROS 2 stack in C++."
+    assessment = {"requirements": [
+        requirement("java or golang or python or c++", "EXPLICIT", evidence_text=shared),
+        requirement("c# or c++ or java", "EXPLICIT", evidence_text=shared),
+    ]}
+
+    plan = build_tailoring_plan(assessment)
+    with_targets = [item for item in plan if item["targets"]]
+
+    assert len(with_targets) == 1, "the same bullet was offered to two candidates"

@@ -94,8 +94,10 @@ You receive only approved tailoring candidates. Work ONE candidate at a time:
 3. Copy the exact bullet_id UUID returned by search_resume. Candidate positions such as 1, 2, or 3
    are never bullet ids, and target excerpts do not contain ids.
 4. For [confirm], after searching, call request_detail to verify what the user personally did with
-   the requirement. Ask for an answer that names the technology or practice and the work it applied to;
-   a bare yes/no cannot support a resume claim.
+   the requirement. Ask what they implemented, modified, debugged, tested or operated — a specific
+   component, query, service or algorithm, and the data or result involved. "Which technologies did
+   you use?" is a wasted question: the bullet already answers it, so the reply restates the bullet.
+   A bare yes/no cannot support a resume claim either.
 5. For [strengthen], after searching, call request_detail for one useful impact or scale fact, unless search reveals
    two genuinely repetitive bullets from the same entry that merge_bullets can improve.
 6. For [rewrite], after searching, use propose_edit for one grounded structural improvement, merge_bullets for two
@@ -207,7 +209,13 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "request_detail",
-            "description": "Ask the user for one missing metric, scale, outcome, or scope detail instead of inventing it.",
+            "description": (
+                "Ask the user one question whose answer would make the bullet more convincing "
+                "to a skeptical engineer. Ask what they personally implemented, modified, "
+                "debugged, tested or operated — the specific component, query, service or "
+                "algorithm, and what data or result it involved. Do not ask which technologies "
+                "they used: the bullet already says that, so the answer only restates it."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -216,7 +224,14 @@ TOOLS = [
                         "type": "string", "pattern": UUID_PATTERN,
                         "description": "The exact bullet_id UUID returned by search_resume; never 1, 2, or 3.",
                     },
-                    "question": {"type": "string", "description": "One concrete question the user can answer briefly."},
+                    "question": {
+                        "type": "string",
+                        "description": (
+                            "One concrete question the user can answer briefly. Name the thing "
+                            "you are asking about; a question they could answer with a "
+                            "paraphrase of the bullet is a wasted question."
+                        ),
+                    },
                 },
                 "required": ["requirement", "bullet_id", "question"],
             },
