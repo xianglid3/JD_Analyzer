@@ -4,6 +4,7 @@ import pytest
 
 from services.skill_evidence import (
     EXPLICIT,
+    STATE_WEIGHTS,
     INFERRED,
     NONE,
     PARTIAL,
@@ -161,11 +162,15 @@ def test_plain_strings_and_objects_both_work():
            evaluate_requirements([{"skill": "React"}], RESUME)["score"]
 
 
-def test_partial_is_not_counted_as_matched():
-    """PARTIAL is a question for the user, not a claim the agent may make."""
+def test_related_experience_is_not_counted_as_matched_and_scores_nothing():
+    """PARTIAL is something to tell the user about, not capability.
+
+    It used to carry 0.4, so a resume showing "cloud" scored 40% against an AWS requirement it
+    never demonstrated. `matched` always excluded it; the score did not, and the number is
+    what people read."""
     result = evaluate_requirements(["AWS"], RESUME)
     assert result["matched"] == [] and result["missing"] == []
-    assert result["fit_score"] == 40.0
+    assert result["fit_score"] == 0.0
 
 
 def test_no_requirements_returns_nothing():
@@ -420,3 +425,91 @@ def test_a_satisfied_group_can_still_be_hidden():
     assert result["requirements"][0]["state"] == INFERRED
     assert result["hidden"] == ["JavaScript or Ruby"]
     assert result["visibility_score"] == 0.0
+
+
+# ── the run of 2026-09-21: three requirements matched through nothing ────────
+# Kafka via "messaging", Redis via "database", AWS via "cloud" — and the agent then asked how
+# Redis had improved a project whose bullet names PostgreSQL. These are the exact bullets.
+
+MESSAGING = bullet(
+    "Built an end-to-end encrypted messaging platform with React and Flask, keeping "
+    "cryptographic operations in the browser so the backend stores only ciphertext.",
+    "b-msg",
+)
+DEPLOY = bullet(
+    "Deployed separate Dockerized web/worker services on Railway with GitHub Actions CI, "
+    "Sentry, and 772 automated tests (668 backend / 104 frontend), including backend tests "
+    "against a throwaway PostgreSQL database built from schema.",
+    "b-deploy",
+)
+LIDAR = bullet(
+    "Working on Velodyne VLP-16 point-cloud filtering, ground removal, Euclidean clustering, "
+    "cone validation/centroid estimation, and LiDAR-to-camera projection with camera-based "
+    "cone-color classification.",
+    "b-lidar",
+)
+BAD_RUN = [MESSAGING, DEPLOY, LIDAR]
+
+
+def test_a_postgresql_bullet_is_not_evidence_of_redis():
+    """Related experience: the resume shows database work, the posting wants Redis. Still
+    reported, so the user can act on it — but worth zero, and never a question."""
+    result = evaluate_requirement("Redis", BAD_RUN)
+
+    assert result["state"] == PARTIAL
+    assert result["inferred_from"] == ["database"]
+    assert STATE_WEIGHTS[result["state"]] == 0.0
+
+
+def test_a_lidar_bullet_is_not_evidence_of_aws():
+    """"point-cloud" is not cloud computing. This one is not even related experience: once the
+    compound stops leaking its head noun there is no relation left to report."""
+    result = evaluate_requirement("AWS", BAD_RUN)
+
+    assert result["state"] == NONE
+    assert result["evidence"] == []
+
+
+def test_an_encrypted_chat_bullet_is_not_evidence_of_kafka():
+    """"messaging" means a chat app here and a message broker in the posting. Whatever the
+    learned relation says, the reverse direction cannot make this a match worth anything."""
+    result = evaluate_requirement("Kafka", BAD_RUN)
+
+    assert result["state"] in (NONE, PARTIAL)
+    assert STATE_WEIGHTS[result["state"]] == 0.0
+
+
+def test_the_whole_bad_run_scores_zero_against_those_three():
+    result = evaluate_requirements(["Kafka", "Redis", "AWS"], BAD_RUN)
+
+    assert result["matched"] == []
+    assert result["fit_score"] == 0.0
+
+
+# ── the fixes must not become a different bug ────────────────────────────────
+
+def test_valid_matches_still_work():
+    """Every one of these was working before the compound and PARTIAL changes, and each is a
+    way the fix could have gone too far."""
+    # says Tailwind and never says CSS, or this would be EXPLICIT and prove nothing
+    tailwind = bullet("Built responsive interfaces with Tailwind and shadcn", "b-tw")
+    assert evaluate_requirement("CSS", [tailwind])["state"] == INFERRED
+
+    redis = bullet("Cached sessions in Redis to cut login latency", "b-redis")
+    assert evaluate_requirement("Redis", [redis])["state"] == EXPLICIT
+
+    java = bullet("Server-side rendering with a Java-based service", "b-java")
+    assert evaluate_requirement("Java", [java])["state"] == EXPLICIT
+
+    ml = bullet("Built a machine-learning pipeline for ranking", "b-ml")
+    assert evaluate_requirement("machine learning", [ml])["state"] == EXPLICIT
+
+
+def test_a_protected_compound_suppresses_only_its_own_occurrence():
+    """The case a word blocklist would fail. "point clouds" must not match cloud; the "cloud
+    infrastructure" later in the same sentence must."""
+    both = bullet("Processed point clouds and deployed to cloud infrastructure", "b-both")
+    assert evaluate_requirement("cloud", [both])["state"] == EXPLICIT
+
+    only_points = bullet("Processed point clouds from the LiDAR rig", "b-points")
+    assert evaluate_requirement("cloud", [only_points])["state"] == NONE

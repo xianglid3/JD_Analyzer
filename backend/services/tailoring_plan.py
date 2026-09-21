@@ -153,6 +153,17 @@ def _show_in_bullet_targets(item, bullets_by_entry):
     return targets[:3]
 
 
+def _related_experience_reason(item):
+    """Why a requirement with only general evidence is a gap, said without implying a match."""
+    requirement = item.get("requirement") or "this requirement"
+    general = ", ".join(item.get("inferred_from") or []) or "related work"
+    return (
+        f"Your resume shows {general}, but nothing names {requirement} itself. Related "
+        "experience is not evidence of the tool — if you did use it somewhere, say where and "
+        "it becomes something a bullet can show."
+    )
+
+
 def _outside_bullets_reason(item):
     """Where the match came from, when it did not come from a bullet.
 
@@ -200,13 +211,19 @@ def build_tailoring_plan(assessment, approved=frozenset(), bullets_by_entry=None
             action = "show_in_bullet"
             reason = "You confirmed where you used this; a bullet there can now say so."
             targets = affirmed_targets
-        elif state == PARTIAL and citable:
-            action = "confirm"
-            reason = "Related evidence exists; ask the user before stating this specific requirement."
-            targets = _confirmation_targets(item, claimed_targets)
         elif state == PARTIAL:
-            action = "confirm"
-            reason = "Related evidence exists, but it is not attached to an editable resume bullet."
+            # Related experience, not a partial match. The resume shows the general skill —
+            # "database", "cloud" — where the posting wants a specific tool, which is not
+            # evidence of the tool and must not become a question about it. A live run asked
+            # "How did Redis improve this project?" about a bullet that names PostgreSQL and
+            # nothing else; the premise came from here.
+            #
+            # No targets, so `agent_candidates` drops it, and no evidence attached: citing the
+            # PostgreSQL bullet under a Redis heading is what made the run look broken. It
+            # lands in the gaps list instead, where "I used this — where?" lets the person who
+            # knows the answer volunteer it.
+            action = "gap"
+            reason = _related_experience_reason(item)
         elif state == INFERRED and citable and _can_surface_inference(item, approved):
             action = "surface_skill"
             reason = "A strict one-hop authorship rule allows this evidence to be stated more plainly."

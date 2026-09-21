@@ -587,6 +587,9 @@ function EditCard({ edit, onDecide, busy, pending, error }) {
 function DetailRequestCard({ request, onResolve, busy, error }) {
   const [answer, setAnswer] = useState('')
   const isThisQuestion = busy && request.pending
+  // "Did you use X here?" is a different question from "how big was it", and answering no is
+  // a real answer rather than a skipped one
+  const asksAboutUse = request.intent === 'establish_use' 
 
   return (
     <article className="surface-card p-5">
@@ -604,28 +607,64 @@ function DetailRequestCard({ request, onResolve, busy, error }) {
           maxLength={500}
           value={answer}
           onChange={(event) => setAnswer(event.target.value)}
-          placeholder="Example: Used by 12 staff members and reduced weekly reporting by 3 hours."
+          placeholder={asksAboutUse
+            ? 'Example: Yes — I used it for the session cache on the login path.'
+            : 'Example: Used by 12 staff members and reduced weekly reporting by 3 hours.'}
         />
       </label>
       <p className="mt-2 text-xs leading-5 text-muted">
         Give only facts you can stand behind. The app will never invent a number for you.
       </p>
-      <div className="mt-4 flex flex-wrap gap-2">
-        <button
-          className="primary-button"
-          disabled={busy || !answer.trim()}
-          onClick={() => onResolve(request.id, { action: 'answer', answer: answer.trim() })}
-        >
-          <ButtonLabel pending={isThisQuestion} pendingText="Continuing…">Use this detail</ButtonLabel>
-        </button>
-        <button
-          className="secondary-button"
-          disabled={busy}
-          onClick={() => onResolve(request.id, { action: 'dismiss' })}
-        >
-          Skip question
-        </button>
-      </div>
+      {asksAboutUse ? (
+        // A yes/no has to be recorded, not read out of the prose: "I didn't use Redis" names
+        // Redis, and a system that greps the answer cannot tell the two apart.
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button
+            className="primary-button"
+            disabled={busy || !answer.trim()}
+            onClick={() => onResolve(request.id, {
+              action: 'answer', answer: answer.trim(), used: true,
+            })}
+          >
+            <ButtonLabel pending={isThisQuestion} pendingText="Continuing…">
+              Yes — I used it
+            </ButtonLabel>
+          </button>
+          <button
+            className="secondary-button"
+            disabled={busy}
+            onClick={() => onResolve(request.id, {
+              action: 'answer', answer: answer.trim() || "I didn't use this here.", used: false,
+            })}
+          >
+            No, I didn&apos;t use this
+          </button>
+          <button
+            className="secondary-button"
+            disabled={busy}
+            onClick={() => onResolve(request.id, { action: 'dismiss' })}
+          >
+            Skip question
+          </button>
+        </div>
+      ) : (
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button
+            className="primary-button"
+            disabled={busy || !answer.trim()}
+            onClick={() => onResolve(request.id, { action: 'answer', answer: answer.trim() })}
+          >
+            <ButtonLabel pending={isThisQuestion} pendingText="Continuing…">Use this detail</ButtonLabel>
+          </button>
+          <button
+            className="secondary-button"
+            disabled={busy}
+            onClick={() => onResolve(request.id, { action: 'dismiss' })}
+          >
+            Skip question
+          </button>
+        </div>
+      )}
       {error && <InlineAlert className="mt-3">{error.message}</InlineAlert>}
     </article>
   )

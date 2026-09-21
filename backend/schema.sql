@@ -303,6 +303,17 @@ CREATE TABLE tailoring_detail_requests (
   requirement  text NOT NULL,
   question     text NOT NULL,
   answer       text,
+  -- What the question was for. `establish_use` asks whether the technology was used here at
+  -- all; the other two ask about work whose existence is already settled.
+  --
+  -- Nullable with no default, and that is the point: a row written before intents existed
+  -- must keep behaving as it did. Defaulting it to `establish_use` would put every historic
+  -- answer behind the outcome gate below and quietly strip its evidence.
+  intent       text CHECK (intent IS NULL OR intent IN ('establish_use', 'implementation', 'impact')),
+  -- The result of an `establish_use` answer, recorded rather than read out of the prose.
+  -- "I didn't use Redis" contains the word Redis, and used to make Redis a supported term.
+  -- NULL means the distinction was never captured, which is not the same as "yes".
+  outcome      text CHECK (outcome IS NULL OR outcome IN ('yes', 'no', 'unclear')),
   status       text NOT NULL DEFAULT 'pending'
                CHECK (status IN ('pending', 'answered', 'dismissed')),
   created_at   timestamptz NOT NULL DEFAULT now(),

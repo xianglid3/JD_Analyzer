@@ -4,7 +4,8 @@ Each requirement gets a state rather than a yes/no:
 
     EXPLICIT   named outright
     INFERRED   a named technology implies it (Tailwind → CSS)
-    PARTIAL    only the general skill shows up ("cloud" for an AWS requirement)
+    PARTIAL    only the general skill shows up ("cloud" for an AWS requirement). Related
+               experience, not a partial match — it scores nothing and is never editing work
     NONE       nothing
 
 Scores come from those states with fixed weights, so the number is reproducible and every
@@ -21,7 +22,12 @@ INFERRED = "INFERRED"
 PARTIAL = "PARTIAL"
 NONE = "NONE"
 
-STATE_WEIGHTS = {EXPLICIT: 1.0, INFERRED: 0.8, PARTIAL: 0.4, NONE: 0.0}
+# PARTIAL is 0.0, not a small number. It means "they show the general skill where the job
+# wants a specific one" — a LiDAR bullet for an AWS requirement, a PostgreSQL bullet for a
+# Redis one. That is worth telling the user about and worth nothing as capability, and the
+# 0.4 it used to carry quietly inflated every score it touched. The requirement stays in the
+# denominator: it is still a requirement they do not meet.
+STATE_WEIGHTS = {EXPLICIT: 1.0, INFERRED: 0.8, PARTIAL: 0.0, NONE: 0.0}
 
 # how much a requirement counts, from how the posting framed it
 IMPORTANCE_WEIGHTS = {"required": 3, "preferred": 2, "nice_to_have": 1}

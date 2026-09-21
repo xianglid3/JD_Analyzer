@@ -33,10 +33,12 @@ def test_every_requirement_gets_one_bounded_outcome():
     plan = build_tailoring_plan(assessment)
 
     assert [item["action"] for item in plan] == [
-        "rewrite", "surface_skill", "confirm", "confirm", "confirm", "gap", "only_in_skills",
+        # AWS-via-cloud is a gap now, not a confirmation: showing the general skill is not
+        # evidence of the specific tool, and asking about it presumes it was used
+        "rewrite", "surface_skill", "confirm", "confirm", "gap", "gap", "only_in_skills",
     ]
     assert len(plan) == len(assessment["requirements"])
-    assert [item["requirement"] for item in deterministic_gaps(plan)] == ["Terraform"]
+    assert [item["requirement"] for item in deterministic_gaps(plan)] == ["AWS", "Terraform"]
     assert [item["requirement"] for item in rewrite_candidates(plan)] == ["Kubernetes"]
     # matched, but by a keyword rather than by work — reported instead of silently kept
     assert [item["requirement"] for item in keyword_only(plan)] == ["Python"]
@@ -81,14 +83,21 @@ def test_strong_measured_bullet_needs_no_agent_work():
     assert agent_candidates(plan) == []
 
 
-def test_partial_citable_evidence_becomes_a_confirmation_candidate():
+def test_related_experience_becomes_a_gap_not_a_question():
+    """A live run asked "How did Redis improve this project?" about a bullet naming only
+    PostgreSQL. The premise came from here: general evidence became a `confirm` candidate,
+    and confirming presumes there is something to confirm.
+
+    It is a gap now, with no target attached — citing the PostgreSQL bullet under a Redis
+    heading is the other half of what made that run look broken."""
     plan = build_tailoring_plan({"requirements": [
         requirement("Redux", "PARTIAL", evidence_text="Built a React dashboard"),
     ]})
 
-    assert plan[0]["action"] == "confirm"
-    assert plan[0]["targets"][0]["text"] == "Built a React dashboard"
-    assert agent_candidates(plan) == [plan[0]]
+    assert plan[0]["action"] == "gap"
+    assert plan[0]["targets"] == []
+    assert agent_candidates(plan) == []
+    assert "nothing names Redux" in plan[0]["reason"]
 
 
 def test_inferred_evidence_without_write_permission_asks_for_confirmation():

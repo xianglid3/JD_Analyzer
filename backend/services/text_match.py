@@ -31,6 +31,43 @@ def _clean(raw):
     return raw.removesuffix("'s")
 
 
+# Phrases that mean something other than their head noun, so their pieces must not be read as
+# skills on their own. A LiDAR bullet says "point-cloud filtering" and used to match an AWS
+# requirement, because splitting the compound put "cloud" in `terms`.
+#
+# Deliberately a list of *compounds*, not of banned words: "cloud" is a real skill and still
+# matches wherever it stands on its own. Each entry claims only the occurrence it covers — a
+# bullet mentioning point clouds AND cloud infrastructure still matches cloud.
+COMPOUND_TERMS = frozenset({
+    "point cloud",
+    "end to end",
+    "real time",
+    "state of the art",
+})
+
+
+def _compound_spans(whole):
+    """Whole-token positions covered by a protected compound, in this text.
+
+    Handles both spellings in one pass: "point cloud" as two tokens, and "point-cloud" as one
+    hyphenated token whose pieces would otherwise leak.
+    """
+    claimed = set()
+    for compound in COMPOUND_TERMS:
+        wanted = compound.split()
+        span = len(wanted)
+        for i, token in enumerate(whole):
+            # the hyphenated spelling: one token that splits into exactly this phrase
+            if [p for p in (_clean(x) for x in SPLIT_INSIDE.split(token)) if p] == wanted:
+                claimed.add(i)
+            # the spaced spelling: consecutive tokens
+            if i + span <= len(whole) and [
+                normalize_skill(t) for t in whole[i:i + span]
+            ] == [normalize_skill(w) for w in wanted]:
+                claimed.update(range(i, i + span))
+    return claimed
+
+
 def index(text):
     """Two token sequences (compounds whole and split) plus a set for single words.
 
@@ -38,33 +75,46 @@ def index(text):
     longest-match can claim a phrase in one coordinate system. Without it, "object-oriented
     programming" claims the phrase in `whole` while "programming" is still free to match the
     same words in `split`.
+
+    `claimed` holds the positions covered by a `COMPOUND_TERMS` phrase. Those positions still
+    appear in `whole` and `split` — callers doing their own longest-match need to see them —
+    but they contribute nothing to `terms`, which is the set a single-word lookup reads.
     """
     if not text:
-        return {"whole": [], "split": [], "terms": set(), "origin": []}
+        return {"whole": [], "split": [], "terms": set(), "origin": [], "claimed": set()}
 
-    whole, split, origin, terms = [], [], [], set()
+    whole, split, origin = [], [], []
     for raw in SEPARATORS.split(text.lower().translate(CURLY)):
         token = _clean(raw)
         if not token:
             continue
 
         whole.append(token)
-        terms.add(token)
-        terms.add(normalize_skill(token))     # node.js also answers to node
-
         pieces = [_clean(piece) for piece in SPLIT_INSIDE.split(token)]
         pieces = [piece for piece in pieces if piece]
         if len(pieces) > 1:
             split.extend(pieces)              # machine-learning → machine, learning
             origin.extend([len(whole) - 1] * len(pieces))
-            for piece in pieces:
-                terms.add(piece)
-                terms.add(normalize_skill(piece))
         else:
             split.append(token)
             origin.append(len(whole) - 1)
 
-    return {"whole": whole, "split": split, "terms": terms, "origin": origin}
+    # built after tokenizing, because a compound is recognised across tokens
+    claimed = _compound_spans(whole)
+
+    terms = set()
+    for position, token in enumerate(whole):
+        if position in claimed:
+            continue
+        terms.add(token)
+        terms.add(normalize_skill(token))     # node.js also answers to node
+    for piece, source in zip(split, origin):
+        if source in claimed:
+            continue
+        terms.add(piece)
+        terms.add(normalize_skill(piece))
+
+    return {"whole": whole, "split": split, "terms": terms, "origin": origin, "claimed": claimed}
 
 
 def _wanted(term):
@@ -102,6 +152,12 @@ def covered_tokens(indexed, term):
         for i, piece in enumerate(pieces):
             if normalize_skill(piece) == normalize_skill(wanted[0]):
                 covered.add(origin[i])
+
+    # A protected compound owns its own words. "cloud" may not claim the positions that
+    # "point cloud" covers — but only those positions, so another "cloud" in the same text is
+    # untouched. The compound itself is exempt, or it could not match its own tokens.
+    if " ".join(wanted) not in COMPOUND_TERMS:
+        covered -= indexed.get("claimed", set())
 
     return covered
 

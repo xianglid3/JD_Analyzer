@@ -367,6 +367,11 @@ def resolve_tailoring_question(question_id):
     action = data.get("action", "answer")
     if action not in {"answer", "dismiss"}:
         return jsonify({"error": "action must be answer or dismiss"}), 400
+    # For a "did you use this here?" question the yes/no is recorded, not inferred from the
+    # prose — "I didn't use Redis" names Redis and would otherwise read as confirmation.
+    used = data.get("used")
+    if used is not None and not isinstance(used, bool):
+        return jsonify({"error": "used must be true or false"}), 400
     answer = data.get("answer")
     if action == "answer":
         if not isinstance(answer, str) or not answer.strip():
@@ -381,6 +386,7 @@ def resolve_tailoring_question(question_id):
         get_cursor, g.user_id, question_id,
         answer=answer if action == "answer" else None,
         dismiss=action == "dismiss",
+        used=used,
     )
     if outcome is None:
         return jsonify({"error": "question not found"}), 404

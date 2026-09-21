@@ -20,6 +20,7 @@ from psycopg2.errors import UniqueViolation
 from services.claim_check import (
     compression_only,
     merge_quality_issue,
+    named_skills,
     rewrite_quality_issue,
     unsupported_claims,
 )
@@ -98,11 +99,14 @@ You receive only approved tailoring candidates. Work ONE candidate at a time:
    in the same entry that merge_bullets could combine, or evidence for a [confirm] candidate.
 3. Copy bullet ids exactly as given, whether from the brief or from a search_resume result.
    Candidate positions such as 1, 2, or 3 are never bullet ids.
-4. For [confirm], after searching, call request_detail to verify what the user personally did with
-   the requirement. Ask what they implemented, modified, debugged, tested or operated — a specific
-   component, query, service or algorithm, and the data or result involved. "Which technologies did
-   you use?" is a wasted question: the bullet already answers it, so the reply restates the bullet.
-   A bare yes/no cannot support a resume claim either.
+4. Every request_detail carries an `intent`, and the backend checks it. If nothing has
+   established that this bullet involved the requirement, the only intent available is
+   `establish_use` — the server writes that question, so send the requirement and bullet_id and
+   do not draft it yourself. Once use IS established (the bullet names it, or the user has said
+   so), ask with `implementation` or `impact`: which component, query or service they built or
+   changed, or what improved. "Which technologies did you use?" is a wasted question — the
+   bullet already answers it, so the reply restates the bullet.
+   For [confirm] specifically: you are finding out whether they used it, not assuming they did.
 5. For [strengthen], after searching, call request_detail for one useful impact or scale fact, unless search reveals
    two genuinely repetitive bullets from the same entry that merge_bullets can improve.
 6. For [rewrite], after searching, use propose_edit for one grounded structural improvement, merge_bullets for two
@@ -234,11 +238,23 @@ TOOLS = [
                         "description": (
                             "One concrete question the user can answer briefly. Name the thing "
                             "you are asking about; a question they could answer with a "
-                            "paraphrase of the bullet is a wasted question."
+                            "paraphrase of the bullet is a wasted question. Ignored for "
+                            "establish_use, where the server writes the question."
+                        ),
+                    },
+                    "intent": {
+                        "type": "string",
+                        "enum": ["establish_use", "implementation", "impact"],
+                        "description": (
+                            "What the question is for. 'establish_use' asks whether the "
+                            "requirement was used on this bullet at all — use it whenever "
+                            "nothing has established that yet. 'implementation' asks which "
+                            "component or service they built or changed, and 'impact' asks "
+                            "what improved; both are refused until use is established."
                         ),
                     },
                 },
-                "required": ["requirement", "bullet_id", "question"],
+                "required": ["requirement", "bullet_id", "question", "intent"],
             },
         },
     },
@@ -496,7 +512,7 @@ def _claim_evidence(cur, user_id, run_id, links, requirement):
     texts = [row[1] for row in cur.fetchall()]
     cur.execute(
         """
-        SELECT id, answer, requirement
+        SELECT id, answer, requirement, intent, outcome
         FROM tailoring_detail_requests
         WHERE run_id = %s AND user_id = %s AND status = 'answered'
           AND bullet_id = ANY(%s::uuid[])
@@ -505,10 +521,19 @@ def _claim_evidence(cur, user_id, run_id, links, requirement):
         (run_id, user_id, list(links)),
     )
     target = normalize_skill(requirement or "")
-    details = [
-        (row[0], row[1]) for row in cur.fetchall()
-        if row[1] and normalize_skill(row[2] or "") == target
-    ]
+    details = []
+    for detail_id, answer, stored_requirement, intent, outcome in cur.fetchall():
+        if not answer or normalize_skill(stored_requirement or "") != target:
+            continue
+        if intent == ESTABLISH_USE:
+            # "I didn't use Redis" names Redis, and used to make Redis supported. A yes/no
+            # answer carries one fact — the yes — and the requirement is that fact. Anything
+            # else the sentence mentions ("we didn't use Kafka") is commentary, so the text
+            # itself never becomes evidence here.
+            if outcome == "yes":
+                details.append((detail_id, requirement))
+            continue
+        details.append((detail_id, answer))
     # A skill the user attached to this bullet's entry is theirs to claim: they said they
     # used it there. Passed as evidence text so the claim checker treats the word as supported
     # for these bullets and no others.
@@ -743,16 +768,92 @@ def tool_merge_bullets(cur, user_id, run_id, arguments):
     }
 
 
+# What a question is for. The model declares it, and the backend checks it can be asked —
+# an instruction in the prompt is guidance, and guidance is what produced "How did Redis
+# improve this project?" about a bullet that names PostgreSQL.
+ESTABLISH_USE = "establish_use"
+DETAIL_INTENTS = (ESTABLISH_USE, "implementation", "impact")
+
+
+def establish_use_question(requirement):
+    """The server's words, not the model's.
+
+    A model can label "How did Redis improve this project?" as `establish_use` and walk past
+    the check, so for this one intent it supplies the requirement and we write the sentence.
+    """
+    return f"Did you use {requirement} in this project? If so, what did you use it for?"
+
+
+def _confirmed_use_exists(cur, user_id, run_id, requirement, bullet_ids):
+    """Whether this requirement's use is settled for these bullets.
+
+    Separate from `_answered_detail_exists`, which asks the different question "has this
+    detail been answered" and still gates the rewrite on confirm/strengthen candidates.
+    Merging the two would mean an impact answer counted as proof of use, and a refusal
+    counted as proof of anything at all.
+    """
+    selected = {str(value) for value in bullet_ids if value}
+    if not selected:
+        return False
+
+    # the bullet says so itself
+    cur.execute(
+        "SELECT text FROM resume_bullets WHERE user_id = %s AND id = ANY(%s::uuid[])",
+        (user_id, list(selected)),
+    )
+    for (text,) in cur.fetchall():
+        if requirement in {normalize_skill(term) for term in named_skills(text)}:
+            return True
+
+    # the user attached the skill to the entry, or answered "yes" to using it here
+    if requirement in {normalize_skill(term)
+                       for term in skills_affirmed_for_bullets(cur, user_id, list(selected))}:
+        return True
+
+    cur.execute(
+        """
+        SELECT requirement, bullet_id
+        FROM tailoring_detail_requests
+        WHERE run_id = %s AND user_id = %s AND status = 'answered' AND outcome = 'yes'
+        """,
+        (run_id, user_id),
+    )
+    return any(
+        normalize_skill(stored_requirement) == requirement
+        and (stored_bullet is None or str(stored_bullet) in selected)
+        for stored_requirement, stored_bullet in cur.fetchall()
+    )
+
+
 def tool_request_detail(cur, user_id, run_id, arguments):
     requirement = (arguments.get("requirement") or "").strip()
     bullet_id = (arguments.get("bullet_id") or "").strip()
     question = (arguments.get("question") or "").strip()
-    if not requirement or not bullet_id or not question:
-        raise GroundingError("requirement, bullet_id, and question are required")
+    intent = (arguments.get("intent") or "").strip()
+    if not requirement or not bullet_id:
+        raise GroundingError("requirement and bullet_id are required")
+    if intent not in DETAIL_INTENTS:
+        raise GroundingError(f"intent must be one of: {', '.join(DETAIL_INTENTS)}")
     try:
         bullet_id = str(UUID(bullet_id))
     except (TypeError, ValueError, AttributeError):
         raise GroundingError("bullet id must be a valid UUID") from None
+
+    if intent == ESTABLISH_USE:
+        # we write this one, so the intent cannot be a label on a question that assumes the
+        # answer. Whatever the model drafted is discarded.
+        question = establish_use_question(requirement)
+    else:
+        if not question:
+            raise GroundingError("question is required")
+        if not _confirmed_use_exists(
+            cur, user_id, run_id, normalize_skill(requirement), [bullet_id],
+        ):
+            raise GroundingError(
+                f"nothing establishes that this bullet involved {requirement}, so you cannot "
+                f"ask how it was built or what it improved. Ask with intent "
+                f"'{ESTABLISH_USE}' first — and if the answer is no, that is a real answer."
+            )
     if len(question) > MAX_DETAIL_QUESTION_CHARS:
         raise GroundingError(f"question must be {MAX_DETAIL_QUESTION_CHARS} characters or fewer")
     if any(ord(character) < 32 for character in question):
@@ -792,14 +893,14 @@ def tool_request_detail(cur, user_id, run_id, arguments):
     cur.execute(
         """
         INSERT INTO tailoring_detail_requests (
-            run_id, user_id, bullet_id, requirement, question
+            run_id, user_id, bullet_id, requirement, question, intent
         )
-        VALUES (%s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s)
         ON CONFLICT (run_id, bullet_id, question)
         DO UPDATE SET question = EXCLUDED.question
         RETURNING id, status, answer
         """,
-        (run_id, user_id, bullet_id, requirement, question),
+        (run_id, user_id, bullet_id, requirement, question, intent),
     )
     request_id, status, answer = cur.fetchone()
     return {
@@ -1279,12 +1380,19 @@ def resume_run(get_cursor, user_id, run_id):
     return str(job_id), steps_used
 
 
-def resolve_detail_request(get_cursor, user_id, request_id, answer=None, dismiss=False):
-    """Resolve one question and make the paused run runnable exactly once."""
+def resolve_detail_request(get_cursor, user_id, request_id, answer=None, dismiss=False,
+                           used=None):
+    """Resolve one question and make the paused run runnable exactly once.
+
+    `used` is the answer to an `establish_use` question — True, False, or None for "they
+    answered but did not say". Recorded rather than read out of the prose, because "I didn't
+    use Redis" mentions Redis and a grep cannot tell the two apart.
+    """
     with get_cursor(commit=True) as cur:
         cur.execute(
             """
-            SELECT q.run_id, r.job_id, r.status, r.steps_used, r.max_steps, q.status
+            SELECT q.run_id, r.job_id, r.status, r.steps_used, r.max_steps, q.status,
+                   q.intent, q.requirement
             FROM tailoring_detail_requests AS q
             JOIN tailoring_runs AS r ON r.id = q.run_id
             WHERE q.id = %s AND q.user_id = %s AND r.user_id = %s
@@ -1295,21 +1403,32 @@ def resolve_detail_request(get_cursor, user_id, request_id, answer=None, dismiss
         row = cur.fetchone()
         if row is None:
             return None
-        run_id, job_id, run_status, steps_used, max_steps, question_status = row
+        (run_id, job_id, run_status, steps_used, max_steps, question_status,
+         intent, requirement) = row
         if question_status != "pending":
             return {"error": "already_resolved"}
         if run_status != "waiting_for_user":
             return {"error": "run_not_waiting"}
 
         next_status = "dismissed" if dismiss else "answered"
+        outcome = None
+        if intent == ESTABLISH_USE and not dismiss:
+            outcome = "yes" if used is True else "no" if used is False else "unclear"
         cur.execute(
             """
             UPDATE tailoring_detail_requests
-            SET status = %s, answer = %s, resolved_at = now()
+            SET status = %s, answer = %s, outcome = %s, resolved_at = now()
             WHERE id = %s AND user_id = %s
             """,
-            (next_status, None if dismiss else answer, request_id, user_id),
+            (next_status, None if dismiss else answer, outcome, request_id, user_id),
         )
+        if outcome == "no":
+            # A "no" is a real answer and it finishes the work. Without this the resumed run
+            # rebuilds the plan, finds the candidate open, and asks the same question again.
+            candidates_state.resolve(
+                cur, run_id, normalize_skill(requirement or ""), candidates_state.SKIPPED,
+                outcome="you said you did not use this here",
+            )
         tool_result = {
             "request_id": str(request_id), "status": next_status,
             "answer": None if dismiss else answer,
@@ -2162,7 +2281,7 @@ def load_run(cur, user_id, run_id):
     cur.execute(
         """
         SELECT q.id, q.bullet_id, q.requirement, q.question, q.answer, q.status,
-               b.text, q.created_at, q.resolved_at
+               b.text, q.created_at, q.resolved_at, q.intent, q.outcome
         FROM tailoring_detail_requests AS q
         LEFT JOIN resume_bullets AS b ON b.id = q.bullet_id
         WHERE q.run_id = %s AND q.user_id = %s
@@ -2176,6 +2295,8 @@ def load_run(cur, user_id, run_id):
             "requirement": r[2], "question": r[3], "answer": r[4], "status": r[5],
             "bullet_text": r[6], "created_at": r[7].isoformat(),
             "resolved_at": r[8].isoformat() if r[8] else None,
+            # the screen asks a yes/no question differently from a "tell me more" one
+            "intent": r[9], "outcome": r[10],
         }
         for r in cur.fetchall()
     ]

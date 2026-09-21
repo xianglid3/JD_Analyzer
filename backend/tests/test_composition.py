@@ -41,12 +41,16 @@ def test_inferred_evidence_counts_for_ordering():
     assert scores["b1"] > 0
 
 
-def test_partial_evidence_ranks_below_explicit_evidence():
+def test_related_experience_does_not_rank_a_bullet_at_all():
+    """"Deployed cloud services" against an AWS requirement is related experience, not weak
+    evidence of AWS. It used to score 0.4 and rank below the real match; it now scores
+    nothing, so it is not promoted into the tailored resume as though it were relevant."""
     scores = bullet_relevance(
         [requirement("AWS")],
         [bullet("partial", "Deployed cloud services"), bullet("explicit", "Deployed to AWS")],
     )
-    assert scores["partial"] < scores["explicit"]
+    assert "partial" not in scores
+    assert scores["explicit"] > 0
 
 
 def test_unrelated_bullet_contributes_nothing():

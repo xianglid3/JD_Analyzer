@@ -35,7 +35,9 @@ const statusOptions = [
 const requirementState = {
   EXPLICIT: { label: 'explicit', className: 'text-terminal-green' },
   INFERRED: { label: 'inferred', className: 'text-terminal-green' },
-  PARTIAL: { label: 'partial', className: 'text-charcoal' },
+  // not "partial" — that reads as "partly matched", and this state means the resume shows a
+  // related skill and not this one. A PostgreSQL bullet is not a partial Redis match.
+  PARTIAL: { label: 'related experience', className: 'text-muted' },
   NONE: { label: 'gap', className: 'text-muted' },
 }
 

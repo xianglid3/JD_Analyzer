@@ -424,6 +424,9 @@ def test_inferred_javascript_requires_confirmation_before_a_rewrite(
         response([call("request_detail", {
             "requirement": "javascript",
             "bullet_id": str(k8s_bullet),
+            # nothing establishes JavaScript on this bullet, so this is the only legal intent
+            # and the server writes the sentence
+            "intent": "establish_use",
             "question": "What JavaScript work did you personally do in this frontend?",
         }, "c2")]),
     )
@@ -534,11 +537,11 @@ def test_list_positions_without_search_stop_after_two_failures(monkeypatch, fixt
     script(
         monkeypatch,
         response([call("request_detail", {
-            "requirement": "Kubernetes", "bullet_id": "1",
+            "requirement": "Kubernetes", "bullet_id": "1", "intent": "impact",
             "question": "What impact did this work have?",
         }, "c1")]),
         response([call("request_detail", {
-            "requirement": "Kubernetes", "bullet_id": "2",
+            "requirement": "Kubernetes", "bullet_id": "2", "intent": "impact",
             "question": "What scale did this work support?",
         }, "c2")]),
     )
@@ -601,7 +604,8 @@ def test_a_batch_of_identical_refusals_counts_as_one_strike(monkeypatch, fixture
     arrives twice. Counting that as "it was told and did it again" retired a candidate on step
     1 — the one step where it cannot hold a bullet id, because only search_resume returns one.
     """
-    asked = {"requirement": "kubernetes", "question": "How many clusters did you run?"}
+    asked = {"requirement": "kubernetes", "intent": "impact",
+             "question": "How many clusters did you run?"}
     script(
         monkeypatch,
         response([
@@ -919,7 +923,8 @@ def test_agent_pauses_for_a_detail_and_resumes_with_the_answer(
         monkeypatch,
         response([call("search_resume", {"query": "kubernetes"}, "c1")]),
         response([call("request_detail", {
-            "requirement": "Kubernetes", "bullet_id": k8s_bullet, "question": question,
+            "requirement": "Kubernetes", "bullet_id": k8s_bullet, "intent": "impact",
+            "question": question,
         }, "c2")]),
     )
     paused = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
@@ -1440,6 +1445,7 @@ def test_a_candidate_with_no_findable_evidence_is_skipped_not_retried(monkeypatc
         response([call("request_detail", {
             "requirement": "Kubernetes",
             "bullet_id": "<untrusted_resume_excerpt>",
+            "intent": "establish_use",
             "question": "Did you use it?",
         }, "c2")]),
         response(content="Nothing further."),
@@ -1470,6 +1476,7 @@ def test_asking_a_question_does_not_count_as_finishing_the_work(monkeypatch, fix
         response([call("request_detail", {
             "requirement": "Kubernetes",
             "bullet_id": k8s_bullet,
+            "intent": "impact",
             "question": "How many clusters did you run?",
         }, "c2")]),
     )
@@ -1538,6 +1545,7 @@ def test_the_refusal_names_the_tool_that_needs_an_id(monkeypatch, fixtures, _db)
         response([call("request_detail", {
             "requirement": "Kubernetes",
             "bullet_id": "1",
+            "intent": "impact",
             "question": "What scale did you operate at?",
         }, "c1")]),
         response(content="Done."),
@@ -1751,11 +1759,13 @@ def test_two_questions_about_one_bullet_in_the_same_step_file_one_request(
             call("request_detail", {
                 "requirement": "Kubernetes",
                 "bullet_id": k8s_bullet,
+                "intent": "implementation",
                 "question": "What technologies or functionality did you use?",
             }, "c2"),
             call("request_detail", {
                 "requirement": "Kubernetes",
                 "bullet_id": k8s_bullet,
+                "intent": "implementation",
                 "question": "What functionality did you use?",
             }, "c3"),
         ]),
@@ -1792,7 +1802,8 @@ def test_an_answered_question_is_handed_back_instead_of_asked_again(
         monkeypatch,
         response([call("search_resume", {"query": "kubernetes"}, "c1")]),
         response([call("request_detail", {
-            "requirement": "Kubernetes", "bullet_id": k8s_bullet, "question": question,
+            "requirement": "Kubernetes", "bullet_id": k8s_bullet, "intent": "impact",
+            "question": question,
         }, "c2")]),
     )
     paused = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
@@ -1810,6 +1821,7 @@ def test_an_answered_question_is_handed_back_instead_of_asked_again(
         response([call("request_detail", {
             "requirement": "Kubernetes",
             "bullet_id": k8s_bullet,
+            "intent": "impact",
             "question": "How many clusters was it exactly?",
         }, "c3")]),
         response(content="Nothing further."),
@@ -2024,3 +2036,177 @@ def test_a_merge_partner_still_has_to_have_reached_this_run(monkeypatch, fixture
         )
         refusals = [row[0] for row in cur.fetchall()]
     assert any("did not reach this run" in message for message in refusals), refusals
+
+
+# ── a question may not assume what nothing established ───────────────────────
+# The run of 2026-09-21 asked "How did Redis improve this project?" about a bullet naming only
+# PostgreSQL. Patch 1 stops that requirement reaching the agent at all; these cover the second
+# line, where the candidate IS legitimate but the use still is not established.
+
+def _inferred_javascript_job(fixtures, k8s_bullet, _db):
+    """TypeScript implies JavaScript, so this is real assigned work — and the bullet still
+    never says the person wrote JavaScript."""
+    with _db.cursor() as cur:
+        cur.execute(
+            "UPDATE resume_bullets SET text = %s WHERE id = %s",
+            ("Built the frontend with React and TypeScript", k8s_bullet),
+        )
+        cur.execute(
+            """
+            UPDATE jobs SET skills = '["javascript"]'::jsonb,
+                requirements = '[{"skill":"javascript","importance":"required","type":"skill"}]'::jsonb,
+                match_detail = NULL
+            WHERE id = %s
+            """,
+            (fixtures["job_id"],),
+        )
+    _db.commit()
+
+
+def test_a_question_cannot_assume_use_that_nothing_establishes(
+    monkeypatch, fixtures, k8s_bullet, _db,
+):
+    """An intent label is not enough on its own: the backend checks it, and refuses impact and
+    implementation until something says the technology was used here."""
+    _inferred_javascript_job(fixtures, k8s_bullet, _db)
+    script(
+        monkeypatch,
+        response([call("search_resume", {"query": "javascript"}, "c1")]),
+        response([call("request_detail", {
+            "requirement": "javascript",
+            "bullet_id": k8s_bullet,
+            "intent": "impact",
+            "question": "How did JavaScript improve this project?",
+        }, "c2")]),
+        response(content="Understood."),
+    )
+
+    result = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
+
+    with _db.cursor() as cur:
+        cur.execute(
+            "SELECT error_message FROM tool_calls WHERE run_id = %s AND status = 'failed'",
+            (result["run_id"],),
+        )
+        refusals = [row[0] for row in cur.fetchall()]
+        cur.execute(
+            "SELECT count(*) FROM tailoring_detail_requests WHERE run_id = %s",
+            (result["run_id"],),
+        )
+        assert cur.fetchone()[0] == 0, "the question was filed anyway"
+    assert any("nothing establishes" in message for message in refusals), refusals
+
+
+def test_the_server_writes_the_establish_use_question(
+    monkeypatch, fixtures, k8s_bullet, _db,
+):
+    """A model can label "How did X improve this project?" as establish_use and walk past the
+    intent check, so for that intent its wording is discarded and ours is stored."""
+    _inferred_javascript_job(fixtures, k8s_bullet, _db)
+    script(
+        monkeypatch,
+        response([call("search_resume", {"query": "javascript"}, "c1")]),
+        response([call("request_detail", {
+            "requirement": "javascript",
+            "bullet_id": k8s_bullet,
+            "intent": "establish_use",
+            "question": "How did JavaScript improve this project?",
+        }, "c2")]),
+        response(content="Asked."),
+    )
+
+    result = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
+
+    with _db.cursor() as cur:
+        cur.execute(
+            "SELECT question, intent FROM tailoring_detail_requests WHERE run_id = %s",
+            (result["run_id"],),
+        )
+        question, intent = cur.fetchone()
+
+    assert intent == "establish_use"
+    assert question == "Did you use javascript in this project? If so, what did you use it for?"
+    assert "improve" not in question
+
+
+def test_a_denial_does_not_become_evidence(fixtures, k8s_bullet, _db):
+    """The hole underneath all of this, and it was live: `_claim_evidence` fed answer text to
+    the claim checker, and "I didn't use Redis on this project" names Redis. Answering *no*
+    made Redis a supported term for a rewrite — the denial became the evidence."""
+    from services.tailoring_agent import _claim_evidence
+
+    with get_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            INSERT INTO tailoring_runs (user_id, job_id, model, max_steps)
+            VALUES (%s, %s, 'gpt-4o-mini', 12) RETURNING id
+            """,
+            (fixtures["user_id"], fixtures["job_id"]),
+        )
+        run_id = cur.fetchone()[0]
+        for outcome, answer in [
+            ("no", "I didn't use Redis on this project."),
+            ("yes", "Yes, Redis for session caching; we didn't use Kafka."),
+        ]:
+            cur.execute(
+                """
+                INSERT INTO tailoring_detail_requests (
+                    run_id, user_id, bullet_id, requirement, question, answer, status,
+                    intent, outcome
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, 'answered', 'establish_use', %s)
+                """,
+                (run_id, fixtures["user_id"], k8s_bullet,
+                 "redis" if outcome == "no" else "kafka",
+                 f"Did you use {'redis' if outcome == 'no' else 'kafka'} here?",
+                 answer, outcome),
+            )
+
+    links = {k8s_bullet: None}
+    with get_cursor() as cur:
+        denied, _ = _claim_evidence(cur, fixtures["user_id"], run_id, links, "redis")
+        affirmed, _ = _claim_evidence(cur, fixtures["user_id"], run_id, links, "kafka")
+
+    # a "no" contributes nothing at all
+    assert not any("redis" in text.lower() for text in denied)
+    # a "yes" confirms the requirement it was asked about, and only that — the answer also
+    # mentions Kafka, in the course of denying it
+    assert any("kafka" in text.lower() for text in affirmed)
+    assert not any("session caching" in text.lower() for text in affirmed)
+
+
+def test_saying_no_finishes_the_candidate(monkeypatch, fixtures, k8s_bullet, _db):
+    """"No, I didn't use this here" is an answer, not a skipped question. Without closing the
+    candidate the resumed run rebuilds the plan, finds it open, and asks again."""
+    _inferred_javascript_job(fixtures, k8s_bullet, _db)
+    script(
+        monkeypatch,
+        response([call("search_resume", {"query": "javascript"}, "c1")]),
+        response([call("request_detail", {
+            "requirement": "javascript",
+            "bullet_id": k8s_bullet,
+            "intent": "establish_use",
+            "question": "ignored — the server writes this one",
+        }, "c2")]),
+    )
+    paused = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
+    assert paused["status"] == "waiting_for_user"
+
+    with _db.cursor() as cur:
+        run = load_run(cur, fixtures["user_id"], paused["run_id"])
+    request_id = run["detail_requests"][0]["id"]
+
+    resolve_detail_request(
+        get_cursor, fixtures["user_id"], request_id,
+        answer="No — that was a teammate's work.", used=False,
+    )
+
+    with get_cursor() as cur:
+        cur.execute(
+            "SELECT outcome FROM tailoring_detail_requests WHERE id = %s", (request_id,),
+        )
+        assert cur.fetchone()[0] == "no"
+        states = {item["normalized"]: item["status"]
+                  for item in candidates_state.load(cur, paused["run_id"])}
+
+    assert states.get("javascript") == "skipped"

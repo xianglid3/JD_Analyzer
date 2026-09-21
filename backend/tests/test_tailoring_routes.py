@@ -126,6 +126,7 @@ def test_detail_answer_resumes_the_same_run(client, monkeypatch, setup):
         response([call("request_detail", {
             "requirement": "Kubernetes",
             "bullet_id": setup["bullet_id"],
+            "intent": "impact",
             "question": "How much time did this save?",
         }, "c2")]),
     )
@@ -155,7 +156,7 @@ def test_detail_answer_validation_and_ownership(client, monkeypatch, setup):
         response([call("search_resume", {"query": "kubernetes"}, "c1")]),
         response([call("request_detail", {
             "requirement": "Kubernetes", "bullet_id": setup["bullet_id"],
-            "question": "What was the measurable result?",
+            "intent": "impact", "question": "What was the measurable result?",
         }, "c2")]),
     )
     run_id = client.post(f"/api/jobs/{setup['job_id']}/tailor").get_json()["id"]
