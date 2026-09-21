@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ButtonLabel, InlineAlert, PageLoader } from '../components/Feedback'
 import NavBar from '../components/NavBar'
+import { NoBsTranslation } from '../components/NoBsTranslation'
 import SelectMenu from '../components/SelectMenu'
 import { apiFetch } from '../lib/api'
 
@@ -336,7 +337,7 @@ export default function JobReviewPage() {
             <section className="surface-card inverted-card p-5 text-white" aria-labelledby="translation-heading">
               <p className="font-mono text-[10px] uppercase tracking-[0.08em] text-white/60">Translation</p>
               <h2 id="translation-heading" className="mt-2 text-base font-medium">What this job really means</h2>
-              <p className="mt-3 text-sm leading-6 text-white/80">{draft.no_bs_translation}</p>
+              <NoBsTranslation text={draft.no_bs_translation} empty="" tone="text-white/80" />
             </section>
 
             <section className="surface-card p-5" aria-labelledby="draft-skills-heading">

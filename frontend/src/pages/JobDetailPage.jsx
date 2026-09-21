@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import Dialog from '../components/Dialog'
 import { ButtonLabel, InlineAlert, PageLoader } from '../components/Feedback'
 import NavBar from '../components/NavBar'
+import { NoBsTranslation } from '../components/NoBsTranslation'
 import SelectMenu from '../components/SelectMenu'
 import { InlineField, PenIcon, PinIcon } from '../components/InlineField'
 import { SourceLink, TrashIcon } from '../components/SourceLink'
@@ -315,7 +316,7 @@ export default function JobDetailPage() {
               <section className="surface-card inverted-card p-5 text-white">
                 <p className="font-mono text-[11px] uppercase tracking-[0.071em] text-white/60">Plain English</p>
                 <h2 className="mt-2 text-base font-medium text-white">No-BS translation</h2>
-                <p className="mt-3 text-sm leading-6 text-white/85">{job.no_bs_translation || 'No translation was extracted.'}</p>
+                <NoBsTranslation text={job.no_bs_translation} />
               </section>
             </div>
 

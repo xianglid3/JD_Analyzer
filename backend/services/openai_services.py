@@ -134,10 +134,35 @@ class RequirementGroup(BaseModel):
         return v if isinstance(v, int) and not isinstance(v, bool) and v >= 1 else 1
 
 
+# The translation's three sections, in order, with the label each is stored under. Stored as
+# one labelled text so the column, drafts and edits stay as they are; the page splits it back
+# into sections by these labels (frontend `NoBsTranslation`), and an older free-text
+# translation, which has none of them, still reads as a paragraph.
+TRANSLATION_SECTIONS = (
+    ("role", "What the role is"),
+    ("skills", "What skills they expect"),
+    ("day_to_day", "Day to day"),
+)
+
+
+def join_translation(sections):
+    parts = [
+        f"{label}: {str(sections.get(key)).strip()}"
+        for key, label in TRANSLATION_SECTIONS
+        if sections.get(key) and str(sections.get(key)).strip()
+    ]
+    return "\n\n".join(parts) or None
+
+
 class JobExtraction(BaseModel):
     title: Optional[str] = None
     summary: Optional[str] = None
     no_bs_translation: Optional[str] = None
+
+    @field_validator("no_bs_translation", mode="before")
+    @classmethod
+    def join_sections(cls, v):
+        return join_translation(v) if isinstance(v, dict) else v
     skills: list[str] = []
     requirements: list[JobRequirement] = []
     # kept separate in the model's output: two flat lists are easier for it to fill
@@ -159,7 +184,7 @@ SYSTEM_PROMPT = """You are a job description analyst. Extract key information an
 {
   "title": "<actual role name, not marketing fluff>",
   "summary": "<2-3 neutral, factual sentences describing the role and responsibilities>",
-  "no_bs_translation": "<see the translation rules below>",
+  "no_bs_translation": {"role": "<1-2 sentences>", "skills": "<1-2 sentences>", "day_to_day": "<1-2 sentences>"},
   "skills": ["<skill>", "..."],
   "requirements": [{"skill": "<same skill>", "importance": "<'required' | 'preferred' | 'nice_to_have'>"}, "..."],
   "requirement_groups": [{"items": ["<skill>", "..."], "minimum": <int>, "source_text": "<the posting's own words>", "importance": "<same values>"}, "..."],
@@ -169,20 +194,11 @@ SYSTEM_PROMPT = """You are a job description analyst. Extract key information an
   "work_type": "<'remote' | 'hybrid' | 'in_person' | null>",
 }
 Rules for "skills": concrete technical skills only — named programming languages, tools, frameworks, libraries, platforms, AND technical concepts/engineering practices (e.g. data structures, algorithms, system design, distributed systems, unit testing, integration testing, ci/cd). Output each as its short canonical name in lowercase words, never snake_case ("message queue" not "message_queue", "aws" not "AWS cloud services", "c" not "C programming", "api" not "API development"). A skill name is a term, never a sentence or a clause — if it does not fit in a few words it is not a skill. EXCLUDE soft skills and generic traits entirely (communication, teamwork, problem-solving, adaptability, leadership, collaboration, organization, etc.). Max 15. Only skills explicitly named in the text — do not infer or generalize. Use [] when the posting names no concrete hard skills.
-Rules for "no_bs_translation": tell the reader what they would actually be doing all day in this job. Return only 1-2 short paragraphs.
-Write like you are talking to a friend who knows basic software engineering and is asking "okay, but what would I actually be doing if I got this job?" — not like a recruiter and not like an analyst. Do not rewrite the posting back to them. Never use corporate language: no "drive impact", "build scalable solutions", "collaborate cross-functionally", or similar vague filler.
-Explain:
-- what they would actually be building, and what code they would be writing
-- what systems they would work on: where the data comes from, what happens to it, where it goes
-- what a normal ticket looks like, and what kinds of bugs and problems would land on their desk
-- what each technology named in the posting is actually used for here
-- whether this is really backend, data engineering, distributed systems, platform, ML, or a mix
-- which part of the job is probably going to be difficult
-- which lines are corporate fluff, or work a new grad would not actually own
-Be concrete. Instead of "you will develop scalable distributed data platforms", say something like: millions of moderation events come in, you write the service that reads them off a queue, keeps the useful parts in a database and passes the results on — and one day the queue backs up and you have to work out why your consumers cannot keep up.
-Do not repeat or summarize the posting line by line. Translate corporate language into plain English.
-Be willing to say things like "this is mostly backend CRUD work," "they list AWS, but you would be deploying to it, not designing it," or "the internship posting looks intimidating, but they likely expect fundamentals and the ability to learn rather than mastery of every listed tool."
-Separate reasonable inference from fact, and never invent details about the company. The reader should finish able to picture themselves at their desk: what they are building, what code they are touching, what breaks, and what people are going to ask them to fix.
+Rules for "no_bs_translation": explain the role in plain English with no corporate language, hype, or vague wording. Return an object with exactly these three keys, each 1-2 sentences:
+- "role": what the reader would actually be building or working on, including the main technologies if relevant.
+- "skills": the real technical skills this posting is looking for, such as backend fundamentals, APIs, databases, distributed systems, concurrency, system design, testing, cloud, frontend, ML. Only mention skills the posting actually supports.
+- "day_to_day": what the reader would realistically spend their time doing: coding features, debugging, reviewing code, writing tests, working with services, talking to users, analyzing data, deploying, etc.
+Be direct and slightly blunt. Strip away recruiting language and say what the job actually is. Do not oversell the role, repeat the posting, or invent responsibilities or company details the posting does not support.
 
 Rules for "eligibility": conditions the candidate either meets or does not, which no resume wording can change — work authorization or visa sponsorship, citizenship or residency, security clearance, willingness to relocate, on-site attendance, a required licence, a background or drug check, a minimum age, a required degree level or field of study, graduation or enrolment timing ("completing or recently completed a Bachelor's"), and any commitment to a start or onboarding date. Quote the posting's own words, briefly. These belong here and NOT in "skills": they cannot be evidenced by experience, so scoring them as skills would report a permanent gap the candidate can do nothing about. A degree requirement is NOT a skill — "computer science" as a field of study belongs here, while "algorithms" as a thing you can do belongs in skills. Use [] when the posting states none.
 

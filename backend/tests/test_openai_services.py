@@ -174,3 +174,16 @@ def test_a_long_alternative_does_not_survive_inside_a_group(monkeypatch):
     # one usable alternative left, so it is no longer a choice
     assert job.skills == ["spark"]
     assert all(r.condition is None for r in job.requirements)
+
+
+def test_translation_sections_are_stored_as_labelled_text():
+    """The model returns three sections; the column keeps one text, labelled so the page can
+    split it back. Missing sections are dropped, and an older plain string passes through."""
+    from services.openai_services import JobExtraction
+
+    joined = JobExtraction(no_bs_translation={
+        "role": "Backend CRUD in Go.", "skills": " APIs and SQL. ", "day_to_day": "",
+    }).no_bs_translation
+    assert joined == "What the role is: Backend CRUD in Go.\n\nWhat skills they expect: APIs and SQL."
+    assert JobExtraction(no_bs_translation="Old free text.").no_bs_translation == "Old free text."
+    assert JobExtraction(no_bs_translation={}).no_bs_translation is None
