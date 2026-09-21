@@ -114,7 +114,9 @@ def test_run_produces_edits_gaps_and_trace(client, monkeypatch, setup):
     assert body["edits"][0]["proposed_text"] == "Deployed Kubernetes services across three regions"
     assert body["edits"][0]["evidence"][0]["bullet_id"] == setup["bullet_id"]
     assert body["gaps"][0]["requirement"] == "terraform"
-    assert [t["tool"] for t in body["trace"]] == ["search_resume", "propose_edit", "flag_gap"]
+    # the flag_gap turn is never reached: the edit finished the only candidate, so the run
+    # ends there. That refusal is pinned in test_tailoring_agent.py instead.
+    assert [t["tool"] for t in body["trace"]] == ["search_resume", "propose_edit"]
 
 
 def test_detail_answer_resumes_the_same_run(client, monkeypatch, setup):

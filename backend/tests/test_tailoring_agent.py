@@ -104,13 +104,16 @@ def test_search_then_grounded_edit_is_recorded(monkeypatch, fixtures, k8s_bullet
             "proposed_text": "Deployed Kubernetes services across three regions",
             "evidence_bullet_ids": [k8s_bullet],
         }, "c2")]),
-        response(content="Covered Kubernetes; Terraform is missing."),
+        response(content="this turn must not be needed — the assignment is already done"),
     )
 
     result = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
 
     assert result["status"] == "completed"
-    assert result["steps_used"] == 3
+    # two, not three: the last candidate was handled on step 2, so there is nothing left to
+    # ask the model and no reason to pay for a turn whose only content is "done"
+    assert result["steps_used"] == 2
+    assert result["summary"] == "Every approved candidate was handled."
 
     with _db.cursor() as cur:
         run = load_run(cur, fixtures["user_id"], result["run_id"])
@@ -551,6 +554,115 @@ def test_repeated_identical_grounding_failure_stops_that_candidate(
     assert run["needs_review"][0]["requirement"] == "kubernetes"
 
 
+def test_a_batch_of_identical_refusals_counts_as_one_strike(monkeypatch, fixtures, _db):
+    """The model sends its whole batch before it has seen a single reply, so the same mistake
+    arrives twice. Counting that as "it was told and did it again" retired a candidate on step
+    1 — the one step where it cannot hold a bullet id, because only search_resume returns one.
+    """
+    asked = {"requirement": "kubernetes", "question": "How many clusters did you run?"}
+    script(
+        monkeypatch,
+        response([
+            call("request_detail", dict(asked, bullet_id="1"), "c1"),
+            call("request_detail", dict(asked, bullet_id="2"), "c2"),
+        ]),
+        response(content="Nothing further."),
+    )
+
+    result = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
+
+    with get_cursor() as cur:
+        states = {item["status"] for item in candidates_state.load(cur, result["run_id"])}
+    # still owed, and still workable: a resume can carry on where this left off
+    assert states == {"pending"}
+    assert result["status"] == "incomplete"
+
+
+def test_a_finished_candidate_leaves_the_open_list(monkeypatch, fixtures, k8s_bullet, _db):
+    """The refusal for repeating finished work used to read "kubernetes is already finished —
+    do not work on it again. Still open: ... kubernetes", and the model believed the second
+    half. The open list only ever shrank on failure, never on success."""
+    with _db.cursor() as cur:
+        cur.execute(
+            "UPDATE jobs SET skills = '[\"kubernetes\", \"python\"]'::jsonb WHERE id = %s",
+            (fixtures["job_id"],),
+        )
+        # a second candidate to be left open: the fixture's own Python bullet is already
+        # strong, and a strong bullet is not work the agent is given
+        cur.execute(
+            """
+            INSERT INTO resume_bullets (entry_id, user_id, text, content_hash, sort_order)
+            SELECT entry_id, user_id, 'Worked on python scripts for the pipeline', 'weak-python', 9
+            FROM resume_bullets WHERE id = %s
+            """,
+            (k8s_bullet,),
+        )
+    _db.commit()
+    kept = {
+        "requirement": "kubernetes",
+        "bullet_id": k8s_bullet,
+        "reason": "it already names the work, the tool and the scope",
+    }
+    script(
+        monkeypatch,
+        response([call("search_resume", {"query": "kubernetes"}, "c1")]),
+        response([call("keep_original", kept, "c2")]),
+        response([call("keep_original", kept, "c3")]),      # the model tries it again
+        response(content="Nothing further."),
+    )
+
+    result = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
+
+    with _db.cursor() as cur:
+        cur.execute(
+            "SELECT error_message FROM tool_calls WHERE run_id = %s AND status = 'failed'",
+            (result["run_id"],),
+        )
+        refusals = [row[0] for row in cur.fetchall()]
+    assert refusals and "already finished" in refusals[0]
+    # the part that matters: it is not also offered back as open work
+    assert "Still open" in refusals[0]
+    assert "kubernetes" not in refusals[0].split("Still open:")[1]
+
+
+def test_naming_one_alternative_closes_the_whole_candidate(monkeypatch, fixtures, k8s_bullet, _db):
+    """A candidate called "kubernetes or terraform" is addressed as "kubernetes", which the
+    tool resolves. The loop used to re-read the model's own wording instead, match no
+    candidate, and report work it had just recorded as untouched."""
+    with _db.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE jobs SET requirements = %s::jsonb WHERE id = %s
+            """,
+            (json.dumps([{
+                "condition": {"operator": "any_of", "items": ["kubernetes", "terraform"],
+                              "minimum": 1},
+                "importance": "required", "type": "skill",
+            }]), fixtures["job_id"]),
+        )
+    _db.commit()
+    script(
+        monkeypatch,
+        response([call("search_resume", {"query": "kubernetes"}, "c1")]),
+        response([call("propose_edit", {
+            "requirement": "kubernetes",                   # the candidate is the whole group
+            "bullet_id": k8s_bullet,
+            "proposed_text": "Deployed Kubernetes services across three regions",
+            "evidence_bullet_ids": [k8s_bullet],
+            "reason": "leads with the deployment work the posting asks for",
+        }, "c2")]),
+        response(content="this turn must not be needed"),
+    )
+
+    result = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
+
+    with get_cursor() as cur:
+        candidates = candidates_state.load(cur, result["run_id"])
+    assert [item["status"] for item in candidates] == ["handled"]
+    assert result["status"] == "completed"
+    assert result["summary"] == "Every approved candidate was handled."
+
+
 def test_the_brief_never_leaks_bullet_ids(monkeypatch, fixtures, k8s_bullet):
     """If the assessment named ids, the grounding check could be satisfied by the prompt
     rather than by an actual search."""
@@ -911,7 +1023,8 @@ def test_resume_continues_from_the_step_it_reached(monkeypatch, fixtures, k8s_bu
                          max_steps=6, resume_from=1)
 
     assert result["status"] == "completed"
-    assert result["steps_used"] == 3          # step 1 was not repeated
+    # step 1 was not repeated, and the run stops as soon as the assignment is complete
+    assert result["steps_used"] == 2
     # the resumed worker was handed the earlier search, so the citation still verifies
     assert any(m.get("tool_call_id") == "c1" for m in sent[0])
 
@@ -919,7 +1032,7 @@ def test_resume_continues_from_the_step_it_reached(monkeypatch, fixtures, k8s_bu
         run = load_run(cur, fixtures["user_id"], run_id)
     assert len(run["edits"]) == 1
     assert [t["tool"] for t in run["trace"]] == ["search_resume", "propose_edit"]
-    assert run["input_tokens"] == 300         # step 1's tokens plus the two on resume
+    assert run["input_tokens"] == 200         # step 1's tokens plus the one on resume
 
 
 def test_a_finished_run_is_not_resumable(monkeypatch, fixtures, _db):

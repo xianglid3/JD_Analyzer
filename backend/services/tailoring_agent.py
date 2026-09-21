@@ -788,10 +788,15 @@ def _answered_detail_exists(cur, user_id, run_id, requirement, bullet_ids):
 
 def execute_tool(
     cur, user_id, run_id, step, call, allowed_requirements, allowed_targets, allowed_actions,
-    allowed_labels=None,
+    allowed_labels=None, resolved=None,
 ):
     """Run one tool call and record it. A rejection is a failed call handed back to the
-    model, not an error the user sees."""
+    model, not an error the user sees.
+
+    `resolved` is an out-parameter for the caller's bookkeeping: this function is where the
+    model's wording is matched to a candidate, and the caller has to close the candidate this
+    call actually addressed rather than re-deriving it from the raw arguments.
+    """
     name = call.function.name
     try:
         arguments = json.loads(call.function.arguments or "{}")
@@ -829,6 +834,13 @@ def execute_tool(
                 # everything this call writes now carries the canonical handle, so the
                 # question it files and the edit it proposes can be matched to each other
                 arguments["requirement"] = (allowed_labels or {}).get(requirement, requirement)
+            # ...and so can the caller's bookkeeping. A model asked to repeat
+            # "java or golang or python" says "python", which resolves fine here and matched
+            # no candidate at all back in the loop, where the raw arguments were read again —
+            # so a finished candidate stayed `pending` and the run reported work it had done
+            # as untouched.
+            if resolved is not None:
+                resolved["requirement"] = requirement or finished
 
             if requirement is None or candidates_state.is_finished(cur, run_id, requirement):
                 # The model re-sends its whole batch every step, so a candidate that succeeded
@@ -912,21 +924,38 @@ def execute_tool(
 
 
 def searches_found_nothing(cur, run_id, requirement):
-    """True when every search this run made for this requirement came back empty.
+    """True when the searches that could have served this requirement all came back empty.
 
     There is no legal action for such a candidate — no bullet id exists to cite — so leaving
     it open just lets the model invent one and spend the rest of the budget being refused.
+
+    Scoped to the requirement by the query the model typed. Reading it across the whole run is
+    the wrong question once a run has several candidates: one good search for Python would
+    vouch for a Kubernetes candidate that found nothing, and one empty search for Kubernetes
+    would close Python. The whole-run reading survives only as the fallback for a requirement
+    nothing was searched for by name, where it is the only evidence available.
     """
     cur.execute(
         """
-        SELECT count(*), coalesce(sum((result ->> 'count')::int), 0)
+        SELECT coalesce(arguments ->> 'query', ''), coalesce((result ->> 'count')::int, 0)
         FROM tool_calls
         WHERE run_id = %s AND tool_name = 'search_resume' AND status = 'completed'
         """,
         (run_id,),
     )
-    searched, found = cur.fetchone()
-    return bool(searched) and not found
+    rows = cur.fetchall()
+    if not rows:
+        return False
+
+    target = normalize_skill(requirement or "")
+    related = [
+        found for query, found in rows
+        if target and normalize_skill(query)
+        and (normalize_skill(query) in target or target in normalize_skill(query))
+    ]
+    if related:
+        return not any(related)
+    return not any(found for _query, found in rows)
 
 
 def _candidate_key(item):
@@ -1439,7 +1468,10 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
         if resume_from:
             cur.execute(
                 """
-                SELECT tool_name, arguments, error_message, count(*)
+                -- distinct steps, not rows: two identical refusals inside one batch are one
+                -- mistake the model had no chance to learn from, and counting them twice
+                -- retired the candidate on the spot
+                SELECT tool_name, arguments, error_message, count(DISTINCT step_number)
                 FROM tool_calls
                 WHERE run_id = %s
                   AND tool_name IN ('propose_edit', 'merge_bullets', 'request_detail')
@@ -1582,18 +1614,25 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
                             "UPDATE tailoring_runs SET steps_used = %s, heartbeat_at = now() WHERE id = %s",
                             (step, run_id),
                         )
+                    # one strike per candidate per step: see below
+                    struck = set()
                     for call in message.tool_calls:
+                        resolved = {}
                         outcome = execute_tool(
                             cur, user_id, run_id, step, call,
                             allowed_requirements=allowed_requirements,
                             allowed_targets=allowed_targets,
                             allowed_actions=allowed_actions,
                             allowed_labels=allowed_labels,
+                            resolved=resolved,
                         )
                         if call.function.name == "request_detail" and outcome.get("status") == "awaiting_user":
                             waiting_for_user = True
                         if call.function.name in ACTION_TOOLS:
-                            requirement = normalize_skill(
+                            # what the tool matched, falling back to what the model typed —
+                            # re-reading the raw arguments was how a candidate the tool had
+                            # already identified went unresolved
+                            requirement = resolved.get("requirement") or normalize_skill(
                                 _tool_requirement(call.function.arguments)
                             )
                         if call.function.name in WRITING_TOOLS and not outcome.get("error"):
@@ -1602,6 +1641,10 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
                                 cur, run_id, requirement, candidates_state.HANDLED,
                                 outcome=call.function.name,
                             )
+                            # and it leaves the open list with it. Keeping it there meant the
+                            # refusal for repeating it read "X is already finished... Still
+                            # open: X", which is where the model learned to try again.
+                            allowed_requirements.discard(requirement)
                         if call.function.name == "keep_original" and not outcome.get("error"):
                             # deciding the bullet is already better is finishing the work, not
                             # ducking it — the reason becomes what the user reads for this
@@ -1610,6 +1653,7 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
                                 cur, run_id, requirement, candidates_state.KEPT,
                                 outcome=outcome.get("reason"),
                             )
+                            allowed_requirements.discard(requirement)
                         if call.function.name == "request_detail" and not outcome.get("error"):
                             # Asked, not handled. Marking a question as the work made a run
                             # that produced zero edits report "2 of 2 handled", and left the
@@ -1634,7 +1678,14 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
                             key = failure_key(
                                 call.function.name, call.function.arguments, outcome["error"]
                             )
-                            failed_attempts[key] = failed_attempts.get(key, 0) + 1
+                            # Two strikes retires a candidate, and a strike has to mean "it was
+                            # told, and did it again". The model sends a whole batch before it
+                            # sees a single reply, so the same mistake arrives twice in one
+                            # step — which used to retire a candidate on step 1, before any
+                            # search had run and while the only possible answer was a refusal.
+                            if key not in struck:
+                                struck.add(key)
+                                failed_attempts[key] = failed_attempts.get(key, 0) + 1
                             if failed_attempts[key] >= 2:
                                 allowed_requirements.discard(requirement)
                                 candidates_state.resolve(
@@ -1655,8 +1706,22 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
                     summary = "A stronger rewrite needs one detail from you before it can continue."
                     break
                 if candidates and not allowed_requirements:
+                    # Nothing is left for the model to work on. Whether that is an assignment
+                    # finished or an assignment burned is the candidate table's answer, not
+                    # this set's. Either way the run ends here rather than paying for one more
+                    # model call whose only job is to say "done".
+                    with get_cursor() as cur:
+                        states = {item["status"] for item in candidates_state.load(cur, run_id)}
                     status = "completed"
-                    summary = "No safe rewrite passed grounding; the remaining item needs human review."
+                    # `needs_review` is terminal but it is not done — a candidate retired for
+                    # failing twice is owed to a human, and calling that "handled" is the
+                    # conflation this table exists to prevent.
+                    summary = (
+                        "No safe rewrite passed grounding; what is left needs human review."
+                        if states & {candidates_state.PENDING, candidates_state.ACTIVE,
+                                     candidates_state.NEEDS_REVIEW}
+                        else "Every approved candidate was handled."
+                    )
                     break
             except Exception:
                 # anything that isn't a grounding rejection aborts the transaction, taking the
