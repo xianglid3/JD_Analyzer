@@ -136,3 +136,26 @@ def test_dropping_a_number_names_the_number_that_was_dropped():
     )
     assert "10ms" in issue or "15" in issue
     assert "keep every one of them" in issue
+
+
+SLASH_ORIGINAL = (
+    "Designed a FastAPI backend with Supabase and REST APIs for event creation, updates, and "
+    "geocoded location storage; integrated it with a React/TypeScript calendar and Mapbox "
+    "interface."
+)
+
+
+def test_slash_joined_skills_are_each_recognized():
+    from services.claim_check import named_skills
+
+    found = {skill.lower() for skill in named_skills("a React/TypeScript calendar")}
+    assert {"react", "typescript"} <= found
+
+
+def test_rewrite_that_drops_one_side_of_a_slash_pair_is_refused():
+    proposed = (
+        "Developed a FastAPI backend with Python and TypeScript, integrating REST APIs for "
+        "event creation, updates, and geocoded location storage in Supabase."
+    )
+    issue = rewrite_quality_issue(SLASH_ORIGINAL, proposed)
+    assert issue and "react" in issue

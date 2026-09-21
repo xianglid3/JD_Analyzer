@@ -90,14 +90,22 @@ def index(text):
             continue
 
         whole.append(token)
-        pieces = [_clean(piece) for piece in SPLIT_INSIDE.split(token)]
-        pieces = [piece for piece in pieces if piece]
-        if len(pieces) > 1:
-            split.extend(pieces)              # machine-learning → machine, learning
-            origin.extend([len(whole) - 1] * len(pieces))
-        else:
-            split.append(token)
-            origin.append(len(whole) - 1)
+        position = len(whole) - 1
+        # A slash lists separate things; a hyphen usually joins one thing. "React/TypeScript"
+        # is two skills and "machine-learning" is one, so their pieces get different
+        # coordinates: slash items are independently claimable, hyphen pieces share the whole
+        # token's claim. Reading both as one unit meant only TypeScript was ever found in
+        # "React/TypeScript", so a rewrite could drop React and nothing noticed.
+        items = [piece for piece in (_clean(x) for x in token.split("/")) if piece]
+        for offset, item in enumerate(items):
+            coordinate = position if len(items) == 1 else (position, offset)
+            pieces = [piece for piece in (_clean(x) for x in item.split("-")) if piece]
+            if len(pieces) > 1:
+                split.extend(pieces)          # machine-learning → machine, learning
+                origin.extend([coordinate] * len(pieces))
+            else:
+                split.append(item)
+                origin.append(coordinate)
 
     # built after tokenizing, because a compound is recognised across tokens
     claimed = _compound_spans(whole)
