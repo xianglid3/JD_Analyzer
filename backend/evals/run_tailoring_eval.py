@@ -1,7 +1,7 @@
-"""End-to-end check of tailoring: planner -> diagnosis -> editor -> the server's validation.
+"""End-to-end check of tailoring: planner -> recruiter review -> editor -> validation.
 
 Every case builds a real user, resume and job, then runs the real pipeline with the REAL
-OpenAI API: the diagnosis call, the editor's steps, and — when a question is asked — the
+OpenAI API: the review call, the editor's steps, and — when a question is asked — the
 case's answer and the resumed run that uses it. What is checked is the result a user would
 see: the questions actually filed and the edits actually recorded.
 
@@ -12,10 +12,12 @@ in CI.
     cd backend && ./venv/bin/python evals/run_tailoring_eval.py
 """
 
+import argparse
 import json
 import os
 import pathlib
 import sys
+from collections import Counter
 
 # The test database, set before anything imports `db` — `backend/.env` points at production,
 # and load_dotenv never overrides a variable that is already set.
@@ -35,8 +37,8 @@ load_dotenv(BACKEND / ".env")  # OPENAI_API_KEY; SUPABASE_URL stays the test dat
 import psycopg2
 
 from db import get_cursor
-from services import skill_relations
-from services.bullet_diagnosis import QUESTION_TEMPLATES, build_tasks, payload
+from services import bullet_review, skill_relations
+from services.bullet_review import build_tasks, payload
 from services.openai_services import ResumeEntryExtraction, ResumeStructure
 from services.resume_evidence import save_resume_evidence
 from services.tailoring_agent import (
@@ -155,13 +157,13 @@ def plan_owners(user_id, job_id):
 
 
 def check_order_independence(case, default_job):
-    """Planner and diagnosis input under both requirement orders — no model call needed."""
+    """Planner and review input under both requirement orders — no model call needed."""
     results = []
     for order in (None, "reversed"):
         user_id, job_id, bullet_id = build_case(case, default_job, order)
         owners, assessment, _plan = plan_owners(user_id, job_id)
         with get_cursor() as cur:
-            tasks = build_tasks(cur, user_id, assessment, [bullet_id])
+            tasks = build_tasks(cur, user_id, None, assessment, [bullet_id])
         job = case.get("job") or default_job
         shown = json.dumps(payload((job["title"], job["company"], job["summary"], _skills(job)),
                                    [{**t, "bullet_id": "x"} for t in tasks]))
@@ -169,14 +171,12 @@ def check_order_independence(case, default_job):
     return results[0] == results[1]
 
 
-def is_templated(question, bullet):
-    """A diagnosis question is one of ours, about words the bullet contains."""
-    for template in QUESTION_TEMPLATES.values():
-        head, _, tail = template.partition("{subject}")
-        if question.startswith(head) and question.endswith(tail):
-            subject = question[len(head):len(question) - len(tail)]
-            return subject.lower() in bullet.lower()
-    return False
+def quotes_the_bullet(question, bullet):
+    """Every question the server stores is the review's, and a review's question has to repeat
+    the bullet's own words. Checked here too, on what actually reached the user."""
+    from services.bullet_review import quotes_bullet
+
+    return quotes_bullet(question, bullet)
 
 
 def run_case(case, default_job):
@@ -184,7 +184,7 @@ def run_case(case, default_job):
     result = run_tailoring(get_cursor, user_id, job_id, max_steps=MAX_STEPS)
     if not result or "run_id" not in result:
         # not a keep: nothing ran, so nothing was decided
-        return {"outcome": "no_run", "questions": [], "edits": [], "diagnosis": None,
+        return {"outcome": "no_run", "questions": [], "edits": [], "review": None,
                 "status": None, "refusals": [], "note": f"no run: {result}"}
     run_id = result["run_id"]
 
@@ -193,12 +193,10 @@ def run_case(case, default_job):
     asked = [q for q in run["detail_requests"]]
     if asked and run["status"] == "waiting_for_user":
         question = asked[0]
-        confirm = question.get("intent") == "establish_use"
-        answer = ("Yes, I used it there." if case.get("confirm_answer") else "No.") if confirm else case.get("answer")
+        answer = case.get("answer")
         if answer:
             resumed = resolve_detail_request(
                 get_cursor, user_id, question["id"], answer=answer,
-                used=(bool(case.get("confirm_answer")) if confirm else None),
             )
             if resumed and resumed.get("resume"):
                 execute_run(get_cursor, user_id, job_id, run_id, max_steps=MAX_STEPS,
@@ -208,81 +206,114 @@ def run_case(case, default_job):
 
     questions = [(q["question"], q.get("intent")) for q in run["detail_requests"]]
     edits = [(e.get("original_text"), e["proposed_text"]) for e in run["edits"]]
-    diagnosis = (run.get("diagnoses") or {}).get(bullet_id)
+    review = (run.get("reviews") or {}).get(bullet_id)
     refusals = [f"{item['tool']}: {item['error']}" for item in run.get("trace") or []
                 if item["status"] == "failed"]
-    if any(intent == "establish_use" for _q, intent in questions):
-        outcome = "confirm"
-    elif questions:
+    if questions:
         outcome = "ask"
     elif edits:
         outcome = "rewrite"
     else:
         outcome = "keep"
-    return {"outcome": outcome, "questions": questions, "edits": edits, "diagnosis": diagnosis,
+    return {"outcome": outcome, "questions": questions, "edits": edits, "review": review,
             "status": run["status"], "refusals": refusals, "note": None}
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--repeat", type=int, default=1,
+                        help="how many times to run each case whose outcome is a judgment")
+    parser.add_argument("--only", default=None, help="substring of a case id")
+    args = parser.parse_args()
+
     _refuse_unless_test_database(EVAL_DSN)
+    print(f"review model: {bullet_review.MODEL}\n")
     fresh_schema()
     data = json.loads(CASES.read_text())
-    failed = []
+    cases = [c for c in data["cases"] if not args.only or args.only in c["id"]]
+    stable, flaky, failed = [], [], []
 
-    for case in data["cases"]:
-        problems = []
+    for case in cases:
+        # every case, not only the ones with an answer step: a supposedly simple KEEP moved
+        # between runs once, which is exactly what repeats are for
+        judgment = args.repeat
+        outcomes, problems = [], []
         if case.get("check_order_independence") and not check_order_independence(case, data["default_job"]):
-            problems.append("requirement order changed the plan or the diagnosis input")
+            problems.append("requirement order changed the plan or the review input")
 
-        got = run_case(case, data["default_job"])
-        if got["outcome"] not in case["expect"]:
-            problems.append(f"ended as {got['outcome']}, expected {' or '.join(case['expect'])}")
-        # Checked on its own: an editor that happens to keep hides a diagnosis that wanted
-        # needless work — the first real run passed five strong bullets that way.
-        wanted = (got["diagnosis"] or {}).get("decision")
-        if wanted not in case.get("expect_diagnosis", [wanted]):
-            problems.append(
-                f"diagnosis was {wanted}/{(got['diagnosis'] or {}).get('problem_type')}, expected "
-                f"{' or '.join(str(d) for d in case['expect_diagnosis'])}"
-            )
-        # a run that failed or ran out of budget decided nothing, whatever it left behind
-        acceptable = {"completed"} | ({"waiting_for_user"} if got["outcome"] == "confirm" else set())
-        if got["status"] not in acceptable:
-            problems.append(f"run ended {got['status']}, not completed")
-        diagnosis_questions = [q for q, intent in got["questions"] if intent != "establish_use"]
-        if len(diagnosis_questions) > 1:
-            problems.append(f"{len(diagnosis_questions)} questions on one bullet")
-        for question in diagnosis_questions:
-            if not is_templated(question, case["text"]):
-                problems.append(f"question not anchored to the bullet: {question!r}")
-        if got["outcome"] == "ask" and case.get("answer") and not got["edits"]:
-            problems.append("answered, but no edit followed")
+        for attempt in range(judgment):
+            got = run_case(case, data["default_job"])
+            outcomes.append(got["outcome"])
+            attempt_problems = []
+            if got["outcome"] not in case["expect"]:
+                attempt_problems.append(
+                    f"ended as {got['outcome']}, expected {' or '.join(case['expect'])}")
+            wanted = (got["review"] or {}).get("decision")
+            if wanted not in case.get("expect_review", [wanted]):
+                attempt_problems.append(
+                    f"review decided {wanted}, expected "
+                    f"{' or '.join(str(d) for d in case['expect_review'])}")
+            if got["status"] != "completed":
+                attempt_problems.append(f"run ended {got['status']}, not completed")
+            asked_questions = [question for question, _intent in got["questions"]]
+            if len(asked_questions) > 1:
+                attempt_problems.append(f"{len(asked_questions)} questions on one bullet")
+            for question in asked_questions:
+                if not quotes_the_bullet(question, case["text"]):
+                    attempt_problems.append(f"question does not quote the bullet: {question!r}")
+            # A sibling naming concrete work does not silence a vague bullet — that rule once
+            # silenced 14 of 18 — but a question that invites the answer the sibling already
+            # gave wastes the ask. Naming the sibling's work is fine only to exclude it.
+            beyond = case.get("question_must_go_beyond_sibling")
+            for question in asked_questions if beyond else []:
+                lowered = question.lower()
+                repeats = [term for term in beyond if term in lowered]
+                excludes = any(word in lowered for word in
+                               ("besides", "other than", "apart from", "aside from", "in addition to",
+                                "other part", "else"))
+                if repeats and not excludes:
+                    attempt_problems.append(
+                        f"the question asks again for what the sibling gives: {', '.join(repeats)}")
+            wanted_words = case.get("question_should_mention_any")
+            if got["outcome"] == "ask" and wanted_words and not any(
+                w in asked_questions[0].lower() for w in wanted_words
+            ):
+                attempt_problems.append("question does not target the expected fact")
+            if (got["outcome"] == "ask" and case.get("answer") and not got["edits"]
+                    and not case.get("allow_no_edit")):
+                attempt_problems.append("answered, but no edit followed")
 
-        mark = "PASS" if not problems else "FAIL"
-        diagnosis = got["diagnosis"] or {}
-        print(f"[{mark}] {case['id']:<30} {got['outcome']:<8} "
-              f"diagnosis={diagnosis.get('decision', '-')}/{diagnosis.get('problem_type') or '-'}")
-        print(f"        {case['why']}")
-        if diagnosis.get("downgraded"):
-            print(f"        server downgraded: {diagnosis['downgraded']}")
-        for question, intent in got["questions"]:
-            print(f"        Q ({intent}): {question}")
-        for original, proposed in got["edits"]:
-            print(f"        - {original}\n        + {proposed}")
-        for refusal in got.get("refusals") or []:
-            print(f"        refused {refusal[:220]}")
-        if got.get("note"):
-            print(f"        {got['note']}")
-        for problem in problems:
-            print(f"        ✗ {problem}")
-        if problems:
-            failed.append(case["id"])
+            label = f"{attempt + 1}. " if judgment > 1 else ""
+            review = got["review"] or {}
+            print(f"        {label}{got['outcome']} "
+                  f"(review {review.get('decision', '-')}/{review.get('doubt_type') or '-'})")
+            if review.get("downgraded"):
+                print(f"           downgraded: {review['downgraded']}")
+            for question, _intent in got["questions"]:
+                print(f"           Q: {question}")
+            for original, proposed in got["edits"]:
+                print(f"           - {original}\n           + {proposed}")
+            for refusal in got.get("refusals") or []:
+                print(f"           refused {refusal[:200]}")
+            for problem in attempt_problems:
+                print(f"           ✗ {problem}")
+            problems.extend(attempt_problems)
 
-    total = len(data["cases"])
-    print(f"\n{total - len(failed)}/{total} cases pass (n={total}).")
-    print("Now read them: does each question ask for ONE absent, useful fact? "
-          "Is each edit faithful and actually better?")
-    sys.exit(1 if failed else 0)
+        mark = "PASS" if not problems else ("FLAKY" if len(set(outcomes)) > 1 else "FAIL")
+        (stable if mark == "PASS" else flaky if mark == "FLAKY" else failed).append(case["id"])
+        counts = ", ".join(f"{o}×{n}" for o, n in Counter(outcomes).most_common())
+        print(f"[{mark}] {case['id']:<30} {counts:<22} expected {' or '.join(case['expect'])}")
+        print(f"        {case['why']}\n")
+
+    total = len(cases)
+    print(f"{len(stable)}/{total} stable, {len(flaky)} flaky, {len(failed)} failed (n={total}).")
+    if flaky:
+        print("flaky: " + ", ".join(flaky))
+    if failed:
+        print("failed: " + ", ".join(failed))
+    print("\nNow read them: is each question about work the bullet claims? Is each edit "
+          "faithful and actually better?")
+    sys.exit(1 if failed or flaky else 0)
 
 
 if __name__ == "__main__":

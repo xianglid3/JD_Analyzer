@@ -1,0 +1,403 @@
+{
+  "_about": "Cases for the recruiter review (Stage 1). Real bullets from the owner's resumes, in both their polished and vague forms. None of these appear in the reviewer prompt's examples, so the eval stays an independent check. `expect` lists the acceptable decisions; where two are listed the case is genuinely open and only a bad third option fails it. No database: the reviewer is a pure function plus one model call.",
+  "jobs": {
+    "backend": {
+      "title": "Backend Software Engineer",
+      "company": "Globex",
+      "summary": "Builds and operates the services behind the ordering platform: APIs, data storage, background jobs.",
+      "requirements": [
+        "python",
+        "api",
+        "postgresql",
+        "backend",
+        "testing"
+      ]
+    },
+    "backend_or": {
+      "title": "Software Engineer",
+      "company": "Globex",
+      "summary": "Full-stack product work on a small team.",
+      "requirements": [
+        "go or typescript or python",
+        "api"
+      ]
+    },
+    "ai": {
+      "title": "AI Engineer",
+      "company": "Globex",
+      "summary": "Builds LLM features for internal tools.",
+      "requirements": [
+        "ai",
+        "python",
+        "backend"
+      ]
+    },
+    "frontend": {
+      "title": "Frontend Engineer",
+      "company": "Globex",
+      "summary": "Builds the React web app.",
+      "requirements": [
+        "front-end frameworks",
+        "typescript"
+      ]
+    },
+    "redis": {
+      "title": "Backend Engineer",
+      "company": "Globex",
+      "summary": "Low-latency services.",
+      "requirements": [
+        "redis",
+        "caching"
+      ]
+    },
+    "robotics": {
+      "title": "Perception Engineer",
+      "company": "Globex",
+      "summary": "Autonomous vehicle perception.",
+      "requirements": [
+        "c++",
+        "ros",
+        "computer vision"
+      ]
+    },
+    "embedded": {
+      "title": "Embedded Software Engineer",
+      "company": "Globex",
+      "summary": "Motor control firmware.",
+      "requirements": [
+        "c++",
+        "testing",
+        "embedded"
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "polished_llm_grounding",
+      "job": "ai",
+      "entry": "JD Translator — Developer",
+      "text": "Built an LLM-powered job analysis and resume tailoring platform with server-enforced grounding: proposed edits are rejected unless their cited evidence belongs to the user and was retrieved during the same agent run.",
+      "expect": [
+        "KEEP"
+      ],
+      "why": "Names the work, the mechanism and the guarantee."
+    },
+    {
+      "id": "polished_idempotency",
+      "job": "backend",
+      "entry": "JD Translator — Developer",
+      "text": "Implemented reserve-before-spend idempotency for job-draft creation so duplicate requests cannot trigger duplicate LLM calls, with stored-response replay after completion.",
+      "expect": [
+        "KEEP"
+      ],
+      "why": "The prevented failure is the outcome, and it is stated."
+    },
+    {
+      "id": "polished_fastapi_calendar",
+      "job": "backend_or",
+      "entry": "Calendar Map — Developer",
+      "text": "Designed a FastAPI backend with Supabase and REST APIs for event creation, updates, and geocoded location storage; integrated it with a React/TypeScript calendar and Mapbox interface.",
+      "siblings": [
+        "Deployed the app on Render with GitHub Actions running the test suite on every push."
+      ],
+      "expect": [
+        "KEEP"
+      ],
+      "why": "An OR requirement already satisfied; the bullet is concrete."
+    },
+    {
+      "id": "polished_postgres_ownership",
+      "job": "backend",
+      "entry": "Job Tracker — Developer",
+      "text": "Designed a PostgreSQL schema and Flask REST endpoints for tracking job applications, with ownership checks on every query.",
+      "expect": [
+        "KEEP"
+      ],
+      "why": "A missing number is not a missing fact."
+    },
+    {
+      "id": "polished_encrypted_messaging",
+      "job": "backend",
+      "entry": "ChatRoom — Developer",
+      "text": "Built an end-to-end encrypted messaging platform with React and Flask, keeping cryptographic operations in the browser so the backend stores only ciphertext.",
+      "expect": [
+        "KEEP"
+      ],
+      "why": "The boundary is the interesting fact, and it is stated."
+    },
+    {
+      "id": "polished_ros_perception",
+      "job": "robotics",
+      "entry": "Panther Racing FSAE — Software Team Member",
+      "text": "Built and modified ROS 2 perception nodes in C++ for cone detection and colouring.",
+      "expect": [
+        "KEEP"
+      ],
+      "why": "Concrete contribution, named component, named language."
+    },
+    {
+      "id": "polished_motor_tests",
+      "job": "embedded",
+      "entry": "Motor Control & Protection System — Developer",
+      "text": "Wrote Google Test unit tests covering the motor controller's overcurrent and stall fault paths.",
+      "expect": [
+        "KEEP"
+      ],
+      "why": "Testing work stated concretely; no metric needed."
+    },
+    {
+      "id": "vague_worked_with_postgres",
+      "job": "backend",
+      "entry": "JobMatcha — Developer",
+      "text": "Worked with PostgreSQL to store and manage application data.",
+      "siblings": [
+        "Built an AI-powered platform that helps users analyze job descriptions and improve their resumes."
+      ],
+      "expect": [
+        "ASK"
+      ],
+      "why": "'Worked with' hides what they designed or wrote."
+    },
+    {
+      "id": "vague_backend_functionality_chat",
+      "job": "backend",
+      "entry": "ChatRoom — Developer",
+      "text": "Created backend functionality for managing users, messages, and channels.",
+      "siblings": [
+        "Developed a secure messaging application using React and Flask.",
+        "Implemented encryption features to protect user messages."
+      ],
+      "expect": [
+        "ASK"
+      ],
+      "why": "A project headline sibling must not silence this one."
+    },
+    {
+      "id": "vague_backend_functionality_jm",
+      "job": "backend",
+      "entry": "JobMatcha — Developer",
+      "text": "Created backend functionality to support resume tailoring and job analysis.",
+      "siblings": [
+        "Used Docker and GitHub Actions to support deployment and testing."
+      ],
+      "expect": [
+        "ASK"
+      ],
+      "why": "Names no endpoint, service or mechanism."
+    },
+    {
+      "id": "vague_helped_autonomous",
+      "job": "robotics",
+      "entry": "Panther Racing FSAE — Software Team Member",
+      "text": "Helped develop software for an autonomous vehicle using C++ and ROS 2.",
+      "siblings": [
+        "Worked with LiDAR and camera data for cone detection.",
+        "Assisted with point-cloud processing and perception tasks."
+      ],
+      "expect": [
+        "ASK"
+      ],
+      "why": "Shared credit with no part named; the siblings are equally vague."
+    },
+    {
+      "id": "vague_lidar_camera",
+      "job": "robotics",
+      "entry": "Panther Racing FSAE — Software Team Member",
+      "text": "Worked with LiDAR and camera data for cone detection.",
+      "siblings": [
+        "Helped develop software for an autonomous vehicle using C++ and ROS 2."
+      ],
+      "expect": [
+        "ASK"
+      ],
+      "why": "'Worked with data' is not a contribution."
+    },
+    {
+      "id": "vague_assisted_pointcloud",
+      "job": "robotics",
+      "entry": "Panther Racing FSAE — Software Team Member",
+      "text": "Assisted with point-cloud processing and perception tasks.",
+      "siblings": [
+        "Built and modified ROS 2 perception nodes in C++ for cone detection and colouring."
+      ],
+      "expect": [
+        "KEEP",
+        "ASK"
+      ],
+      "why": "A sibling already says what they built in this project."
+    },
+    {
+      "id": "verbose_rest_endpoints",
+      "job": "backend",
+      "entry": "JobMatcha — Developer",
+      "text": "Was responsible for the creation of REST API endpoints in Python Flask that were used for the purpose of managing user accounts and also handling authentication.",
+      "expect": [
+        "REWRITE"
+      ],
+      "why": "Every fact is present; the wording is the problem."
+    },
+    {
+      "id": "verbose_docker_actions",
+      "job": "backend",
+      "entry": "JobMatcha — Developer",
+      "text": "Used Docker and GitHub Actions to support deployment and testing.",
+      "expect": [
+        "KEEP",
+        "ASK"
+      ],
+      "why": "Thin but honest; a question must name real work, not ask for impact."
+    },
+    {
+      "id": "calendar_headline",
+      "job": "backend_or",
+      "entry": "Calendar Map — Developer",
+      "text": "Developed a calendar application with map functionality.",
+      "siblings": [
+        "Built REST APIs using FastAPI and stored application data using Supabase.",
+        "Connected the backend with a React frontend."
+      ],
+      "expect": [
+        "KEEP",
+        "REWRITE"
+      ],
+      "why": "Siblings carry the detail; do not ask."
+    },
+    {
+      "id": "connected_backend_frontend",
+      "job": "backend_or",
+      "entry": "Calendar Map — Developer",
+      "text": "Connected the backend with a React frontend.",
+      "siblings": [
+        "Built REST APIs using FastAPI and stored application data using Supabase."
+      ],
+      "expect": [
+        "ASK",
+        "KEEP"
+      ],
+      "why": "Thin; asking which integration work was theirs is reasonable, and so is keeping it."
+    },
+    {
+      "id": "inferred_frontend_only",
+      "job": "frontend",
+      "entry": "Calendar Map — Developer",
+      "text": "Built the React/TypeScript calendar view and its Mapbox map interface.",
+      "expect": [
+        "KEEP"
+      ],
+      "why": "React already establishes front-end framework experience."
+    },
+    {
+      "id": "inferred_ai_from_llm",
+      "job": "ai",
+      "entry": "JobMatcha — Developer",
+      "text": "Built an AI-powered platform that helps users analyze job descriptions and improve their resumes.",
+      "siblings": [
+        "Created backend functionality to support resume tailoring and job analysis."
+      ],
+      "expect": [
+        "KEEP",
+        "ASK"
+      ],
+      "why": "AI use is established; any question must be about the work, not whether AI was used."
+    },
+    {
+      "id": "irrelevant_redis",
+      "job": "redis",
+      "entry": "Job Tracker — Developer",
+      "text": "Implemented PostgreSQL storage for account and event records.",
+      "expect": [
+        "KEEP"
+      ],
+      "why": "PostgreSQL does not establish Redis; nothing invites the question."
+    },
+    {
+      "id": "irrelevant_it_sales",
+      "job": "backend",
+      "entry": "Asian Granite & Cabinet — Part-time IT & Sales",
+      "text": "Helped with IT-related tasks and company operations.",
+      "siblings": [
+        "Used Excel to improve business workflows.",
+        "Maintained website content."
+      ],
+      "expect": [
+        "KEEP"
+      ],
+      "why": "Unrelated to a backend job; not worth the candidate's time."
+    },
+    {
+      "id": "irrelevant_excel",
+      "job": "backend",
+      "entry": "Asian Granite & Cabinet — Part-time IT & Sales",
+      "text": "Used Excel to improve business workflows.",
+      "siblings": [
+        "Helped with IT-related tasks and company operations."
+      ],
+      "expect": [
+        "KEEP"
+      ],
+      "why": "Same: relevance, not quality, is what rules it out."
+    },
+    {
+      "id": "adversarial_data_pipeline",
+      "job": "backend",
+      "entry": "JobMatcha — Developer",
+      "text": "Built a data pipeline in Python for the analytics team.",
+      "expect": [
+        "ASK",
+        "KEEP"
+      ],
+      "why": "Any question must be about the pipeline — never a database it never mentions."
+    },
+    {
+      "id": "adversarial_returns_page",
+      "job": "backend",
+      "entry": "ChatRoom — Developer",
+      "text": "Built the backend for the store's returns page.",
+      "expect": [
+        "ASK",
+        "KEEP"
+      ],
+      "why": "Tempting to ask 'what tools did you use?' — that is not one fact."
+    },
+    {
+      "id": "ambiguous_checkout",
+      "job": "backend",
+      "entry": "ShopCo — Software Engineering Intern",
+      "text": "Helped improve the checkout flow for the web store backend.",
+      "siblings": [
+        "Joined the weekly on-call rotation for the storefront."
+      ],
+      "expect": [
+        "ASK"
+      ],
+      "why": "Shared credit, no part named, and the sibling answers nothing."
+    },
+    {
+      "id": "answered_in_this_run",
+      "job": "backend",
+      "entry": "JobMatcha — Developer",
+      "text": "Worked with PostgreSQL to store and manage application data.",
+      "answers": [
+        "I designed the PostgreSQL schema for jobs, resumes and runs, and wrote the queries behind the job list."
+      ],
+      "expect": [
+        "REWRITE"
+      ],
+      "why": "This run's answer supplies the fact; rewrite rather than ask again."
+    },
+    {
+      "id": "result_claimed_no_evidence",
+      "job": "backend",
+      "entry": "ChatRoom — Developer",
+      "text": "Improved the reliability of background processing and prevented duplicate operations.",
+      "siblings": [
+        "Created backend functionality for managing users, messages, and channels."
+      ],
+      "expect": [
+        "ASK",
+        "KEEP"
+      ],
+      "why": "A result is claimed; a question may ask what showed it, never for a metric."
+    }
+  ]
+}

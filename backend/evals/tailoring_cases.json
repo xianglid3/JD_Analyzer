@@ -33,9 +33,9 @@
         "keep"
       ],
       "why": "Specific already; no AI-use or impact question.",
-      "expect_diagnosis": [
+      "expect_review": [
         null,
-        "keep"
+        "KEEP"
       ]
     },
     {
@@ -49,9 +49,9 @@
         "keep"
       ],
       "why": "The prevented failure is the outcome, and it is stated.",
-      "expect_diagnosis": [
+      "expect_review": [
         null,
-        "keep"
+        "KEEP"
       ]
     },
     {
@@ -83,8 +83,8 @@
         "keep"
       ],
       "why": "Already concrete; at most a faithful evidence-only rewrite.",
-      "expect_diagnosis": [
-        "keep"
+      "expect_review": [
+        "KEEP"
       ]
     },
     {
@@ -98,8 +98,8 @@
         "keep"
       ],
       "why": "A missing number is not a missing fact.",
-      "expect_diagnosis": [
-        "keep"
+      "expect_review": [
+        "KEEP"
       ]
     },
     {
@@ -117,8 +117,8 @@
       ],
       "answer": "I built the order-status service in Python: the endpoint that reports where each order is, backed by PostgreSQL.",
       "why": "Ask which service they built; then rewrite from the answer.",
-      "expect_diagnosis": [
-        "ask"
+      "expect_review": [
+        "ASK"
       ]
     },
     {
@@ -136,8 +136,8 @@
       ],
       "answer": "I rewrote the address-validation step of checkout and its API endpoint in Python.",
       "why": "The context never says what they personally changed.",
-      "expect_diagnosis": [
-        "ask"
+      "expect_review": [
+        "ASK"
       ]
     },
     {
@@ -151,8 +151,8 @@
         "rewrite"
       ],
       "why": "Every fact is there; the wording is the problem.",
-      "expect_diagnosis": [
-        "rewrite"
+      "expect_review": [
+        "REWRITE"
       ]
     },
     {
@@ -166,11 +166,20 @@
         "Built the refund service in Go that retries failed payouts through a PostgreSQL-backed queue."
       ],
       "expect": [
+        "ask",
         "keep"
       ],
-      "why": "The sibling already says what they built; do not ask.",
-      "expect_diagnosis": [
-        "keep"
+      "why": "The refund service may be only one part of the payments backend, so asking is reasonable — but the question must seek something the sibling does not already answer.",
+      "expect_review": [
+        "ASK",
+        "KEEP"
+      ],
+      "answer": "I wrote the payout ledger and the reconciliation job that settles it nightly.",
+      "question_must_go_beyond_sibling": [
+        "refund service",
+        "refund",
+        "retries",
+        "payouts"
       ]
     },
     {
@@ -184,12 +193,13 @@
         "I built the order-status service in Python, including its PostgreSQL schema and the polling endpoint."
       ],
       "expect": [
-        "keep"
+        "ask"
       ],
-      "why": "Already asked and answered; do not ask again.",
-      "expect_diagnosis": [
-        "keep"
-      ]
+      "why": "An answer from an earlier run is not evidence here; this run asks for itself.",
+      "expect_review": [
+        "ASK"
+      ],
+      "answer": "I built the order-status service in Python with its PostgreSQL schema."
     },
     {
       "id": "many_requirements_one_bullet",
@@ -214,8 +224,8 @@
       ],
       "why": "One combined decision; four matches are not four tasks.",
       "check_order_independence": true,
-      "expect_diagnosis": [
-        "keep"
+      "expect_review": [
+        "KEEP"
       ]
     },
     {
@@ -244,12 +254,12 @@
         "keep"
       ],
       "why": "A frontend bullet need not prove backend depth; do not force a question.",
-      "expect_diagnosis": [
-        "keep"
+      "expect_review": [
+        "KEEP"
       ]
     },
     {
-      "id": "learned_only_relation",
+      "id": "inferred_only_no_task",
       "entry": {
         "organization": "Initech",
         "title": "Backend Intern"
@@ -270,14 +280,11 @@
         ]
       ],
       "expect": [
-        "confirm",
         "keep"
       ],
-      "confirm_answer": true,
-      "why": "Valid learned link (celery → task queues): confirm only if a yes lets the bullet say it concretely.",
-      "expect_diagnosis": [
-        "keep",
-        "ask"
+      "why": "A learned inference is reported, never a task: no review, no question, no edit.",
+      "expect_review": [
+        null
       ]
     },
     {
@@ -293,9 +300,9 @@
       ],
       "answer": "I wrote the Python job that loads the daily order export into PostgreSQL.",
       "why": "Any question must be about what the bullet says — never a database it never mentions.",
-      "expect_diagnosis": [
-        "keep",
-        "ask"
+      "expect_review": [
+        "KEEP",
+        "ASK"
       ]
     },
     {
@@ -311,9 +318,9 @@
       ],
       "answer": "I wrote the returns API in Python and the PostgreSQL table behind it.",
       "why": "Tempting to ask 'what tools did you use?' — that question cannot be produced.",
-      "expect_diagnosis": [
-        "keep",
-        "ask"
+      "expect_review": [
+        "KEEP",
+        "ASK"
       ]
     },
     {
@@ -400,10 +407,30 @@
       "expect": [
         "keep"
       ],
-      "expect_diagnosis": [
+      "why": "Real run 0dc2d235: React already meets front-end frameworks; never ask about data structures.",
+      "expect_review": [
         null
+      ]
+    },
+    {
+      "id": "unhelpful_answer_keeps_the_bullet",
+      "entry": {
+        "organization": "Acme",
+        "title": "Software Engineering Intern"
+      },
+      "text": "Worked on backend services for the ordering platform.",
+      "siblings": [
+        "Attended sprint planning and code reviews with the team."
       ],
-      "why": "Real run 0dc2d235: React already meets front-end frameworks; never ask about data structures."
+      "expect": [
+        "ask"
+      ],
+      "expect_review": [
+        "ASK"
+      ],
+      "answer": "I don't remember.",
+      "allow_no_edit": true,
+      "why": "\"I don't know\" is a valid answer: the question was asked, and the bullet is left alone."
     }
   ]
 }
