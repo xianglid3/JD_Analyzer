@@ -73,40 +73,6 @@ def _rewrite_targets(item, already_claimed=frozenset()):
     return targets
 
 
-def _confirmation_targets(item, already_claimed=frozenset()):
-    """Editable evidence the user can confirm without the model asserting the answer.
-
-    Each target carries the alternatives THIS bullet supports and what each was inferred from.
-    The run before this confirmed a group by letting the model pick any member of it: a
-    messaging bullet that matched front-end frameworks through React was asked about data
-    structures, which nothing on it supports.
-    """
-    targets = {}
-    for evidence in item.get("evidence", []):
-        bullet_id = evidence.get("bullet_id")
-        if not bullet_id or not evidence.get("text") or str(bullet_id) in already_claimed:
-            continue
-        target = targets.setdefault(str(bullet_id), {
-            "bullet_id": str(bullet_id),
-            "text": evidence.get("text") or "",
-            "weakness": _weakness(
-                evidence.get("text") or "",
-                [f"related evidence does not prove "
-                 f"{item.get('requirement') or 'this requirement'}"],
-            ),
-            "alternatives": [],
-        })
-        if evidence.get("alternative"):
-            support = {
-                "alternative": evidence["alternative"],
-                "inferred_from": evidence.get("inferred_from"),
-                "relation_source": evidence.get("relation_source"),
-            }
-            if support not in target["alternatives"]:
-                target["alternatives"].append(support)
-    return list(targets.values())
-
-
 def _can_surface_inference(item, approved=frozenset()):
     """Whether this inference may be stated plainly.
 
@@ -229,15 +195,14 @@ def build_tailoring_plan(assessment, approved=frozenset(), bullets_by_entry=None
             action = "only_in_skills"
             reason = _outside_bullets_reason(item)
         elif state == INFERRED:
-            # Match permission is not writing permission, but silently keeping the bullet
-            # leaves useful, ambiguous evidence stranded outside the agent. Ask the user to
-            # confirm the specific claim; only their answer can unlock a rewrite.
-            action = "confirm"
-            reason = (
-                "Specific evidence earns match credit, but the wording is not authorized yet; "
-                "ask the user to confirm what they actually used before drafting a change."
-            )
-            targets = _confirmation_targets(item, claimed_targets)
+            # Match permission is not writing permission — and it is not a question either.
+            # This used to be `confirm`, which turned an inference into "did you use X?" for
+            # the agent to ask: a React bullet was asked about front-end frameworks, and a
+            # messaging bullet about data structures. A match alone never creates a question
+            # now. The user can still claim the skill themselves, with "I used this" on the
+            # gaps list, which is the one place the claim comes from them.
+            action = "inferred_only"
+            reason = _inferred_only_reason(item)
         elif state == EXPLICIT and citable and _has_weak_citable_evidence(item):
             action = "rewrite"
             reason = "The requirement is explicit, but at least one supporting bullet could be clearer."
@@ -286,7 +251,7 @@ def build_tailoring_plan(assessment, approved=frozenset(), bullets_by_entry=None
 # Which candidate a shared bullet belongs to. Confirming a skill comes before rewording the
 # bullet it is on — a yes is what lets the rewrite say it — and a skill the user placed there
 # comes before both.
-_OWNER_RANK = {"show_in_bullet": 0, "confirm": 1, "rewrite": 2}
+_OWNER_RANK = {"show_in_bullet": 0, "rewrite": 1}
 _IMPORTANCE_RANK = {"required": 0, "preferred": 1, "nice_to_have": 2}
 
 
@@ -331,13 +296,24 @@ def agent_candidates(plan):
     """Work that benefits from the bounded model, including questions—not only rewrites."""
     return [
         item for item in plan
-        if item["action"] in {"rewrite", "strengthen", "confirm", "show_in_bullet"}
+        if item["action"] in {"rewrite", "strengthen", "show_in_bullet"}
         and item.get("targets")
     ]
 
 
 def deterministic_gaps(plan):
     return [item for item in plan if item["action"] == "gap"]
+
+
+def _inferred_only_reason(item):
+    """Said without implying the candidate did the specific thing."""
+    requirement = item.get("requirement") or "this requirement"
+    through = ", ".join(item.get("inferred_from") or []) or "related work"
+    return (
+        f"Your {through} experience counts toward {requirement}, but no bullet says you used "
+        f"{requirement} itself. If you did, say where with \u201cI used this\u201d and a bullet "
+        "there can name it."
+    )
 
 
 def keyword_only(plan):

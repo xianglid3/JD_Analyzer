@@ -24,6 +24,7 @@ const outcomeLabels = {
   surface_skill: 'surface in Skills',
   keep: 'already represented',
   confirm: 'needs confirmation',
+  inferred_only: 'shown indirectly',
   gap: 'evidence gap',
 }
 

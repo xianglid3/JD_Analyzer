@@ -35,7 +35,7 @@ def test_every_requirement_gets_one_bounded_outcome():
     assert [item["action"] for item in plan] == [
         # AWS-via-cloud is a gap now, not a confirmation: showing the general skill is not
         # evidence of the specific tool, and asking about it presumes it was used
-        "rewrite", "surface_skill", "confirm", "confirm", "gap", "gap", "only_in_skills",
+        "rewrite", "surface_skill", "inferred_only", "inferred_only", "gap", "gap", "only_in_skills",
     ]
     assert len(plan) == len(assessment["requirements"])
     assert [item["requirement"] for item in deterministic_gaps(plan)] == ["AWS", "Terraform"]
@@ -100,7 +100,10 @@ def test_related_experience_becomes_a_gap_not_a_question():
     assert "nothing names Redux" in plan[0]["reason"]
 
 
-def test_inferred_evidence_without_write_permission_asks_for_confirmation():
+def test_inferred_evidence_is_not_a_question():
+    """It used to be `confirm`, which turned an inference into "did you use JavaScript?" — the
+    run that asked a React bullet about front-end frameworks and a messaging bullet about data
+    structures. A match alone creates no task; the user claims the skill themselves."""
     plan = build_tailoring_plan({"requirements": [
         requirement(
             "JavaScript", "INFERRED", source="typescript",
@@ -108,9 +111,10 @@ def test_inferred_evidence_without_write_permission_asks_for_confirmation():
         ),
     ]})
 
-    assert plan[0]["action"] == "confirm"
-    assert plan[0]["targets"][0]["text"] == "Built the frontend with React and TypeScript"
-    assert agent_candidates(plan) == [plan[0]]
+    assert plan[0]["action"] == "inferred_only"
+    assert plan[0]["targets"] == []
+    assert agent_candidates(plan) == []
+    assert "typescript" in plan[0]["reason"] and "I used this" in plan[0]["reason"]
 
 
 def test_the_idempotency_bullet_is_kept():
@@ -239,7 +243,8 @@ def _shared_bullet(order):
 
 def test_requirement_order_does_not_decide_who_owns_a_bullet():
     """Reproduced in review: this bullet became a Redux confirmation when Redux was listed
-    first and a backend rewrite when backend was. Ownership is by rank now, not position."""
+    first and a backend rewrite when backend was. Confirmations are gone, and ownership among
+    what is left is by rank, never by position."""
     def owners(plan):
         return {item["agent_label"]: (item["action"], [t["bullet_id"] for t in item["targets"]])
                 for item in plan}
@@ -247,21 +252,7 @@ def test_requirement_order_does_not_decide_who_owns_a_bullet():
     first, second = _shared_bullet(["redux", "backend"]), _shared_bullet(["backend", "redux"])
 
     assert owners(first) == owners(second)
-    assert owners(first)["redux"] == ("confirm", ["shared"])
-    assert owners(first)["backend"][1] == []
+    assert owners(first)["redux"] == ("inferred_only", [])
+    assert owners(first)["backend"] == ("rewrite", ["shared"])
 
 
-def test_confirm_targets_carry_only_their_own_bullets_alternatives():
-    plan = build_tailoring_plan({"requirements": [{
-        "requirement": "the group", "agent_label": "the group", "state": "INFERRED",
-        "importance": "required", "inferred_from": ["celery", "object storage"],
-        "evidence": [
-            {"bullet_id": "b1", "text": "Built reports with Celery workers",
-             "alternative": "task queues", "inferred_from": "celery", "relation_source": "learned"},
-            {"bullet_id": "b2", "text": "Stored uploads in object storage",
-             "alternative": "storage systems", "inferred_from": "object storage", "relation_source": "learned"},
-        ],
-    }]})
-    targets = {t["bullet_id"]: [a["alternative"] for a in t["alternatives"]] for t in plan[0]["targets"]}
-    assert plan[0]["action"] == "confirm"
-    assert targets == {"b1": ["task queues"], "b2": ["storage systems"]}
