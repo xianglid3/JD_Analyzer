@@ -123,7 +123,9 @@ def test_the_refusal_says_what_to_do_not_only_what_was_wrong():
     """The model was told "removes too much of the bullet's existing detail" three times and
     kept shortening, because nothing in that sentence says the job is additive."""
     issue = rewrite_quality_issue(DENSE, "Implemented a state machine with data structures.")
-    assert "add to it" in issue
+    # the whole list, not only what went missing: told which word it dropped, the editor
+    # dropped a different one next time and lost the edit
+    assert "Keep all of: google test" in issue
     # …and it no longer says "a rewrite should not be shorter than what it replaces", because
     # that stopped being true: shortening is allowed, dropping evidence to do it is not.
     assert "not by dropping" in issue
@@ -161,6 +163,8 @@ def test_rewrite_that_drops_one_side_of_a_slash_pair_is_refused():
     )
     issue = rewrite_quality_issue(SLASH_ORIGINAL, proposed)
     assert issue and "react" in issue
+    # the whole list, so the next attempt knows every word it has to carry
+    assert "Keep all of:" in issue and "supabase" in issue
 
 
 # ── two narrow tripwires, and what they do not catch ─────────────────────────
@@ -263,3 +267,18 @@ def test_a_merge_may_not_append_a_benefit():
         originals, "Built the Python ingestion service and its retry logic, boosting reliability.",
     )
     assert issue and "result the bullet never claimed" in issue
+
+
+def test_a_word_family_is_judged_the_same_way_in_both_bullets():
+    """The bullet said "improve", the rewrite said "improving", and only the rewrite matched —
+    so a faithful edit built from the user's answer was refused three runs in a row."""
+    original = "Helped improve the checkout flow for the web store backend."
+    proposed = ("Rewrote the address-validation step and its API endpoint in Python, improving "
+                "the checkout flow for the web store backend.")
+    assert rewrite_quality_issue(original, proposed) is None
+    # a result the bullet never claimed is still refused
+    invented = ("Rewrote the address-validation step and its API endpoint in Python for the "
+                "web store backend, cutting cart abandonment.")
+    assert "result the bullet never claimed" in rewrite_quality_issue(
+        "Worked on the address-validation step for the web store backend.", invented,
+    )

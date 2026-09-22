@@ -241,9 +241,12 @@ _HANDS_ON = STRONG_ACTION_VERBS | STRONG_ACTION_GERUNDS | {
     "profiling", "refactored", "refactoring", "instrumented", "benchmarked",
 }
 # Words that say something changed as a result.
+# Whole word families, not single tenses: "Helped improve the checkout flow" rewritten as
+# "…, improving the checkout flow" was refused for adding a result the bullet already claimed,
+# because `improved|improving` matched the rewrite and not the original.
 _OUTCOME = re.compile(
-    r"\b(cut|cutting|reduced|reducing|improved|improving|increased|increasing|eliminated|"
-    r"saved|saving|so that|enabling|unblocked|from .* to )\b",
+    r"\b(cut|cutting|reduc\w*|improv\w*|increas\w*|eliminat\w*|"
+    r"saved|saving|so that|enabl\w*|unblock\w*|from .* to )\b",
     re.IGNORECASE,
 )
 # Wider than `_OUTCOME`, for one job: spotting a benefit clause a rewrite tacked on.
@@ -612,8 +615,8 @@ def rewrite_quality_issue(original_text, proposed_text, surfacing=None, entry_is
         # nothing in that sentence says the job is additive.
         return (
             f"the rewrite removes supported detail: {', '.join(sorted(removed_skills))}. "
-            "Keep what is already there and add to it — a rewrite may be shorter, but not by "
-            "dropping a technology the bullet had earned"
+            f"Keep all of: {', '.join(sorted(original_skills))}. A rewrite may be shorter, but "
+            "not by dropping a technology the bullet had earned"
         )
 
     lost_names = dropped_names(original_text, proposed_text)
@@ -669,7 +672,8 @@ def merge_quality_issue(original_texts, proposed_text, answers=()):
     original_skills = set().union(*(set(named_skills(text)) for text in originals))
     removed_skills = original_skills - set(named_skills(proposed_text))
     if removed_skills:
-        return f"the merge removes supported detail: {', '.join(sorted(removed_skills))}"
+        return (f"the merge removes supported detail: {', '.join(sorted(removed_skills))}. "
+                f"Keep all of: {', '.join(sorted(original_skills))}")
 
     original_numbers = set().union(*(numeric_claims(text) for text in originals))
     if original_numbers - numeric_claims(proposed_text):
