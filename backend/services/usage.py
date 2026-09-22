@@ -47,6 +47,8 @@ MAX_OUTPUT_TOKENS = {
     "resume_structure": 6000,    # every entry and bullet of a resume
     "skill_relations": 1500,
     "tailoring_step": 1500,
+    # one structured review per bullet: the facts it quotes back make it the longest of these
+    "tailoring_review": 4000,
     "tailoring_diagnosis": 3000,  # one structured read per bullet in the run
     "surface_skill": 600,        # one bullet's worth of rewrite, and an index
     "default": 2000,
