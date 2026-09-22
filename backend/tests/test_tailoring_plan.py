@@ -224,3 +224,28 @@ def test_two_entries_with_identical_wording_each_keep_their_candidate():
     assert [item["targets"][0]["bullet_id"] for item in plan if item["targets"]] == [
         "bullet-a", "bullet-b",
     ]
+
+
+def _shared_bullet(order):
+    bullet = {"bullet_id": "shared", "text": "Worked on the React dashboard backend"}
+    items = {
+        "redux": {"requirement": "redux", "agent_label": "redux", "state": "INFERRED",
+                  "importance": "required", "inferred_from": ["react"], "evidence": [bullet]},
+        "backend": {"requirement": "backend", "agent_label": "backend", "state": "EXPLICIT",
+                    "importance": "required", "evidence": [bullet]},
+    }
+    return build_tailoring_plan({"requirements": [items[name] for name in order]})
+
+
+def test_requirement_order_does_not_decide_who_owns_a_bullet():
+    """Reproduced in review: this bullet became a Redux confirmation when Redux was listed
+    first and a backend rewrite when backend was. Ownership is by rank now, not position."""
+    def owners(plan):
+        return {item["agent_label"]: (item["action"], [t["bullet_id"] for t in item["targets"]])
+                for item in plan}
+
+    first, second = _shared_bullet(["redux", "backend"]), _shared_bullet(["backend", "redux"])
+
+    assert owners(first) == owners(second)
+    assert owners(first)["redux"] == ("confirm", ["shared"])
+    assert owners(first)["backend"][1] == []

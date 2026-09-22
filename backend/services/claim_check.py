@@ -273,8 +273,7 @@ def added_result_language(original_texts, proposed_text, answers=()):
         return None
     return (
         "the rewrite adds a result the bullet never claimed. State only outcomes the bullet "
-        "or the user's answer gives — ask with intent 'impact' if one is genuinely missing, "
-        "or keep the bullet as it is"
+        "or the user's answer gives, or keep the bullet as it is"
     )
 
 
@@ -380,6 +379,10 @@ SHARED_CREDIT = {
     "supported", "supporting", "participated", "participating", "collaborated", "collaborating",
     "involved", "shadowed", "shadowing",
 }
+# What the ownership check treats as less than sole credit. Wider than SHARED_CREDIT, which
+# the bullet heuristics also read: "Worked on backend services" says where, not what or
+# whose, and the first real eval run turned it into "Developed backend services" three times.
+LESSER_CREDIT = SHARED_CREDIT | {"worked", "working"}
 # Words that claim the whole of it.
 SOLE_CREDIT = {
     "architected", "built", "created", "designed", "developed", "engineered", "founded",
@@ -387,7 +390,7 @@ SOLE_CREDIT = {
 }
 
 
-def ownership_inflation(original_text, proposed_text):
+def ownership_inflation(original_text, proposed_text, answers=()):
     """"Contributing to X" rewritten as "Developed X", or nothing.
 
     The claim checker verifies technologies and numbers, which leaves the most common way a
@@ -401,11 +404,16 @@ def ownership_inflation(original_text, proposed_text):
     """
     original = set(_words(original_text))
     proposed = set(_words(proposed_text))
-    shared = original & SHARED_CREDIT
+    shared = original & LESSER_CREDIT
     if not shared or original & SOLE_CREDIT:
         return None
     claimed = proposed & SOLE_CREDIT
-    if not claimed or proposed & SHARED_CREDIT:
+    if not claimed or proposed & LESSER_CREDIT:
+        return None
+    # The user said they did it: "I built the order-status service" answers the very question
+    # "worked on" left open, and the rewrite that says "Built" is then the faithful one.
+    if any(set(_words(answer)) & (SOLE_CREDIT | _HANDS_ON | {"rewrote", "rewriting"})
+           for answer in answers):
         return None
     return (
         f"the bullet says {sorted(shared)[0]}, and the rewrite says {sorted(claimed)[0]} — "
@@ -579,7 +587,7 @@ def rewrite_quality_issue(original_text, proposed_text, surfacing=None, entry_is
     if original_words == proposed_words:
         return "the proposed edit is the same as the current bullet"
 
-    inflated = ownership_inflation(original_text, proposed_text)
+    inflated = ownership_inflation(original_text, proposed_text, answers)
     if inflated:
         return inflated
 

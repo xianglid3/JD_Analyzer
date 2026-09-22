@@ -176,11 +176,9 @@ def build_tailoring_plan(assessment, approved=frozenset(), bullets_by_entry=None
     """
     plan = []
     bullets_by_entry = bullets_by_entry or {}
-    # One bullet, one candidate — held as a set of bullet ids. A posting lists "java or golang
-    # or python or c++…" and "c# or c++ or java" as separate requirements, and the same C++
-    # bullet is the evidence for both, so the agent was sent to fight the same rewrite twice.
-    # The argument applies to every kind of target.
-    claimed_targets = set()
+    # Targets are gathered without claiming; `_assign_owners` then gives each bullet to one
+    # candidate. Claiming as we went meant whichever requirement the posting listed first won.
+    claimed_targets = frozenset()
     for position, item in enumerate((assessment or {}).get("requirements") or []):
         state = item.get("state")
         citable = _has_citable_evidence(item)
@@ -242,13 +240,6 @@ def build_tailoring_plan(assessment, approved=frozenset(), bullets_by_entry=None
             action = "only_in_skills"
             reason = _outside_bullets_reason(item)
 
-        # whatever this candidate took, no later one may take again. Keyed on bullet id, not
-        # text: two entries can carry word-for-word identical bullets, and keying on the words
-        # silently dropped the second one's candidate.
-        claimed_targets.update(
-            target["bullet_id"] for target in targets if target.get("bullet_id")
-        )
-
         plan.append({
             "position": position,
             "requirement": item.get("requirement") or "Requirement",
@@ -265,7 +256,52 @@ def build_tailoring_plan(assessment, approved=frozenset(), bullets_by_entry=None
             "condition": item.get("condition"),
             "evidence_count": len(item.get("evidence") or []),
             "targets": targets,
+            # every bullet a met requirement cites, weak or not: the diagnosis reads them all,
+            # because "already strong" by regex is as unreliable as "weak" by regex
+            "cited": [
+                {"bullet_id": str(evidence["bullet_id"]), "text": evidence.get("text") or ""}
+                for evidence in item.get("evidence") or []
+                if evidence.get("bullet_id") and state == EXPLICIT
+            ],
         })
+    return _assign_owners(plan)
+
+
+# Which candidate a shared bullet belongs to. Confirming a skill comes before rewording the
+# bullet it is on — a yes is what lets the rewrite say it — and a skill the user placed there
+# comes before both.
+_OWNER_RANK = {"show_in_bullet": 0, "confirm": 1, "rewrite": 2}
+_IMPORTANCE_RANK = {"required": 0, "preferred": 1, "nice_to_have": 2}
+
+
+def _assign_owners(plan):
+    """One bullet, one candidate, decided by what each candidate is — never by position.
+
+    A posting lists "java or golang or python or c++" and "c# or c++ or java" separately, and
+    the same C++ bullet is evidence for both; without one owner the agent fought the same
+    rewrite twice. First-claim ownership fixed that and introduced a worse fault: the same
+    bullet became a Redux confirmation when Redux was listed first and a backend rewrite when
+    backend was. Rank is action, then importance, then the candidate's own name. Keyed on
+    bullet id, not text: two entries can carry word-for-word identical bullets.
+    """
+    owner = {}
+    for index, item in enumerate(plan):
+        if item["action"] not in _OWNER_RANK:
+            continue
+        rank = (
+            _OWNER_RANK[item["action"]],
+            _IMPORTANCE_RANK.get(item.get("importance"), 3),
+            normalize_skill(item.get("agent_label") or item.get("requirement") or ""),
+        )
+        for target in item.get("targets") or []:
+            bullet_id = target.get("bullet_id")
+            if bullet_id and (bullet_id not in owner or rank < owner[bullet_id][0]):
+                owner[bullet_id] = (rank, index)
+    for index, item in enumerate(plan):
+        item["targets"] = [
+            target for target in item.get("targets") or []
+            if not target.get("bullet_id") or owner.get(target["bullet_id"], (None, index))[1] == index
+        ]
     return plan
 
 

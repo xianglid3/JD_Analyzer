@@ -1,0 +1,319 @@
+{
+  "_about": "End-to-end tailoring cases: each builds a real user, resume and job in the local test database, then runs planner -> diagnosis -> editor (question and/or edit) -> the server's validation with the real model. `expect` is the acceptable final outcome: keep (no question, no edit), rewrite (an edit, no question), ask (exactly one question, then an edit once `answer` is given), confirm (the server's establish-use question). `answers` are from an EARLIER run; `answer` answers this run's question. `expect_diagnosis` is the acceptable diagnosis decision, null meaning the bullet never reaches diagnosis (settled or confirmed first); it is checked separately, so an editor that happens to keep cannot hide a diagnosis that wanted needless work.",
+  "default_job": {
+    "title": "Backend Software Engineer",
+    "company": "Globex",
+    "summary": "Builds and operates the services behind the ordering platform: APIs, data storage, background jobs.",
+    "requirements": [
+      "python",
+      "go",
+      "api",
+      "postgresql",
+      "backend"
+    ]
+  },
+  "cases": [
+    {
+      "id": "llm_grounding",
+      "entry": {
+        "organization": "JD Translator",
+        "title": "Developer"
+      },
+      "text": "Built an LLM-powered job analysis and resume tailoring platform with server-enforced grounding: proposed edits are rejected unless their cited evidence belongs to the user and was retrieved during the same agent run.",
+      "job": {
+        "title": "AI Engineer",
+        "company": "Globex",
+        "summary": "Builds LLM features.",
+        "requirements": [
+          "ai",
+          "backend"
+        ]
+      },
+      "expect": [
+        "keep"
+      ],
+      "why": "Specific already; no AI-use or impact question.",
+      "expect_diagnosis": [
+        null,
+        "keep"
+      ]
+    },
+    {
+      "id": "idempotency",
+      "entry": {
+        "organization": "JD Translator",
+        "title": "Developer"
+      },
+      "text": "Implemented reserve-before-spend idempotency for job-draft creation so duplicate requests cannot trigger duplicate LLM calls, with stored-response replay after completion.",
+      "expect": [
+        "keep"
+      ],
+      "why": "The prevented failure is the outcome, and it is stated.",
+      "expect_diagnosis": [
+        null,
+        "keep"
+      ]
+    },
+    {
+      "id": "fastapi_react_mapbox",
+      "entry": {
+        "organization": "Campus Events",
+        "title": "Developer"
+      },
+      "text": "Designed a FastAPI backend with Supabase and REST APIs for event creation, updates, and geocoded location storage; integrated it with a React/TypeScript calendar and Mapbox interface.",
+      "siblings": [
+        "Deployed the app on Render with GitHub Actions running the test suite on every push."
+      ],
+      "job": {
+        "title": "Backend Software Engineer",
+        "company": "Globex",
+        "summary": "APIs and services.",
+        "requirements": [
+          {
+            "any_of": [
+              "go",
+              "typescript",
+              "python"
+            ]
+          },
+          "api"
+        ]
+      },
+      "expect": [
+        "keep"
+      ],
+      "why": "Already concrete; at most a faithful evidence-only rewrite.",
+      "expect_diagnosis": [
+        "keep"
+      ]
+    },
+    {
+      "id": "strong_no_metric",
+      "entry": {
+        "organization": "Job Tracker",
+        "title": "Developer"
+      },
+      "text": "Designed a PostgreSQL schema and Flask REST endpoints for tracking job applications, with ownership checks on every query.",
+      "expect": [
+        "keep"
+      ],
+      "why": "A missing number is not a missing fact.",
+      "expect_diagnosis": [
+        "keep"
+      ]
+    },
+    {
+      "id": "worked_on_backend",
+      "entry": {
+        "organization": "Acme",
+        "title": "Software Engineering Intern"
+      },
+      "text": "Worked on backend services for the ordering platform.",
+      "siblings": [
+        "Attended sprint planning and code reviews with the team."
+      ],
+      "expect": [
+        "ask"
+      ],
+      "answer": "I built the order-status service in Python: the endpoint that reports where each order is, backed by PostgreSQL.",
+      "why": "Ask which service they built; then rewrite from the answer.",
+      "expect_diagnosis": [
+        "ask"
+      ]
+    },
+    {
+      "id": "helped_checkout",
+      "entry": {
+        "organization": "ShopCo",
+        "title": "Software Engineering Intern"
+      },
+      "text": "Helped improve the checkout flow for the web store backend.",
+      "siblings": [
+        "Joined the weekly on-call rotation for the storefront."
+      ],
+      "expect": [
+        "ask"
+      ],
+      "answer": "I rewrote the address-validation step of checkout and its API endpoint in Python.",
+      "why": "The context never says what they personally changed.",
+      "expect_diagnosis": [
+        "ask"
+      ]
+    },
+    {
+      "id": "rewrite_from_evidence",
+      "entry": {
+        "organization": "Initech",
+        "title": "Backend Intern"
+      },
+      "text": "Was responsible for the creation of REST API endpoints in Python Flask that were used for the purpose of managing user accounts and also handling authentication.",
+      "expect": [
+        "rewrite"
+      ],
+      "why": "Every fact is there; the wording is the problem.",
+      "expect_diagnosis": [
+        "rewrite"
+      ]
+    },
+    {
+      "id": "sibling_has_answer",
+      "entry": {
+        "organization": "PayCo",
+        "title": "Software Engineering Intern"
+      },
+      "text": "Worked on the payments backend.",
+      "siblings": [
+        "Built the refund service in Go that retries failed payouts through a PostgreSQL-backed queue."
+      ],
+      "expect": [
+        "keep"
+      ],
+      "why": "The sibling already says what they built; do not ask.",
+      "expect_diagnosis": [
+        "keep"
+      ]
+    },
+    {
+      "id": "prior_answer_has_fact",
+      "entry": {
+        "organization": "Acme",
+        "title": "Software Engineering Intern"
+      },
+      "text": "Worked on backend services for the ordering platform.",
+      "answers": [
+        "I built the order-status service in Python, including its PostgreSQL schema and the polling endpoint."
+      ],
+      "expect": [
+        "keep"
+      ],
+      "why": "Already asked and answered; do not ask again.",
+      "expect_diagnosis": [
+        "keep"
+      ]
+    },
+    {
+      "id": "many_requirements_one_bullet",
+      "entry": {
+        "organization": "Initech",
+        "title": "Backend Intern"
+      },
+      "text": "Built a Flask API with PostgreSQL for an internal inventory tool used by the warehouse team.",
+      "job": {
+        "title": "Backend Software Engineer",
+        "company": "Globex",
+        "summary": "APIs and services.",
+        "requirements": [
+          "python",
+          "postgresql",
+          "api",
+          "backend"
+        ]
+      },
+      "expect": [
+        "keep"
+      ],
+      "why": "One combined decision; four matches are not four tasks.",
+      "check_order_independence": true,
+      "expect_diagnosis": [
+        "keep"
+      ]
+    },
+    {
+      "id": "irrelevant_backend_topic",
+      "entry": {
+        "organization": "ShopCo",
+        "title": "Frontend Intern"
+      },
+      "text": "Built a React dashboard in TypeScript that shows weekly sales for the marketing team.",
+      "job": {
+        "title": "Backend Software Engineer",
+        "company": "Globex",
+        "summary": "Services and data.",
+        "requirements": [
+          {
+            "any_of": [
+              "go",
+              "typescript",
+              "python"
+            ]
+          },
+          "distributed systems"
+        ]
+      },
+      "expect": [
+        "keep"
+      ],
+      "why": "A frontend bullet need not prove backend depth; do not force a question.",
+      "expect_diagnosis": [
+        "keep"
+      ]
+    },
+    {
+      "id": "learned_only_relation",
+      "entry": {
+        "organization": "ShopCo",
+        "title": "Frontend Intern"
+      },
+      "text": "Built the state management layer for a React dashboard.",
+      "job": {
+        "title": "Frontend Engineer",
+        "company": "Globex",
+        "summary": "Builds the React web app.",
+        "requirements": [
+          "redux"
+        ]
+      },
+      "learned": [
+        [
+          "react",
+          "redux"
+        ]
+      ],
+      "expect": [
+        "confirm",
+        "keep"
+      ],
+      "confirm_answer": true,
+      "why": "Whether Redux was used is genuinely unknown; the server's confirmation may be asked.",
+      "expect_diagnosis": [
+        null
+      ]
+    },
+    {
+      "id": "adversarial_database_decision",
+      "entry": {
+        "organization": "DataCo",
+        "title": "Intern"
+      },
+      "text": "Built a data pipeline in Python for the analytics team.",
+      "expect": [
+        "keep",
+        "ask"
+      ],
+      "answer": "I wrote the Python job that loads the daily order export into PostgreSQL.",
+      "why": "Any question must be about what the bullet says — never a database it never mentions.",
+      "expect_diagnosis": [
+        "keep",
+        "ask"
+      ]
+    },
+    {
+      "id": "adversarial_tools_question",
+      "entry": {
+        "organization": "ShopCo",
+        "title": "Intern"
+      },
+      "text": "Built the backend for the store's returns page.",
+      "expect": [
+        "keep",
+        "ask"
+      ],
+      "answer": "I wrote the returns API in Python and the PostgreSQL table behind it.",
+      "why": "Tempting to ask 'what tools did you use?' — that question cannot be produced.",
+      "expect_diagnosis": [
+        "keep",
+        "ask"
+      ]
+    }
+  ]
+}

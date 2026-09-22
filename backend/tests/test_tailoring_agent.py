@@ -250,14 +250,18 @@ def test_cannot_cite_another_users_bullet(monkeypatch, fixtures, _db):
     assert "not part of your resume" in run["trace"][1]["error"]
 
 
-def test_edit_with_no_evidence_ids_is_rejected(monkeypatch, fixtures, k8s_bullet, _db):
+def test_an_edit_with_no_evidence_ids_cites_its_own_bullet(monkeypatch, fixtures, k8s_bullet, _db):
+    """This used to be refused. A one-bullet rewrite may cite only the bullet it rewrites, so
+    an empty list has exactly one right answer — and refusing it cost a real eval run its
+    candidate. It can never mean "no evidence": the edit is grounded in its own bullet, and
+    citing a *different* bullet is still refused (the splice test below)."""
     script(
         monkeypatch,
         response([call("search_resume", {"query": "kubernetes"}, "c1")]),
         response([call("propose_edit", {
             "requirement": "Kubernetes",
             "bullet_id": k8s_bullet,
-            "proposed_text": "Ran Kubernetes at scale",
+            "proposed_text": "Deployed Kubernetes services across three regions",
             "evidence_bullet_ids": [],
         }, "c2")]),
         response(content="Understood."),
@@ -267,8 +271,16 @@ def test_edit_with_no_evidence_ids_is_rejected(monkeypatch, fixtures, k8s_bullet
 
     with _db.cursor() as cur:
         run = load_run(cur, fixtures["user_id"], result["run_id"])
-    assert run["edits"] == []
-    assert "evidence" in run["trace"][1]["error"]
+        cur.execute(
+            """
+            SELECT l.bullet_id FROM evidence_links AS l
+            JOIN proposed_edits AS e ON e.id = l.edit_id WHERE e.run_id = %s
+            """,
+            (result["run_id"],),
+        )
+        cited = [str(row[0]) for row in cur.fetchall()]
+    assert len(run["edits"]) == 1
+    assert cited == [k8s_bullet]
 
 
 def test_one_bullet_rewrite_cannot_splice_in_another_bullets_facts(
@@ -400,51 +412,41 @@ def test_run_without_evidence_stops_before_spending(monkeypatch, fixtures, _db):
     assert called == []
 
 
-def test_javascript_implied_by_react_needs_no_confirmation(
-    monkeypatch, fixtures, k8s_bullet, _db,
+@pytest.mark.parametrize("bullet, requirement", [
+    ("Built the frontend with React and TypeScript", "javascript"),
+    ("Built an LLM-powered job analysis and resume tailoring platform with server-enforced "
+     "grounding", "ai"),
+])
+def test_a_confirm_the_bullet_already_settles_takes_zero_steps(
+    monkeypatch, fixtures, k8s_bullet, _db, bullet, requirement,
 ):
-    """React implies JavaScript through the hand-written table, which is the same rule the fit
-    engine used to call it INFERRED. Asking "did you use javascript?" about a React bullet is
-    the redundant question from the 2026-09-21 run (there it was LLM and AI)."""
+    """React implies JavaScript and LLM implies AI through the hand-written table — the rule
+    the fit engine used to call them INFERRED. Sent to the agent, that bought a refused
+    question and then a substitute one ("what improvements did the platform provide?").
+    Settled in the plan, it never becomes a task, and the model is never called."""
     with _db.cursor() as cur:
-        cur.execute(
-            "UPDATE resume_bullets SET text = 'Built the frontend with React and TypeScript' WHERE user_id = %s",
-            (fixtures["user_id"],),
-        )
+        cur.execute("UPDATE resume_bullets SET text = %s WHERE user_id = %s",
+                    (bullet, fixtures["user_id"]))
         cur.execute(
             """
-            UPDATE jobs SET skills = '["javascript"]'::jsonb,
-                requirements = '[{"skill":"javascript","importance":"required","type":"skill"}]'::jsonb,
-                match_detail = NULL
+            UPDATE jobs SET skills = %s::jsonb, requirements = %s::jsonb, match_detail = NULL
             WHERE id = %s
             """,
-            (fixtures["job_id"],),
+            (json.dumps([requirement]),
+             json.dumps([{"skill": requirement, "importance": "required", "type": "skill"}]),
+             fixtures["job_id"]),
         )
     _db.commit()
-    script(
-        monkeypatch,
-        response([call("search_resume", {"query": "javascript"}, "c1")]),
-        response([call("request_detail", {
-            "requirement": "javascript",
-            "bullet_id": str(k8s_bullet),
-            "intent": "establish_use",
-            "question": "Did you write JavaScript here?",
-        }, "c2")]),
-        response(content="Nothing to ask."),
-    )
+    sent = script(monkeypatch)
 
     result = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
 
+    assert sent == []
     with _db.cursor() as cur:
-        run = load_run(cur, fixtures["user_id"], result["run_id"])
-        cur.execute(
-            "SELECT error_message FROM tool_calls WHERE run_id = %s AND status = 'failed'",
-            (result["run_id"],),
-        )
-        refusals = [row[0] for row in cur.fetchall()]
-    assert run["outcomes"][0]["action"] == "confirm"
-    assert run["detail_requests"] == []
-    assert any("already shows javascript" in message for message in refusals), refusals
+        run = load_run(cur, fixtures["user_id"], result["run_id"]) if result.get("run_id") else None
+    if run:
+        assert run["detail_requests"] == []
+        assert run["outcomes"][0]["action"] == "keep"
 
 
 def test_load_run_is_ownership_scoped(monkeypatch, fixtures, _db):
@@ -2246,3 +2248,4 @@ def test_saying_no_finishes_the_candidate(monkeypatch, fixtures, k8s_bullet, _db
                   for item in candidates_state.load(cur, paused["run_id"])}
 
     assert states.get("redux") == "skipped"
+

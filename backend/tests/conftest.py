@@ -140,3 +140,12 @@ def _isolate_skill_relations():
     skill_relations.reset()
     yield
     skill_relations.reset()
+
+
+@pytest.fixture(autouse=True)
+def _diagnosis_off(monkeypatch):
+    """Most tests are about the editing loop and script only its model turns. The diagnosis
+    step is its own paid call; tests that exercise it switch it back on and script it."""
+    from services import bullet_diagnosis
+
+    monkeypatch.setattr(bullet_diagnosis, "ENABLED", False)

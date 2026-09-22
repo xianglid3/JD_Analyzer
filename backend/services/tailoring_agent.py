@@ -54,6 +54,8 @@ from services.tailoring_plan import (
     rewrite_candidates,
 )
 from services.usage import QuotaExceeded, check_quota, finalize, reserve
+from services.usage import budget as usage_budget
+from services import bullet_diagnosis
 
 logger = logging.getLogger(__name__)
 
@@ -97,11 +99,10 @@ A rewrite must improve structure or surface supported evidence, not merely excha
 Example: evidence "Worked on Kubernetes deployments across three regions" may become
 "Deployed Kubernetes services across three regions." Changing "through" to "via" is not useful.
 If two short bullets in the same entry repeat the same work, merge_bullets may combine them.
-If the evidence needs a missing metric or scope detail to become stronger, request_detail asks
-the user a focused question. Never guess the answer.
+Never guess a fact the evidence does not give.
 
 You receive only approved tailoring candidates. Work ONE candidate at a time:
-1. Read the supplied target text and why it is weak. Each candidate comes with the exact
+1. Read the supplied target text and its Decision. Each candidate comes with the exact
    `bullet_id` of the bullet you may edit — use that one. You do not need to search for it, and
    searching for a bullet you have already been given wastes a step.
 2. Call search_resume only when you need something the brief did not give you: a second bullet
@@ -112,22 +113,21 @@ You receive only approved tailoring candidates. Work ONE candidate at a time:
    established that this bullet involved the requirement, the only intent available is
    `establish_use` — the server writes that question, so send the requirement and bullet_id and
    do not draft it yourself. Once use IS established (the bullet names it, or the user has said
-   so), the only other question is `implementation`: which part was theirs, or which component,
-   query or service they built or changed — and only when the bullet does not already say.
-   Never ask what improved, how much, or for a metric: a result or size the bullet lacks is
-   not a reason to ask. "Which technologies did you use?" is a wasted question too — the
-   bullet already answers it, so the reply restates the bullet.
+   so), questions are decided before you start: a target whose Decision is "ask" names the
+   one question, and the server sends that question whatever you write. Any other target
+   gets no question. Never ask what improved, how much, for a metric, or which technologies
+   they used.
    When a requirement lists alternatives ("go or typescript or python"), every request_detail
    names the ONE alternative it is about in `skill`. If the bullet already shows enough of
    them, there is nothing to establish — do not ask.
    For [confirm] specifically: you are finding out whether they used it, not assuming they did.
    If the bullet already shows it, there is nothing to ask at all — propose_edit from what the
    bullet says, or keep_original.
-5. For [strengthen], the requirement is already on the page. Propose an edit only if it makes
-   the bullet genuinely better from what it already says. Otherwise keep_original.
-6. For [rewrite], after searching, use propose_edit for one grounded structural improvement, merge_bullets for two
-   or three repetitive bullets in the same entry, or request_detail when a useful fact is missing.
-7. If none is appropriate, call keep_original. That FINISHES the candidate successfully — it is
+5. For [rewrite]: Decision "rewrite" — propose_edit using only what the bullet, its entry and
+   the user's answers say, or merge_bullets for two or three repetitive bullets in the same
+   entry. Decision "ask" — call request_detail with that bullet_id and intent `implementation`,
+   and once it is answered, propose_edit using the answer.
+6. If none is appropriate, call keep_original. That FINISHES the candidate successfully — it is
    not a failure and not something to avoid. A candidate is never finished by silence.
 
 Never work on a requirement outside the approved candidate list. Missing and uncertain requirements are
@@ -380,9 +380,9 @@ def job_brief(job, assessment=None, plan=None):
                 lines.extend([
                     f"  {RESUME_OPEN}",
                     f"  Target: {strip_fence_markers(target['text'])}",
-                    f"  Why it needs work: {target['weakness']}",
                     f"  {RESUME_CLOSE}",
                 ])
+                lines.append(f"  {_target_instruction(target)}")
 
         lines.append("")
         lines.append(
@@ -391,6 +391,27 @@ def job_brief(job, assessment=None, plan=None):
         )
 
     return "\n".join(lines)
+
+
+def _target_instruction(target):
+    """What the model is told to do with one target. Outside the fence: it is our decision,
+    not the resume's words — though the problem and question it quotes came from a model
+    reading them, so they are kept to one line each."""
+    def line(key):
+        return strip_fence_markers(target.get(key) or "").replace("\n", " ").strip()
+
+    problem, kind = line("weakness"), (target.get("problem_type") or "").replace("_", " ")
+    if target.get("decision") == bullet_diagnosis.ASK:
+        improvement = line("expected_improvement")
+        return (f"Decision: ask ({kind}) — {problem} Call request_detail with this bullet_id and "
+                f"intent implementation; the server sends: \"{line('question')}\". Once it is "
+                f"answered, propose_edit so that: {improvement or 'the bullet states what the answer says'}. "
+                "Use only the bullet and the answer; add no result the answer does not give.")
+    if target.get("decision") == bullet_diagnosis.REWRITE:
+        return (f"Decision: rewrite ({kind}) — {problem} Fix exactly these words: \"{line('span')}\". "
+                "Change nothing else's meaning; add no result, benefit or new verb, and keep "
+                "every technology and name. Do not ask.")
+    return f"Why it needs work: {problem}"
 
 
 # The two model tools. user_id comes from the server; the model never names a user.
@@ -671,8 +692,12 @@ def tool_propose_edit(cur, user_id, run_id, arguments, surfacing=None):
         raise GroundingError("every bullet id must be a valid UUID") from None
     if len(proposed_text) > MAX_PROPOSED_TEXT_CHARS:
         raise GroundingError(f"proposed_text must be {MAX_PROPOSED_TEXT_CHARS} characters or fewer")
-    if not isinstance(evidence_ids, list) or not evidence_ids:
-        raise GroundingError("evidence_bullet_ids is required — an edit with no evidence is not allowed")
+    if not evidence_ids:
+        # A one-bullet rewrite may cite only that bullet, so there is exactly one right answer
+        # here. Refusing its absence cost a real run the candidate: two refusals, retired.
+        evidence_ids = [bullet_id]
+    if not isinstance(evidence_ids, list):
+        raise GroundingError("evidence_bullet_ids must be a list of bullet ids")
     if {str(value) for value in evidence_ids} != {bullet_id}:
         raise GroundingError(
             "a one-bullet rewrite may cite only that bullet. Anything the user told you about "
@@ -924,7 +949,28 @@ def _condition_viable(condition, denied):
     return len(open_items) >= min(condition.get("minimum") or 1, len(items))
 
 
-def tool_request_detail(cur, user_id, run_id, arguments, condition=None, action=None):
+def _request_detail(cur, user_id, run_id, arguments, condition, action, planned, rewrite_only):
+    """The diagnosis decided which bullets get a question and what it is. The model may send
+    that question, in whatever words — ours are what is stored — and nothing else."""
+    try:
+        bullet_id = str(UUID(str(arguments.get("bullet_id") or "").strip()))
+    except (TypeError, ValueError, AttributeError):
+        bullet_id = None
+    if bullet_id in planned:
+        arguments["question"], arguments["intent"] = planned[bullet_id], "implementation"
+        return tool_request_detail(cur, user_id, run_id, arguments, condition=condition,
+                                   action=action, planned=True)
+    if bullet_id in rewrite_only:
+        raise GroundingError(
+            "no question was planned for this bullet — it can be improved from what it already "
+            "says. Use propose_edit, or keep_original"
+        )
+    return tool_request_detail(cur, user_id, run_id, arguments, condition=condition,
+                               action=action)
+
+
+def tool_request_detail(cur, user_id, run_id, arguments, condition=None, action=None,
+                        planned=False):
     requirement = (arguments.get("requirement") or "").strip()
     bullet_id = (arguments.get("bullet_id") or "").strip()
     question = (arguments.get("question") or "").strip()
@@ -951,7 +997,11 @@ def tool_request_detail(cur, user_id, run_id, arguments, condition=None, action=
     # requirement; a question is about one of them, and so is the answer.
     condition = condition or _single_condition(normalize_skill(requirement))
     items = _condition_items(condition)
-    if len(items) > 1:
+    if planned:
+        # validated before the run started: one missing fact about this bullet, not a
+        # premise about a skill, so neither the skill nor the premise gate applies
+        skill = named or (items[0] if len(items) == 1 else None)
+    elif len(items) > 1:
         if not named:
             raise GroundingError(
                 f"{requirement} has alternatives — name the one this question is about in "
@@ -963,8 +1013,11 @@ def tool_request_detail(cur, user_id, run_id, arguments, condition=None, action=
     else:
         skill = items[0] if items else normalize_skill(requirement)
 
-    established = _established_skills(cur, user_id, run_id, items or [skill], [bullet_id])
-    if action == "confirm" and _condition_satisfied(condition, established):
+    established = (
+        set() if planned
+        else _established_skills(cur, user_id, run_id, items or [skill], [bullet_id])
+    )
+    if not planned and action == "confirm" and _condition_satisfied(condition, established):
         # A confirm candidate exists to find out whether they used it. Once the bullet shows
         # it, that question is answered, and what is left is not a reason for a new one: LLM
         # establishes AI, and "what improvements did the platform provide?" filled the gap.
@@ -1001,7 +1054,7 @@ def tool_request_detail(cur, user_id, run_id, arguments, condition=None, action=
             raise GroundingError("question is required")
         # the premise is this skill, not the group: "any of go or typescript" met by
         # TypeScript does not make a question about Go's impact answerable
-        if skill not in established:
+        if not planned and skill not in established:
             raise GroundingError(
                 f"nothing establishes that this bullet involved {skill}, so you cannot "
                 f"ask how it was built or what it improved. Ask with intent "
@@ -1205,7 +1258,8 @@ def _satisfied_on(cur, user_id, run_id, condition, bullet_ids):
 
 def execute_tool(
     cur, user_id, run_id, step, call, allowed_requirements, allowed_targets, allowed_actions,
-    allowed_labels=None, resolved=None, allowed_conditions=None,
+    allowed_labels=None, resolved=None, allowed_conditions=None, planned_questions=None,
+    rewrite_only=None,
 ):
     """Run one tool call and record it. A rejection is a failed call handed back to the
     model, not an error the user sees.
@@ -1324,10 +1378,11 @@ def execute_tool(
                             allowed_targets, merging=name == "merge_bullets",
                         )
                         if name == "request_detail":
-                            result = tool_request_detail(
+                            result = _request_detail(
                                 cur, user_id, run_id, arguments,
-                                condition=_candidate_condition(allowed_conditions, requirement),
-                                action=allowed_actions.get(requirement),
+                                _candidate_condition(allowed_conditions, requirement),
+                                allowed_actions.get(requirement),
+                                planned_questions or {}, rewrite_only or set(),
                             )
                         else:
                             result = implementation(cur, user_id, run_id, arguments)
@@ -1454,8 +1509,8 @@ def failure_key(tool_name, raw_arguments, error):
 def replay_messages(cur, run_id):
     """Rebuild the conversation from `tool_calls`, minus the rows the model never called.
 
-    `evidence_supplied` is a record of something the server did, not a tool the model
-    invoked. Replaying it would hand the model an assistant message calling a tool that is
+    `evidence_supplied` and `bullet_diagnosis` are records of something the server did, not
+    tools the model invoked. Replaying it would hand the model an assistant message calling a tool that is
     not in its schema.
 
     Every step was already written down for the audit trail — the assistant's tool call with
@@ -1469,10 +1524,10 @@ def replay_messages(cur, run_id):
         """
         SELECT step_number, call_id, tool_name, arguments, result, status, error_message
         FROM tool_calls
-        WHERE run_id = %s AND tool_name <> %s
+        WHERE run_id = %s AND tool_name NOT IN (%s, %s)
         ORDER BY step_number, created_at
         """,
-        (run_id, SUPPLIED),
+        (run_id, SUPPLIED, bullet_diagnosis.DIAGNOSIS),
     )
 
     messages, current_step, pending = [], None, []
@@ -1572,7 +1627,8 @@ def _candidate_still_viable(cur, user_id, run_id, job_id, requirement):
     given every skill the user has denied on it this run."""
     key = normalize_skill(requirement or "")
     _job, assessment = load_job_assessment(cur, user_id, job_id)
-    plan = build_tailoring_plan(assessment, bullets_by_entry=bullets_by_entry(cur, user_id))
+    plan = run_plan(cur, user_id, assessment, bullets_by_entry(cur, user_id),
+                    bullet_diagnosis.load(cur, run_id))
     item = next((item for item in agent_candidates(plan) if _candidate_key(item) == key), None)
     if item is None:
         return False
@@ -1812,6 +1868,126 @@ def beat(get_cursor, run_id, steps_used=None):
         logger.exception("heartbeat failed for run_id=%s (run continues)", run_id)
 
 
+# ── the plan a run works from ────────────────────────────────────────────────
+
+SETTLED_REASON = "The bullet already shows this; there is nothing to confirm."
+KEPT_OUTCOME = "Read in context, the bullet is already clear for this job."
+
+
+def settle_established_confirms(cur, user_id, plan):
+    """Drop `confirm` targets the bullet already settles, before any task exists.
+
+    LLM establishes AI through the hand-written table. Sending that to the agent bought a
+    refused question and then a substitute one; settled here, it costs no step at all. Only
+    what holds outside any run counts — the bullet's own words, the table, the entry's
+    affirmed skills — so a "yes" given during a run cannot retire the rewrite it unlocks.
+    """
+    for item in plan:
+        if item["action"] != "confirm" or not item.get("targets"):
+            continue
+        condition = _plan_condition(item)
+        open_targets = [
+            target for target in item["targets"]
+            if not _satisfied_on(cur, user_id, None, condition, [target["bullet_id"]])
+        ]
+        if len(open_targets) == len(item["targets"]):
+            continue
+        item["targets"] = open_targets
+        if not open_targets:
+            item["action"], item["reason"] = "keep", SETTLED_REASON
+    return plan
+
+
+_EDITABLE = ("rewrite", "keep")
+_IMPORTANCE = {"required": 0, "preferred": 1, "nice_to_have": 2}
+
+
+def _diagnosis_owners(plan):
+    """{bullet_id: plan index} for every bullet a met requirement cites.
+
+    Every one, not only those a regex called weak: "Helped improve the checkout flow" reads as
+    strong to `bullet_quality_gaps` and was never looked at. A bullet a confirm or
+    show-in-bullet candidate holds is left to that candidate. Among the rest, the owner is by
+    importance, then name — never by the order the posting lists requirements in.
+    """
+    held = {
+        target["bullet_id"]
+        for item in plan if item["action"] not in _EDITABLE
+        for target in item.get("targets") or [] if target.get("bullet_id")
+    }
+    owner = {}
+    for index, item in enumerate(plan):
+        if item["action"] not in _EDITABLE:
+            continue
+        rank = (_IMPORTANCE.get(item.get("importance"), 3), _candidate_key(item))
+        for cited in [*(item.get("cited") or []), *(item.get("targets") or [])]:
+            bullet_id = cited.get("bullet_id")
+            if bullet_id and bullet_id not in held and (
+                bullet_id not in owner or rank < owner[bullet_id][0]
+            ):
+                owner[bullet_id] = (rank, index)
+    return {bullet_id: index for bullet_id, (_rank, index) in owner.items()}
+
+
+def _diagnosis_bullets(plan):
+    return sorted(_diagnosis_owners(plan))
+
+
+def apply_diagnoses(plan, diagnoses):
+    """Carry each bullet's decision onto the candidate that owns it.
+
+    A kept bullet leaves the plan, so the model never sees it; a `keep` requirement whose
+    bullet the diagnosis says needs work becomes a `rewrite` candidate. Returns the keys of
+    candidates left with nothing to do.
+    """
+    owners = _diagnosis_owners(plan)
+    texts = {
+        cited["bullet_id"]: cited.get("text") or ""
+        for item in plan for cited in [*(item.get("cited") or []), *(item.get("targets") or [])]
+        if cited.get("bullet_id")
+    }
+    emptied = []
+    for index, item in enumerate(plan):
+        if item["action"] not in _EDITABLE:
+            continue
+        was_work = item["action"] == "rewrite"
+        targets = []
+        for bullet_id in sorted(b for b, owner in owners.items() if owner == index):
+            decision = diagnoses.get(bullet_id) or {"decision": bullet_diagnosis.KEEP}
+            if decision["decision"] == bullet_diagnosis.KEEP:
+                continue
+            targets.append({
+                "bullet_id": bullet_id,
+                "text": texts.get(bullet_id, ""),
+                "decision": decision["decision"],
+                "weakness": decision.get("specific_problem") or "",
+                "question": decision.get("question"),
+                # what the editor needs to act on the decision rather than guess at it: which
+                # words to fix, and what the answer is supposed to change
+                "problem_type": decision.get("problem_type"),
+                "span": decision.get("span"),
+                "expected_improvement": decision.get("expected_improvement"),
+            })
+        item["targets"] = targets
+        if targets:
+            item["action"] = "rewrite"
+            item["reason"] = "Read in context, this bullet can be made clearer for this job."
+        else:
+            item["action"], item["reason"] = "keep", KEPT_OUTCOME
+            if was_work:
+                emptied.append(_candidate_key(item))
+    return plan, emptied
+
+
+def run_plan(cur, user_id, assessment, entry_bullets, diagnoses=None):
+    plan = settle_established_confirms(
+        cur, user_id, build_tailoring_plan(assessment, bullets_by_entry=entry_bullets),
+    )
+    if diagnoses is not None:
+        plan, _emptied = apply_diagnoses(plan, diagnoses)
+    return plan
+
+
 def bullets_by_entry(cur, user_id):
     """{entry_id: [{id, text}]} — what a `show_in_bullet` candidate can offer as targets."""
     cur.execute(
@@ -1930,9 +2106,7 @@ def start_run(get_cursor, user_id, job_id, max_steps=DEFAULT_MAX_STEPS):
             return {"error": "no_evidence"}  # nothing to cite, so nothing worth proposing
         if evidence_is_stale(cur, user_id):
             return {"error": "stale_evidence"}   # it would cite a resume they replaced
-        plan = build_tailoring_plan(
-            assessment, bullets_by_entry=bullets_by_entry(cur, user_id),
-        )
+        plan = run_plan(cur, user_id, assessment, bullets_by_entry(cur, user_id))
 
     if agent_candidates(plan):
         try:
@@ -1992,7 +2166,41 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
         job, assessment = load_job_assessment(cur, user_id, job_id)
         # kept, not discarded: the merge scope below needs each target's entry siblings
         entry_bullets = bullets_by_entry(cur, user_id)
-        plan = build_tailoring_plan(assessment, bullets_by_entry=entry_bullets)
+        plan = run_plan(cur, user_id, assessment, entry_bullets)
+        # Decided once, at the start of a fresh run, and read back on every resume: a second
+        # diagnosis could disagree with the first about a question the user already answered.
+        # A run that never had one — older, or started with the step off — keeps its rules.
+        diagnoses = bullet_diagnosis.load(cur, run_id)
+        tasks = []
+        if diagnoses is None and not resume_from and bullet_diagnosis.ENABLED:
+            tasks = bullet_diagnosis.build_tasks(
+                cur, user_id, assessment, _diagnosis_bullets(plan),
+            )
+
+    diagnosis_error, emptied = None, []
+    if tasks:
+        # no connection held across the call
+        try:
+            diagnoses = bullet_diagnosis.diagnose(
+                job, tasks, budget=usage_budget(user_id, "tailoring_diagnosis", run_id=run_id),
+            )
+        except QuotaExceeded:
+            diagnosis_error = "quota_exceeded"
+        except Exception:
+            logger.exception("bullet diagnosis failed run_id=%s", run_id)
+            diagnosis_error = "model_call_failed"
+
+    with get_cursor(commit=True) as cur:
+        if tasks and diagnoses is not None:
+            bullet_diagnosis.record(cur, run_id, tasks, diagnoses)
+        if diagnoses is not None:
+            plan, emptied = apply_diagnoses(plan, diagnoses)
+            # a requirement the diagnosis turned into work has no row yet; positions are
+            # unique per run, so this adds those and leaves the rest alone
+            candidates_state.create(cur, user_id, run_id, agent_candidates(plan))
+            for key in emptied:
+                candidates_state.resolve(cur, run_id, key, candidates_state.KEPT,
+                                         outcome=KEPT_OUTCOME)
         # written before the brief is built, and the brief is built from this plan — so the
         # record and what the model was told cannot disagree
         record_supplied_evidence(cur, run_id, plan)
@@ -2032,6 +2240,17 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
         for item in candidates
     }
     allowed_conditions = {_candidate_key(item): _plan_condition(item) for item in candidates}
+    # What each diagnosed bullet may be asked: its one planned question, or nothing.
+    planned_questions = {
+        target["bullet_id"]: target["question"]
+        for item in candidates for target in item.get("targets") or []
+        if target.get("decision") == bullet_diagnosis.ASK and target.get("question")
+    }
+    rewrite_only = {
+        target["bullet_id"]
+        for item in candidates for target in item.get("targets") or []
+        if target.get("decision") == bullet_diagnosis.REWRITE
+    }
     # Two scopes per candidate, both sets of bullet ids. `edit` is what the planner chose;
     # `merge` widens it to those bullets' entry siblings, since a merge partner is by
     # definition a bullet the planner did not single out. Ids rather than text, so two
@@ -2059,7 +2278,19 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
     status, error_code, summary = "limit_reached", None, None
     if not allowed_requirements:
         status = "completed"
-        summary = "The fit engine found no safe wording changes. Gaps and confirmations are listed separately."
+        summary = (
+            "Every bullet already reads clearly for this job — nothing to change."
+            if emptied else
+            "The fit engine found no safe wording changes. Gaps and confirmations are listed separately."
+        )
+    if diagnosis_error:
+        # resumable: no diagnosis was recorded, so the next attempt makes one
+        allowed_requirements = set()
+        status, error_code = (
+            ("limit_reached", "quota_exceeded") if diagnosis_error == "quota_exceeded"
+            else ("failed", "model_call_failed")
+        )
+        summary = None
     steps_used = resume_from
     input_tokens = output_tokens = 0   # this attempt only; the UPDATE adds to what is stored
     t0 = time.perf_counter()
@@ -2178,6 +2409,8 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
                             allowed_actions=allowed_actions,
                             allowed_labels=allowed_labels,
                             allowed_conditions=allowed_conditions,
+                            planned_questions=planned_questions,
+                            rewrite_only=rewrite_only,
                             resolved=resolved,
                         )
                         if call.function.name == "request_detail" and outcome.get("status") == "awaiting_user":
@@ -2434,7 +2667,8 @@ def load_run(cur, user_id, run_id):
     }
 
     _job, assessment, requirements = load_job_context(cur, user_id, run["job_id"])
-    plan = build_tailoring_plan(assessment, bullets_by_entry=bullets_by_entry(cur, user_id))
+    run["diagnoses"] = bullet_diagnosis.load(cur, run_id)
+    plan = run_plan(cur, user_id, assessment, bullets_by_entry(cur, user_id), run["diagnoses"])
     run["outcomes"] = plan
     # what the run was ASKED to do and what became of it. Recomputing the plan alone can
     # never show this: it describes the resume as it is now, not the assignment (AE-02).
@@ -2569,7 +2803,7 @@ def load_run(cur, user_id, run_id):
         -- agent's actions, and the supplied targets are already on screen with each candidate.
         SELECT step_number, tool_name, arguments, status, error_message
         FROM tool_calls
-        WHERE run_id = %s AND tool_name <> 'evidence_supplied'
+        WHERE run_id = %s AND tool_name NOT IN ('evidence_supplied', 'bullet_diagnosis')
         ORDER BY step_number, created_at
         """,
         (run_id,),

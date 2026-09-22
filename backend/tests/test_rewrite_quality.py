@@ -198,21 +198,23 @@ def test_an_appended_benefit_is_refused():
 
 
 def test_a_result_the_user_gave_may_be_stated():
-    original = "Worked on request deduplication for the LLM analysis endpoint in Flask."
-    proposed = "Built request deduplication for the Flask LLM analysis endpoint, reducing duplicate LLM calls."
+    original = "Implemented request deduplication for the LLM analysis endpoint in Flask."
+    proposed = ("Implemented request deduplication for the Flask LLM analysis endpoint, "
+                "cutting duplicate LLM calls by 30%.")
     assert rewrite_quality_issue(original, proposed) is not None
     assert rewrite_quality_issue(
-        original, proposed, answers=["It reduced duplicate LLM calls."],
+        original, proposed, answers=["It cut duplicate LLM calls by 30%."],
     ) is None
 
 
 def test_limit_any_answered_result_licenses_any_result():
     """Documented limit: the check sees result language, not which result. An answer about
     duplicate calls still lets an accuracy claim through."""
-    original = "Worked on request deduplication for the LLM analysis endpoint in Flask."
-    proposed = "Built request deduplication for the Flask LLM analysis endpoint, improving recommendation accuracy."
+    original = "Implemented request deduplication for the LLM analysis endpoint in Flask."
+    proposed = ("Implemented request deduplication for the Flask LLM analysis endpoint, "
+                "improving recommendation accuracy by 30%.")
     assert rewrite_quality_issue(
-        original, proposed, answers=["It reduced duplicate LLM calls."],
+        original, proposed, answers=["It cut duplicate LLM calls by 30%."],
     ) is None
 
 

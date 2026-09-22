@@ -300,3 +300,23 @@ def test_compression_only_means_compression_and_nothing_else():
 
     assert improvements(FSAE, stronger_and_shorter)["stronger_action"] is True
     assert compression_only(FSAE, stronger_and_shorter) is False
+
+
+def test_worked_on_is_not_promoted_to_developed():
+    """Three edits in the first real eval run did exactly this."""
+    issue = rewrite_quality_issue(
+        "Worked on backend services for the ordering platform.",
+        "Developed backend services for the ordering platform.",
+    )
+    assert issue and "claims more of the work" in issue
+
+
+def test_an_answer_that_says_they_built_it_licenses_saying_so():
+    """Both asks in the second real eval run ended with no edit: the user answered "I built…",
+    and the ownership check, reading only the two bullets, still refused "Built"."""
+    original = "Worked on the order-status service for the ordering platform."
+    proposed = "Built the order-status service for the ordering platform in Python."
+    assert "claims more of the work" in rewrite_quality_issue(original, proposed)
+    assert rewrite_quality_issue(
+        original, proposed, answers=["I built the order-status service in Python."],
+    ) is None
