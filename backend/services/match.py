@@ -103,6 +103,14 @@ ALIASES = {
     "continuous deployment": "cicd",
     "front end": "frontend",
     "front-end": "frontend",
+    # reviewed category phrasing: a posting's "front-end frameworks" is the frontend the
+    # hand-written table already derives from React, Vue, Angular and Svelte
+    "front end framework": "frontend",
+    "front end frameworks": "frontend",
+    "front-end framework": "frontend",
+    "front-end frameworks": "frontend",
+    "frontend framework": "frontend",
+    "frontend frameworks": "frontend",
     "back end": "backend",
     "back-end": "backend",
     "full stack": "fullstack",

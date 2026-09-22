@@ -401,6 +401,11 @@ def _target_instruction(target):
         return strip_fence_markers(target.get(key) or "").replace("\n", " ").strip()
 
     problem, kind = line("weakness"), (target.get("problem_type") or "").replace("_", " ")
+    if target.get("decision") == "confirm":
+        skill = ", ".join(item["alternative"] for item in target.get("alternatives") or [])
+        return (f"Decision: confirm {skill} — call request_detail with this bullet_id, intent "
+                f"establish_use and skill {skill}; the server writes the question. If the answer "
+                f"is yes, propose_edit: {line('expected_improvement')}")
     if target.get("decision") == bullet_diagnosis.ASK:
         improvement = line("expected_improvement")
         return (f"Decision: ask ({kind}) — {problem} Call request_detail with this bullet_id and "
@@ -949,7 +954,8 @@ def _condition_viable(condition, denied):
     return len(open_items) >= min(condition.get("minimum") or 1, len(items))
 
 
-def _request_detail(cur, user_id, run_id, arguments, condition, action, planned, rewrite_only):
+def _request_detail(cur, user_id, run_id, arguments, condition, action, planned, rewrite_only,
+                    alternatives=None, candidate=None):
     """The diagnosis decided which bullets get a question and what it is. The model may send
     that question, in whatever words — ours are what is stored — and nothing else."""
     try:
@@ -966,11 +972,12 @@ def _request_detail(cur, user_id, run_id, arguments, condition, action, planned,
             "says. Use propose_edit, or keep_original"
         )
     return tool_request_detail(cur, user_id, run_id, arguments, condition=condition,
-                               action=action)
+                               action=action,
+                               supported=(alternatives or {}).get((candidate, bullet_id)))
 
 
 def tool_request_detail(cur, user_id, run_id, arguments, condition=None, action=None,
-                        planned=False):
+                        planned=False, supported=None):
     requirement = (arguments.get("requirement") or "").strip()
     bullet_id = (arguments.get("bullet_id") or "").strip()
     question = (arguments.get("question") or "").strip()
@@ -997,6 +1004,25 @@ def tool_request_detail(cur, user_id, run_id, arguments, condition=None, action=
     # requirement; a question is about one of them, and so is the answer.
     condition = condition or _single_condition(normalize_skill(requirement))
     items = _condition_items(condition)
+    if supported and not planned:
+        # What the bullet's evidence points to, not what the group contains. With one answer
+        # the server fills it in; a model's pick outside it is refused, naming what is there.
+        names = [normalize_skill(item["alternative"]) for item in supported]
+        if named and named not in names:
+            via = "; ".join(
+                f"{item['alternative']} (via {item.get('inferred_from') or 'the bullet itself'})"
+                for item in supported
+            )
+            raise GroundingError(
+                f"this bullet's evidence does not point to {named} — it supports only {via}. "
+                "Ask about that, or keep_original"
+            )
+        if not named:
+            if len(names) != 1:
+                raise GroundingError(
+                    f"name the alternative in `skill`: this bullet supports {', '.join(names)}"
+                )
+            named = names[0]
     if planned:
         # validated before the run started: one missing fact about this bullet, not a
         # premise about a skill, so neither the skill nor the premise gate applies
@@ -1049,6 +1075,23 @@ def tool_request_detail(cur, user_id, run_id, arguments, condition=None, action=
         # we write this one, so the intent cannot be a label on a question that assumes the
         # answer. Whatever the model drafted is discarded.
         question = establish_use_question(skill)
+        if condition.get("operator") != ALL_OF:
+            # One confirmation at a time for "any of": a yes to one alternative meets it, so a
+            # second question is asked only once the first comes back no or is dismissed.
+            cur.execute(
+                """
+                SELECT question FROM tailoring_detail_requests
+                WHERE run_id = %s AND requirement = %s AND intent = %s AND status = 'pending'
+                LIMIT 1
+                """,
+                (run_id, requirement, ESTABLISH_USE),
+            )
+            waiting = cur.fetchone()
+            if waiting and waiting[0] != question:
+                raise GroundingError(
+                    f'already waiting on "{waiting[0]}" for {requirement} — one confirmation at '
+                    "a time. Move to another candidate"
+                )
     else:
         if not question:
             raise GroundingError("question is required")
@@ -1259,7 +1302,7 @@ def _satisfied_on(cur, user_id, run_id, condition, bullet_ids):
 def execute_tool(
     cur, user_id, run_id, step, call, allowed_requirements, allowed_targets, allowed_actions,
     allowed_labels=None, resolved=None, allowed_conditions=None, planned_questions=None,
-    rewrite_only=None,
+    rewrite_only=None, allowed_alternatives=None,
 ):
     """Run one tool call and record it. A rejection is a failed call handed back to the
     model, not an error the user sees.
@@ -1383,6 +1426,7 @@ def execute_tool(
                                 _candidate_condition(allowed_conditions, requirement),
                                 allowed_actions.get(requirement),
                                 planned_questions or {}, rewrite_only or set(),
+                                allowed_alternatives or {}, requirement,
                             )
                         else:
                             result = implementation(cur, user_id, run_id, arguments)
@@ -1929,8 +1973,18 @@ def _diagnosis_owners(plan):
     return {bullet_id: index for bullet_id, (_rank, index) in owner.items()}
 
 
+def _confirm_support(plan):
+    """{bullet_id: alternatives} for every confirm target: the diagnosis reads these too, and
+    decides whether a yes would change anything worth asking for."""
+    return {
+        target["bullet_id"]: target.get("alternatives") or []
+        for item in plan if item["action"] == "confirm"
+        for target in item.get("targets") or [] if target.get("bullet_id")
+    }
+
+
 def _diagnosis_bullets(plan):
-    return sorted(_diagnosis_owners(plan))
+    return sorted(set(_diagnosis_owners(plan)) | set(_confirm_support(plan)))
 
 
 def apply_diagnoses(plan, diagnoses):
@@ -1948,6 +2002,27 @@ def apply_diagnoses(plan, diagnoses):
     }
     emptied = []
     for index, item in enumerate(plan):
+        if item["action"] == "confirm":
+            targets = []
+            for target in item.get("targets") or []:
+                decision = diagnoses.get(target["bullet_id"]) or {}
+                if decision.get("decision") != bullet_diagnosis.ASK or not decision.get("confirm_skill"):
+                    continue
+                targets.append({
+                    **target,
+                    "decision": "confirm",
+                    # only the alternative the diagnosis showed a yes would be worth asking for
+                    "alternatives": [
+                        support for support in target.get("alternatives") or []
+                        if normalize_skill(support["alternative"]) == decision["confirm_skill"]
+                    ],
+                    "expected_improvement": decision.get("expected_improvement"),
+                })
+            item["targets"] = targets
+            if not targets:
+                item["action"], item["reason"] = "keep", KEPT_OUTCOME
+                emptied.append(_candidate_key(item))
+            continue
         if item["action"] not in _EDITABLE:
             continue
         was_work = item["action"] == "rewrite"
@@ -2034,6 +2109,13 @@ def _with_conditions(cur, user_id, assessment, raw_requirements, skills):
     assessment cannot be trusted for this, so it is recomputed instead.
     """
     items = (assessment or {}).get("requirements") or []
+    # Evidence that does not say which alternative it supports cannot be rebuilt from labels —
+    # it was never stored. Recomputing is deterministic and costs no model call.
+    if any(
+        "alternative" not in evidence
+        for item in items if isinstance(item, dict) for evidence in item.get("evidence") or []
+    ):
+        return match_for_job(cur, user_id, raw_requirements, skills) or assessment
     if all(isinstance(item, dict) and item.get("condition") for item in items):
         return assessment
 
@@ -2174,7 +2256,7 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
         tasks = []
         if diagnoses is None and not resume_from and bullet_diagnosis.ENABLED:
             tasks = bullet_diagnosis.build_tasks(
-                cur, user_id, assessment, _diagnosis_bullets(plan),
+                cur, user_id, assessment, _diagnosis_bullets(plan), _confirm_support(plan),
             )
 
     diagnosis_error, emptied = None, []
@@ -2250,6 +2332,13 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
         target["bullet_id"]
         for item in candidates for target in item.get("targets") or []
         if target.get("decision") == bullet_diagnosis.REWRITE
+    }
+    # (candidate, bullet) → the alternatives that bullet's own evidence supports. Keyed by both:
+    # the same bullet can back two candidates, and each may confirm only its own.
+    allowed_alternatives = {
+        (_candidate_key(item), target["bullet_id"]): target["alternatives"]
+        for item in candidates if item["action"] == "confirm"
+        for target in item.get("targets") or [] if target.get("alternatives")
     }
     # Two scopes per candidate, both sets of bullet ids. `edit` is what the planner chose;
     # `merge` widens it to those bullets' entry siblings, since a merge partner is by
@@ -2411,6 +2500,7 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
                             allowed_conditions=allowed_conditions,
                             planned_questions=planned_questions,
                             rewrite_only=rewrite_only,
+                            allowed_alternatives=allowed_alternatives,
                             resolved=resolved,
                         )
                         if call.function.name == "request_detail" and outcome.get("status") == "awaiting_user":

@@ -14,7 +14,7 @@ part of it can be traced back to a bullet.
 
 from services.match import ALIASES, normalize_skill
 from services.resume_evidence import evidence_is_stale
-from services.skill_graph import evidence_for, implied_by
+from services.skill_graph import evidence_for, implied_by, seed_implied_by
 from services.text_match import index as token_index, mentions
 
 EXPLICIT = "EXPLICIT"
@@ -82,6 +82,27 @@ def _mentions(entry, term):
     return mentions(entry["tokens"], term)
 
 
+def _traced(entries, alternative, inferred_from=None, relation_source=None):
+    """Evidence records that say how they support the requirement.
+
+    On the record itself, not in a list beside it: a separate list drifts from the evidence
+    it describes the moment one of them is truncated. Grouped requirements used to flatten
+    this away, and a confirmation could then be about any alternative in the group — a
+    messaging bullet that matched "front-end frameworks" through React was asked about
+    "data structures".
+    """
+    return [
+        {**entry, "alternative": alternative, "inferred_from": inferred_from,
+         "relation_source": relation_source}
+        for entry in entries
+    ]
+
+
+def _relation_source(specific, general):
+    """Whether the hand-written table vouches for this edge, or only a learned one does."""
+    return "seed" if normalize_skill(general) in seed_implied_by(specific) else "learned"
+
+
 def evaluate_requirement(requirement, bullets):
     """One requirement against the evidence: state, the bullets behind it, and what it was
     inferred from."""
@@ -93,7 +114,7 @@ def evaluate_requirement(requirement, bullets):
         return {
             "requirement": requirement,
             "state": EXPLICIT,
-            "evidence": explicit[:3],
+            "evidence": _traced(explicit[:3], term),
             "inferred_from": [],
         }
 
@@ -103,7 +124,7 @@ def evaluate_requirement(requirement, bullets):
             return {
                 "requirement": requirement,
                 "state": INFERRED,
-                "evidence": hits[:3],
+                "evidence": _traced(hits[:3], term, specific, _relation_source(specific, term)),
                 "inferred_from": [specific],
             }
 
@@ -115,7 +136,7 @@ def evaluate_requirement(requirement, bullets):
             return {
                 "requirement": requirement,
                 "state": PARTIAL,
-                "evidence": hits[:3],
+                "evidence": _traced(hits[:3], term, general),
                 "inferred_from": [general],
             }
 
@@ -316,6 +337,10 @@ def evaluate_requirements(requirements, bullets):
                         "bullet_id": e["bullet_id"], "text": e["text"],
                         "source": e.get("source"),
                         "entry_id": e.get("entry_id"), "entry_name": e.get("entry_name"),
+                        # which alternative this bullet supports, and through what
+                        "alternative": e.get("alternative"),
+                        "inferred_from": e.get("inferred_from"),
+                        "relation_source": e.get("relation_source"),
                     }
                     for e in r["evidence"]
                 ],

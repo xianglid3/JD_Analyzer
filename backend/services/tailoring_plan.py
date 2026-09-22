@@ -74,21 +74,37 @@ def _rewrite_targets(item, already_claimed=frozenset()):
 
 
 def _confirmation_targets(item, already_claimed=frozenset()):
-    """Editable evidence the user can confirm without the model asserting the answer."""
-    return [
-        {
-            "bullet_id": str(evidence["bullet_id"]),
+    """Editable evidence the user can confirm without the model asserting the answer.
+
+    Each target carries the alternatives THIS bullet supports and what each was inferred from.
+    The run before this confirmed a group by letting the model pick any member of it: a
+    messaging bullet that matched front-end frameworks through React was asked about data
+    structures, which nothing on it supports.
+    """
+    targets = {}
+    for evidence in item.get("evidence", []):
+        bullet_id = evidence.get("bullet_id")
+        if not bullet_id or not evidence.get("text") or str(bullet_id) in already_claimed:
+            continue
+        target = targets.setdefault(str(bullet_id), {
+            "bullet_id": str(bullet_id),
             "text": evidence.get("text") or "",
             "weakness": _weakness(
                 evidence.get("text") or "",
                 [f"related evidence does not prove "
                  f"{item.get('requirement') or 'this requirement'}"],
             ),
-        }
-        for evidence in item.get("evidence", [])
-        if evidence.get("bullet_id") and evidence.get("text")
-        and str(evidence["bullet_id"]) not in already_claimed
-    ]
+            "alternatives": [],
+        })
+        if evidence.get("alternative"):
+            support = {
+                "alternative": evidence["alternative"],
+                "inferred_from": evidence.get("inferred_from"),
+                "relation_source": evidence.get("relation_source"),
+            }
+            if support not in target["alternatives"]:
+                target["alternatives"].append(support)
+    return list(targets.values())
 
 
 def _can_surface_inference(item, approved=frozenset()):

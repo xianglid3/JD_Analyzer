@@ -126,6 +126,7 @@ IMPLIES = {
     "react": ["javascript", "html", "css", "frontend"],
     "vue": ["javascript", "html", "frontend"],
     "svelte": ["javascript", "html", "frontend"],
+    "angular": ["typescript", "javascript", "html", "frontend"],
     "flask": ["python", "api", "backend"],
     "fastapi": ["python", "api", "rest", "backend"],
     "django": ["python", "api", "backend"],

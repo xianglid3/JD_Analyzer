@@ -467,3 +467,63 @@ def test_an_unmatched_old_label_is_recomputed_rather_than_guessed(monkeypatch, w
     monkeypatch.setattr(tailoring_agent, "match_for_job", lambda *_a: fresh)
     with get_cursor() as cur:
         assert _with_conditions(cur, world["user_id"], stored, raw, []) is fresh
+
+
+# ── provenance: a confirmation is about what THIS bullet's evidence points to ─
+
+FRONTEND_VIA_REACT = [{"alternative": "frontend", "inferred_from": "react", "relation_source": "seed"}]
+GROUP = {"operator": "any_of", "minimum": 1,
+         "items": ["data structures", "storage systems", "frontend"]}
+
+
+def ask_supported(world, bullet, skill, supported, requirement="the group", condition=GROUP):
+    arguments = {"requirement": requirement, "bullet_id": world["b"][bullet],
+                 "intent": "establish_use", "question": "x"}
+    if skill:
+        arguments["skill"] = skill
+    with get_cursor(commit=True) as cur:
+        return tool_request_detail(cur, world["user_id"], world["run_id"], arguments,
+                                   condition=condition, action="confirm", supported=supported)
+
+
+def test_an_alternative_the_bullet_does_not_support_is_refused(world):
+    """The messaging bullet of run 0dc2d235 was asked about data structures."""
+    with pytest.raises(GroundingError, match="does not point to data structures.*frontend \\(via react\\)"):
+        ask_supported(world, MOBILE, "data structures", FRONTEND_VIA_REACT)
+
+
+def test_the_server_fills_in_the_one_supported_alternative(world):
+    result = ask_supported(world, MOBILE, None, FRONTEND_VIA_REACT)
+    assert result["status"] == "awaiting_user"
+    with get_cursor() as cur:
+        cur.execute("SELECT skill FROM tailoring_detail_requests WHERE run_id = %s", (world["run_id"],))
+        assert cur.fetchone()[0] == "frontend"
+
+
+def test_supported_alternatives_are_per_candidate(world):
+    """Keyed by (candidate, bullet): the same bullet can back two candidates."""
+    from services.tailoring_agent import _request_detail
+
+    arguments = {"requirement": "candidate a", "bullet_id": world["b"][MOBILE],
+                 "intent": "establish_use", "question": "x", "skill": "frontend"}
+    alternatives = {("candidate b", world["b"][MOBILE]): FRONTEND_VIA_REACT,
+                    ("candidate a", world["b"][MOBILE]): [
+                        {"alternative": "storage systems", "inferred_from": "object storage"}]}
+    with get_cursor(commit=True) as cur, pytest.raises(GroundingError, match="does not point to frontend"):
+        _request_detail(cur, world["user_id"], world["run_id"], arguments, GROUP, "confirm",
+                        {}, set(), alternatives, "candidate a")
+
+
+def test_one_pending_confirmation_per_any_of_candidate(world):
+    first = [{"alternative": "storage systems", "inferred_from": "object storage"}]
+    ask_supported(world, MOBILE, None, first)
+    with pytest.raises(GroundingError, match="one confirmation at a time"):
+        ask_supported(world, TOOLING, None, FRONTEND_VIA_REACT)
+
+    # a no frees the slot for the next viable alternative
+    with get_cursor(commit=True) as cur:
+        cur.execute(
+            "UPDATE tailoring_detail_requests SET status = 'answered', outcome = 'no', answer = 'No.' WHERE run_id = %s",
+            (world["run_id"],),
+        )
+    assert ask_supported(world, TOOLING, None, FRONTEND_VIA_REACT)["status"] == "awaiting_user"

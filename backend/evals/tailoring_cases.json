@@ -251,22 +251,22 @@
     {
       "id": "learned_only_relation",
       "entry": {
-        "organization": "ShopCo",
-        "title": "Frontend Intern"
+        "organization": "Initech",
+        "title": "Backend Intern"
       },
-      "text": "Built the state management layer for a React dashboard.",
+      "text": "Built report generation with Celery workers in a Flask app.",
       "job": {
-        "title": "Frontend Engineer",
+        "title": "Backend Engineer",
         "company": "Globex",
-        "summary": "Builds the React web app.",
+        "summary": "Runs background jobs.",
         "requirements": [
-          "redux"
+          "task queues"
         ]
       },
       "learned": [
         [
-          "react",
-          "redux"
+          "celery",
+          "task queues"
         ]
       ],
       "expect": [
@@ -274,9 +274,10 @@
         "keep"
       ],
       "confirm_answer": true,
-      "why": "Whether Redux was used is genuinely unknown; the server's confirmation may be asked.",
+      "why": "Valid learned link (celery → task queues): confirm only if a yes lets the bullet say it concretely.",
       "expect_diagnosis": [
-        null
+        "keep",
+        "ask"
       ]
     },
     {
@@ -314,6 +315,95 @@
         "keep",
         "ask"
       ]
+    },
+    {
+      "id": "run_0dc2d235_react_group",
+      "entry": {
+        "organization": "Cipher Chat",
+        "title": "Developer"
+      },
+      "text": "Built an end-to-end encrypted messaging platform with React and Flask, keeping cryptographic operations in the browser so the backend stores only ciphertext.",
+      "siblings": [],
+      "job": {
+        "title": "Software Engineer",
+        "company": "Globex",
+        "summary": "Full-stack product work.",
+        "requirements": [
+          {
+            "any_of": [
+              "data structures",
+              "storage systems",
+              "cloud infrastructure",
+              "front-end frameworks"
+            ]
+          }
+        ]
+      },
+      "learned": [
+        [
+          "arrays",
+          "data structures"
+        ],
+        [
+          "linked lists",
+          "data structures"
+        ],
+        [
+          "hash tables",
+          "data structures"
+        ],
+        [
+          "trees",
+          "data structures"
+        ],
+        [
+          "graphs",
+          "data structures"
+        ],
+        [
+          "aws",
+          "cloud infrastructure"
+        ],
+        [
+          "azure",
+          "cloud infrastructure"
+        ],
+        [
+          "gcp",
+          "cloud infrastructure"
+        ],
+        [
+          "nas",
+          "storage systems"
+        ],
+        [
+          "san",
+          "storage systems"
+        ],
+        [
+          "object storage",
+          "storage systems"
+        ],
+        [
+          "react",
+          "front end frameworks"
+        ],
+        [
+          "vue",
+          "front end frameworks"
+        ],
+        [
+          "angular",
+          "front end frameworks"
+        ]
+      ],
+      "expect": [
+        "keep"
+      ],
+      "expect_diagnosis": [
+        null
+      ],
+      "why": "Real run 0dc2d235: React already meets front-end frameworks; never ask about data structures."
     }
   ]
 }

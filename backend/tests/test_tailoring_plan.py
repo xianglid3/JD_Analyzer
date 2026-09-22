@@ -249,3 +249,19 @@ def test_requirement_order_does_not_decide_who_owns_a_bullet():
     assert owners(first) == owners(second)
     assert owners(first)["redux"] == ("confirm", ["shared"])
     assert owners(first)["backend"][1] == []
+
+
+def test_confirm_targets_carry_only_their_own_bullets_alternatives():
+    plan = build_tailoring_plan({"requirements": [{
+        "requirement": "the group", "agent_label": "the group", "state": "INFERRED",
+        "importance": "required", "inferred_from": ["celery", "object storage"],
+        "evidence": [
+            {"bullet_id": "b1", "text": "Built reports with Celery workers",
+             "alternative": "task queues", "inferred_from": "celery", "relation_source": "learned"},
+            {"bullet_id": "b2", "text": "Stored uploads in object storage",
+             "alternative": "storage systems", "inferred_from": "object storage", "relation_source": "learned"},
+        ],
+    }]})
+    targets = {t["bullet_id"]: [a["alternative"] for a in t["alternatives"]] for t in plan[0]["targets"]}
+    assert plan[0]["action"] == "confirm"
+    assert targets == {"b1": ["task queues"], "b2": ["storage systems"]}

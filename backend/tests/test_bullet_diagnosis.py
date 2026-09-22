@@ -450,3 +450,137 @@ def test_the_editor_is_told_which_words_to_fix(monkeypatch, world):
     run_tailoring(get_cursor, world["user_id"], world["job_id"])
 
     assert 'Fix exactly these words: "Worked on"' in sent[0][1]["content"]
+
+
+# ── confirmations: provenance, and a yes that must change something ──────────
+# Run 0dc2d235 asked "Did you use data structures?" about a React messaging bullet and "Did you
+# use front end frameworks?" about a React calendar bullet. Both bullets name React; the only
+# link to "front end frameworks" was learned, and the model picked the alternative.
+
+MESSAGING = ("Built an end-to-end encrypted messaging platform with React and Flask, keeping "
+             "cryptographic operations in the browser so the backend stores only ciphertext.")
+CALENDAR = ("Designed a FastAPI backend with Supabase and REST APIs for event creation, updates, "
+            "and geocoded location storage; integrated it with a React/TypeScript calendar and "
+            "Mapbox interface.")
+LEARNED_IN_THAT_RUN = [
+    ("arrays", "data structures"), ("linked lists", "data structures"),
+    ("hash tables", "data structures"), ("trees", "data structures"), ("graphs", "data structures"),
+    ("aws", "cloud infrastructure"), ("azure", "cloud infrastructure"), ("gcp", "cloud infrastructure"),
+    ("nas", "storage systems"), ("san", "storage systems"), ("object storage", "storage systems"),
+    ("react", "front end frameworks"), ("vue", "front end frameworks"), ("angular", "front end frameworks"),
+]
+
+
+def _job_with(world, _db, requirements, bullets, learned=()):
+    from services import skill_relations
+
+    with _db.cursor() as cur:
+        cur.execute("DELETE FROM resume_bullets WHERE user_id = %s", (world["user_id"],))
+        cur.execute("DELETE FROM resume_entries WHERE user_id = %s", (world["user_id"],))
+        save_resume_evidence(cur, world["user_id"], ResumeStructure(entries=[
+            ResumeEntryExtraction(kind="project", organization=f"Project {i}", title="Developer",
+                                  bullets=[text])
+            for i, text in enumerate(bullets)
+        ]))
+        cur.execute(
+            "UPDATE jobs SET requirements = %s::jsonb, skills = '[]'::jsonb, match_detail = NULL WHERE id = %s",
+            (json.dumps(requirements), world["job_id"]),
+        )
+        cur.execute("DELETE FROM skill_relations")
+        for specific, general in learned:
+            cur.execute("INSERT INTO skill_relations (specific, general) VALUES (%s, %s)",
+                        (specific, general))
+        skill_relations.reset()
+        skill_relations.load(cur)
+    _db.commit()
+
+
+def _questions(run_id):
+    with get_cursor() as cur:
+        cur.execute("SELECT question, skill FROM tailoring_detail_requests WHERE run_id = %s", (run_id,))
+        return cur.fetchall()
+
+
+def test_run_0dc2d235_asks_nothing_about_either_react_bullet(monkeypatch, world, _db):
+    """Regression for the real run. "front-end frameworks" now means frontend, which React
+    implies through the hand-written table, so the group is met on both bullets before any task
+    exists: no diagnosis, no editor step, no question — even with a diagnosis that would ask."""
+    _job_with(world, _db, [{
+        "condition": {"operator": "any_of", "minimum": 1, "items": [
+            "data structures", "storage systems", "cloud infrastructure", "front-end frameworks",
+        ]},
+        "source_text": "data structures or storage systems or cloud infrastructure or front-end frameworks",
+        "importance": "required", "type": "skill",
+    }], [MESSAGING, CALENDAR], LEARNED_IN_THAT_RUN)
+    calls = diagnosis(monkeypatch, lambda task: {"decision": "ask"})
+    sent = editor(monkeypatch)
+
+    result = run_tailoring(get_cursor, world["user_id"], world["job_id"])
+
+    assert sent == []
+    assert calls == []
+    assert _questions(result["run_id"]) == []
+    from services import skill_relations
+    skill_relations.reset()
+
+
+CELERY = "Built report generation with Celery workers in a Flask app."
+
+
+def _celery_job(world, _db):
+    # celery → task queues is a valid learned edge: specific tool to the general concept
+    _job_with(world, _db, [{"skill": "task queues", "importance": "required", "type": "skill"}],
+              [CELERY], [("celery", "task queues")])
+
+
+def _confirm_editor(monkeypatch, world):
+    with get_cursor() as cur:
+        cur.execute("SELECT id FROM resume_bullets WHERE user_id = %s", (world["user_id"],))
+        bullet_id = str(cur.fetchone()[0])
+    return editor(
+        monkeypatch,
+        response([call("request_detail", {
+            "requirement": "task queues", "bullet_id": bullet_id, "intent": "establish_use",
+            "question": "anything",
+        }, "c1")]),
+    )
+
+
+def test_a_learned_skill_is_confirmed_when_a_yes_changes_the_bullet(monkeypatch, world, _db):
+    _celery_job(world, _db)
+    diagnosis(monkeypatch, lambda task: {
+        "decision": "ask", "skill": "task queues",
+        "job_relevance": "The job runs background jobs on a task queue.",
+        "expected_improvement": "Built report generation on task queues with Celery workers in a Flask app.",
+    })
+    _confirm_editor(monkeypatch, world)
+
+    result = run_tailoring(get_cursor, world["user_id"], world["job_id"])
+
+    assert _questions(result["run_id"]) == [
+        ("Did you use task queues in this project? If so, what did you use it for?", "task queues"),
+    ]
+    from services import skill_relations
+    skill_relations.reset()
+
+
+@pytest.mark.parametrize("improvement", [
+    "Makes the bullet more relevant to the job.",
+    "Improves visibility of the candidate's backend skills.",
+    "A stronger bullet.",
+    None,
+])
+def test_a_confirmation_that_changes_nothing_concrete_is_not_asked(monkeypatch, world, _db, improvement):
+    _celery_job(world, _db)
+    diagnosis(monkeypatch, lambda task: {
+        "decision": "ask", "skill": "task queues",
+        "job_relevance": "The job runs background jobs on a task queue.",
+        "expected_improvement": improvement,
+    })
+    sent = editor(monkeypatch)
+
+    result = run_tailoring(get_cursor, world["user_id"], world["job_id"])
+
+    assert sent == [] and _questions(result["run_id"]) == []
+    from services import skill_relations
+    skill_relations.reset()

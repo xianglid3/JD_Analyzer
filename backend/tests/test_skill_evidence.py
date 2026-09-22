@@ -525,3 +525,25 @@ def test_each_requirement_keeps_its_shape_for_tailoring():
     assert result["requirements"][0]["condition"] == {
         "operator": "all_of", "minimum": 1, "items": ["TypeScript", "Go"],
     }
+
+
+def test_each_evidence_record_says_which_alternative_it_supports_and_through_what():
+    """Run 0dc2d235 flattened this away; a confirmation could then be about any member."""
+    result = evaluate_requirements(
+        [{"condition": {"operator": "any_of", "items": ["data structures", "front-end frameworks"]}}],
+        [bullet("Built an encrypted messaging platform with React and Flask")],
+    )
+    evidence = result["requirements"][0]["evidence"]
+    assert [(e["alternative"], e["inferred_from"], e["relation_source"]) for e in evidence] == [
+        ("frontend", "react", "seed"),
+    ]
+
+
+def test_front_end_framework_phrasings_mean_frontend():
+    from services.match import normalize_skill
+    from services.skill_graph import seed_implied_by
+
+    for phrase in ("front-end frameworks", "Front End Framework", "frontend frameworks"):
+        assert normalize_skill(phrase) == "frontend"
+    for framework in ("react", "vue", "angular", "svelte"):
+        assert "frontend" in seed_implied_by(framework)
