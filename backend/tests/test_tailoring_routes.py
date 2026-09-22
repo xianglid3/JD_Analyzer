@@ -119,7 +119,29 @@ def test_run_produces_edits_gaps_and_trace(client, monkeypatch, setup):
     assert [t["tool"] for t in body["trace"]] == ["search_resume", "propose_edit"]
 
 
+
+def plan_question(monkeypatch, question="Which part of the Kubernetes deployments did you build?"):
+    """The review plans one question per bullet; the server stores that one, not the model's."""
+    from services import bullet_review
+
+    monkeypatch.setattr(bullet_review, "ENABLED", True)
+    monkeypatch.setattr(bullet_review, "request_review", lambda job, tasks, **_kw: [
+        {
+            "bullet": f"b{index + 1}",
+            "decision": "ASK",
+            "recruiter_doubt": {"type": "contribution", "specific_problem": "Whose part is unclear."},
+            "anchor": " ".join(task["text"].split()[1:3]),
+            "missing_fact": "which part they built",
+            "question": question,
+            "expected_resume_improvement": "The bullet can name the part they built.",
+            "decision_reason": "One named part would make it concrete.",
+        }
+        for index, task in enumerate(tasks)
+    ])
+
+
 def test_detail_answer_resumes_the_same_run(client, monkeypatch, setup):
+    plan_question(monkeypatch)
     script(
         monkeypatch,
         response([call("search_resume", {"query": "kubernetes"}, "c1")]),
@@ -127,7 +149,7 @@ def test_detail_answer_resumes_the_same_run(client, monkeypatch, setup):
             "requirement": "Kubernetes",
             "bullet_id": setup["bullet_id"],
             "intent": "implementation",
-            "question": "Which part of the deployment did you build?",
+            "question": "ignored — the review's question is what gets stored",
         }, "c2")]),
     )
     run_id = client.post(f"/api/jobs/{setup['job_id']}/tailor").get_json()["id"]
@@ -151,6 +173,7 @@ def test_detail_answer_resumes_the_same_run(client, monkeypatch, setup):
 
 
 def test_detail_answer_validation_and_ownership(client, monkeypatch, setup):
+    plan_question(monkeypatch)
     script(
         monkeypatch,
         response([call("search_resume", {"query": "kubernetes"}, "c1")]),

@@ -35,15 +35,12 @@ from services.resume_evidence import (
 from services.resume_render import composition_summary
 from services.resume_search import search_resume_bullets
 from services.skill_evidence import (
-    ALL_OF,
-    ANY_OF,
     as_condition,
     condition_label,
     match_for_job,
     requirements_for_job,
     short_condition_label,
 )
-from services.skill_graph import seed_implied_by
 from services.skill_relations import approved_rewrites
 from services import tailoring_candidates as candidates_state
 from services.tailoring_plan import (
@@ -55,7 +52,7 @@ from services.tailoring_plan import (
 )
 from services.usage import QuotaExceeded, check_quota, finalize, reserve
 from services.usage import budget as usage_budget
-from services import bullet_diagnosis
+from services import bullet_review
 
 logger = logging.getLogger(__name__)
 
@@ -106,27 +103,16 @@ You receive only approved tailoring candidates. Work ONE candidate at a time:
    `bullet_id` of the bullet you may edit — use that one. You do not need to search for it, and
    searching for a bullet you have already been given wastes a step.
 2. Call search_resume only when you need something the brief did not give you: a second bullet
-   in the same entry that merge_bullets could combine, or evidence for a [confirm] candidate.
+   in the same entry that merge_bullets could combine.
 3. Copy bullet ids exactly as given, whether from the brief or from a search_resume result.
    Candidate positions such as 1, 2, or 3 are never bullet ids.
-4. Every request_detail carries an `intent`, and the backend checks it. If nothing has
-   established that this bullet involved the requirement, the only intent available is
-   `establish_use` — the server writes that question, so send the requirement and bullet_id and
-   do not draft it yourself. Once use IS established (the bullet names it, or the user has said
-   so), questions are decided before you start: a target whose Decision is "ask" names the
-   one question, and the server sends that question whatever you write. Any other target
-   gets no question. Never ask what improved, how much, for a metric, or which technologies
-   they used.
-   When a requirement lists alternatives ("go or typescript or python"), every request_detail
-   names the ONE alternative it is about in `skill`. If the bullet already shows enough of
-   them, there is nothing to establish — do not ask.
-   For [confirm] specifically: you are finding out whether they used it, not assuming they did.
-   If the bullet already shows it, there is nothing to ask at all — propose_edit from what the
-   bullet says, or keep_original.
-5. For [rewrite]: Decision "rewrite" — propose_edit using only what the bullet, its entry and
-   the user's answers say, or merge_bullets for two or three repetitive bullets in the same
-   entry. Decision "ask" — call request_detail with that bullet_id and intent `implementation`,
-   and once it is answered, propose_edit using the answer.
+4. Questions are decided before you start. A target whose Decision is "ask" carries the one
+   question, and the server sends that question whatever you write — so call request_detail
+   with that bullet_id and nothing else matters. A target with any other Decision gets no
+   question at all: there is nothing to ask, and asking is refused.
+5. A target whose Decision is "rewrite" gets propose_edit using only what that bullet says, or
+   merge_bullets for two or three repetitive bullets in the same entry. After an answer comes
+   back, propose_edit using the bullet and that answer.
 6. If none is appropriate, call keep_original. That FINISHES the candidate successfully — it is
    not a failure and not something to avoid. A candidate is never finished by silence.
 
@@ -260,26 +246,14 @@ TOOLS = [
                     },
                     "intent": {
                         "type": "string",
-                        "enum": ["establish_use", "implementation"],
+                        "enum": ["implementation"],
                         "description": (
-                            "What the question is for. 'establish_use' asks whether the "
-                            "requirement was used on this bullet at all — use it whenever "
-                            "nothing has established that yet. 'implementation' asks which "
-                            "part was theirs, or which component or service they built or "
-                            "changed; refused until use is established. Questions about "
-                            "impact, scale or metrics are not asked."
-                        ),
-                    },
-                    "skill": {
-                        "type": "string",
-                        "description": (
-                            "The one alternative this question is about, when the requirement "
-                            "lists several (e.g. 'typescript' for 'go or typescript or "
-                            "python'). Required then; may be omitted for a single skill."
+                            "Always 'implementation': the question was written before you "
+                            "started, and it asks what the candidate built or changed."
                         ),
                     },
                 },
-                "required": ["requirement", "bullet_id", "question", "intent"],
+                "required": ["requirement", "bullet_id"],
             },
         },
     },
@@ -393,29 +367,64 @@ def job_brief(job, assessment=None, plan=None):
     return "\n".join(lines)
 
 
+def _attach_answers(cur, user_id, run_id, plan):
+    """Put this run's answers on the targets they were given about. This run's only: a bullet
+    keeps its id when its wording is edited, so an older answer may be about a sentence that
+    no longer exists."""
+    targets = {
+        target["bullet_id"]: target
+        for item in plan for target in item.get("targets") or [] if target.get("bullet_id")
+    }
+    if not targets:
+        return plan
+    cur.execute(
+        """
+        SELECT bullet_id, answer FROM tailoring_detail_requests
+        WHERE run_id = %s AND user_id = %s AND status = 'answered' AND answer IS NOT NULL
+          AND bullet_id = ANY(%s::uuid[])
+        ORDER BY created_at
+        """,
+        (run_id, user_id, list(targets)),
+    )
+    for bullet_id, answer in cur.fetchall():
+        targets[str(bullet_id)].setdefault("answers", []).append(answer)
+    return plan
+
+
 def _target_instruction(target):
-    """What the model is told to do with one target. Outside the fence: it is our decision,
-    not the resume's words — though the problem and question it quotes came from a model
-    reading them, so they are kept to one line each."""
+    """What the editor is told to do with one target: the reviewer's decision, in its own
+    words. Outside the fence — it is our decision — though the problem, question and
+    instruction it quotes came from a model reading the resume, so each is kept to one line."""
     def line(key):
         return strip_fence_markers(target.get(key) or "").replace("\n", " ").strip()
 
-    problem, kind = line("weakness"), (target.get("problem_type") or "").replace("_", " ")
-    if target.get("decision") == "confirm":
-        skill = ", ".join(item["alternative"] for item in target.get("alternatives") or [])
-        return (f"Decision: confirm {skill} — call request_detail with this bullet_id, intent "
-                f"establish_use and skill {skill}; the server writes the question. If the answer "
-                f"is yes, propose_edit: {line('expected_improvement')}")
-    if target.get("decision") == bullet_diagnosis.ASK:
-        improvement = line("expected_improvement")
+    problem, kind = line("weakness"), (target.get("doubt_type") or "").replace("_", " ")
+    keep = ", ".join(
+        strip_fence_markers(fact).replace("\n", " ") for fact in target.get("facts_to_preserve") or []
+    )
+    keep_line = f" Keep these facts exactly as they are: {keep}." if keep else ""
+    # The words the claim check will actually enforce. Told in prose ("keep every skill word")
+    # the editor kept dropping "backend" and losing the edit; the server knows which words they
+    # are, so it names them.
+    required = sorted(named_skills(target.get("text") or ""))
+    if required:
+        keep_line += f" These words must appear in your rewrite: {', '.join(required)}."
+    allowed = sorted(
+        set(named_skills(" ".join(target.get("answers") or []))) - set(required)
+    )
+    if allowed:
+        keep_line += f" You may also use, from the answer: {', '.join(allowed)}."
+
+    if target.get("decision") == bullet_review.ASK:
         return (f"Decision: ask ({kind}) — {problem} Call request_detail with this bullet_id and "
                 f"intent implementation; the server sends: \"{line('question')}\". Once it is "
-                f"answered, propose_edit so that: {improvement or 'the bullet states what the answer says'}. "
-                "Use only the bullet and the answer; add no result the answer does not give.")
-    if target.get("decision") == bullet_diagnosis.REWRITE:
-        return (f"Decision: rewrite ({kind}) — {problem} Fix exactly these words: \"{line('span')}\". "
-                "Change nothing else's meaning; add no result, benefit or new verb, and keep "
-                "every technology and name. Do not ask.")
+                f"answered, propose_edit so that: {line('expected_improvement') or 'the bullet states what the answer says'}."
+                f" Use only the bullet and the answer; add no result the answer does not give."
+                + keep_line)
+    if target.get("decision") == bullet_review.REWRITE:
+        return (f"Decision: rewrite — {line('rewrite_instruction') or problem} Use only what this "
+                f"bullet says; add no result, benefit, technology or new verb. Do not ask."
+                + keep_line)
     return f"Why it needs work: {problem}"
 
 
@@ -577,13 +586,10 @@ def _claim_evidence(cur, user_id, run_id, links, requirement):
         if not answer or normalize_skill(stored_requirement or "") != target:
             continue
         if intent == ESTABLISH_USE:
-            # "I didn't use Redis" names Redis, and used to make Redis supported. A yes/no
-            # answer carries one fact — the yes — and the skill asked about is that fact.
-            # Anything else the sentence mentions ("we didn't use Kafka") is commentary, so
-            # the text itself never becomes evidence here. The skill, not the requirement:
-            # yes to TypeScript is not yes to "go or typescript or python", and an old yes to
-            # a group label says nothing about which one, so it supports none of them.
-            confirmed = _row_skill(skill, stored_requirement)
+            # A row from before the reviewer: a yes/no confirmation. "I didn't use Redis"
+            # names Redis, so its text must never become evidence — only the skill it
+            # confirmed, and only on a yes. Runs made now never write one.
+            confirmed = normalize_skill(skill) if skill else None
             if outcome == "yes" and confirmed:
                 details.append((detail_id, confirmed))
             continue
@@ -832,322 +838,64 @@ def tool_merge_bullets(cur, user_id, run_id, arguments):
 # What a question is for. The model declares it, and the backend checks it can be asked —
 # an instruction in the prompt is guidance, and guidance is what produced "How did Redis
 # improve this project?" about a bullet that names PostgreSQL.
+# The rows this run writes are always `implementation`: the reviewer's question asks what the
+# candidate built. `establish_use` survives only as the marker on rows written before the
+# reviewer replaced yes/no confirmations.
 ESTABLISH_USE = "establish_use"
-IMPACT = "impact"
-DETAIL_INTENTS = (ESTABLISH_USE, "implementation", IMPACT)
 
 
-def establish_use_question(requirement):
-    """The server's words, not the model's.
-
-    A model can label "How did Redis improve this project?" as `establish_use` and walk past
-    the check, so for this one intent it supplies the requirement and we write the sentence.
-    """
-    return f"Did you use {requirement} in this project? If so, what did you use it for?"
-
-
-def _condition_items(condition):
-    """The alternatives, normalised, in the posting's order."""
-    return list(dict.fromkeys(
-        normalize_skill(item) for item in (condition or {}).get("items") or [] if item
-    ))
-
-
-def _single_condition(requirement):
-    return {"operator": ANY_OF, "minimum": 1, "items": [requirement] if requirement else []}
-
-
-def _legacy_single_skill(requirement):
-    """The one skill a pre-`skill` row confirmed, or None when it was a group label.
-
-    A "yes" to "go or typescript or python" said nothing about which of the three, and
-    reading it as all three is the over-confirmation this column exists to end.
-    """
-    label = normalize_skill(requirement or "")
-    if not label or " or " in label or " and " in label or " of:" in label or "," in label:
-        return None
-    return label
-
-
-def _row_skill(skill, requirement):
-    return normalize_skill(skill) if skill else _legacy_single_skill(requirement)
-
-
-def _confirmations(cur, user_id, run_id, bullet_ids, outcome):
-    """{(bullet_id, skill)} the user answered `outcome` to, in this run.
-
-    Only establish-use answers (and rows from before intents existed, which carry no
-    outcome unless they were one). An implementation or impact answer is a detail, not a
-    confirmation, and an unclear answer is neither.
-    """
-    cur.execute(
-        """
-        SELECT bullet_id, skill, requirement
-        FROM tailoring_detail_requests
-        WHERE run_id = %s AND user_id = %s AND status = 'answered' AND outcome = %s
-          AND (intent = %s OR intent IS NULL) AND bullet_id = ANY(%s::uuid[])
-        """,
-        (run_id, user_id, outcome, ESTABLISH_USE, list(bullet_ids)),
-    )
-    pairs = set()
-    for bullet_id, skill, requirement in cur.fetchall():
-        confirmed = _row_skill(skill, requirement)
-        if confirmed:
-            pairs.add((str(bullet_id), confirmed))
-    return pairs
-
-
-def _established_skills(cur, user_id, run_id, skills, bullet_ids):
-    """Which of `skills` these bullets already establish.
-
-    On these bullets only: TypeScript on another project says nothing about this one. A
-    skill counts when a bullet names it, when a named skill implies it through the
-    hand-written table (llm → ai), when the user attached it to the entry, or when they
-    answered yes to using it here. Learned edges are left out on purpose — they score, but
-    they do not get to make a question unnecessary.
-
-    This decides which questions are worth asking. It does not license wording: adding a
-    term to a bullet still goes through `unsupported_claims`.
-    """
-    wanted = {normalize_skill(skill) for skill in skills if skill}
-    selected = [str(value) for value in bullet_ids if value]
-    if not wanted or not selected:
-        return set()
-
-    cur.execute(
-        "SELECT text FROM resume_bullets WHERE user_id = %s AND id = ANY(%s::uuid[])",
-        (user_id, selected),
-    )
-    named = set()
-    for (text,) in cur.fetchall():
-        named.update(normalize_skill(term) for term in named_skills(text))
-    found = set(named)
-    for skill in named:
-        found.update(normalize_skill(general) for general in seed_implied_by(skill))
-    found.update(
-        normalize_skill(term) for term in skills_affirmed_for_bullets(cur, user_id, selected)
-    )
-    found.update(skill for _bullet, skill in _confirmations(cur, user_id, run_id, selected, "yes"))
-    return wanted & found
-
-
-def _condition_satisfied(condition, established):
-    """Whether the established skills meet the requirement: all of them for `all_of`,
-    `minimum` of them for `any_of`."""
-    items = _condition_items(condition)
-    hits = sum(1 for item in items if item in established)
-    if not items:
-        return False
-    if condition.get("operator") == ALL_OF:
-        return hits == len(items)
-    return hits >= min(condition.get("minimum") or 1, len(items))
-
-
-def _condition_viable(condition, denied):
-    """Whether what the user has NOT denied could still meet the requirement."""
-    items = _condition_items(condition)
-    if not items:
-        return False
-    if condition.get("operator") == ALL_OF:
-        return not any(item in denied for item in items)
-    open_items = [item for item in items if item not in denied]
-    return len(open_items) >= min(condition.get("minimum") or 1, len(items))
-
-
-def _request_detail(cur, user_id, run_id, arguments, condition, action, planned, rewrite_only,
-                    alternatives=None, candidate=None):
-    """The diagnosis decided which bullets get a question and what it is. The model may send
-    that question, in whatever words — ours are what is stored — and nothing else."""
+def _request_detail(cur, user_id, run_id, arguments, planned, rewrite_only):
+    """The review decided which bullets get a question and what it is. The model may ask that
+    question, in whatever words — ours are what is stored — and nothing else."""
     try:
         bullet_id = str(UUID(str(arguments.get("bullet_id") or "").strip()))
     except (TypeError, ValueError, AttributeError):
         bullet_id = None
-    if bullet_id in planned:
-        arguments["question"], arguments["intent"] = planned[bullet_id], "implementation"
-        return tool_request_detail(cur, user_id, run_id, arguments, condition=condition,
-                                   action=action, planned=True)
     if bullet_id in rewrite_only:
         raise GroundingError(
             "no question was planned for this bullet — it can be improved from what it already "
             "says. Use propose_edit, or keep_original"
         )
-    return tool_request_detail(cur, user_id, run_id, arguments, condition=condition,
-                               action=action,
-                               supported=(alternatives or {}).get((candidate, bullet_id)))
+    return tool_request_detail(cur, user_id, run_id, arguments,
+                               question=(planned or {}).get(bullet_id))
 
 
-def tool_request_detail(cur, user_id, run_id, arguments, condition=None, action=None,
-                        planned=False, supported=None):
+def tool_request_detail(cur, user_id, run_id, arguments, question=None):
+    """File the one question the review planned for this bullet.
+
+    `question` is the server's: the reviewer wrote it, the server validated that it quotes the
+    bullet and names no evidence nobody gave, and whatever the model drafted is discarded. A
+    bullet the review did not mark ASK has no question to file, and `_request_detail` refuses
+    it before this is reached.
+    """
     requirement = (arguments.get("requirement") or "").strip()
     bullet_id = (arguments.get("bullet_id") or "").strip()
-    question = (arguments.get("question") or "").strip()
-    intent = (arguments.get("intent") or "").strip()
-    named = normalize_skill((arguments.get("skill") or "").strip())
     if not requirement or not bullet_id:
         raise GroundingError("requirement and bullet_id are required")
-    if intent not in DETAIL_INTENTS:
-        raise GroundingError(f"intent must be one of: {', '.join(DETAIL_INTENTS)}")
-    if intent == IMPACT:
-        # Still a valid stored intent — older rows carry it — but no longer one to ask. "What
-        # improvements did X bring?" came back about bullets that already said, and a metric
-        # nobody measured is an invitation to invent one.
-        raise GroundingError(
-            "questions about impact, scale or metrics are not asked. Improve the bullet from "
-            "what it already says, or keep_original"
-        )
     try:
         bullet_id = str(UUID(bullet_id))
     except (TypeError, ValueError, AttributeError):
         raise GroundingError("bullet id must be a valid UUID") from None
-
-    # The candidate and the skill are different things. "go or typescript or python" is one
-    # requirement; a question is about one of them, and so is the answer.
-    condition = condition or _single_condition(normalize_skill(requirement))
-    items = _condition_items(condition)
-    if supported and not planned:
-        # What the bullet's evidence points to, not what the group contains. With one answer
-        # the server fills it in; a model's pick outside it is refused, naming what is there.
-        names = [normalize_skill(item["alternative"]) for item in supported]
-        if named and named not in names:
-            via = "; ".join(
-                f"{item['alternative']} (via {item.get('inferred_from') or 'the bullet itself'})"
-                for item in supported
-            )
-            raise GroundingError(
-                f"this bullet's evidence does not point to {named} — it supports only {via}. "
-                "Ask about that, or keep_original"
-            )
-        if not named:
-            if len(names) != 1:
-                raise GroundingError(
-                    f"name the alternative in `skill`: this bullet supports {', '.join(names)}"
-                )
-            named = names[0]
-    if planned:
-        # validated before the run started: one missing fact about this bullet, not a
-        # premise about a skill, so neither the skill nor the premise gate applies
-        skill = named or (items[0] if len(items) == 1 else None)
-    elif len(items) > 1:
-        if not named:
-            raise GroundingError(
-                f"{requirement} has alternatives — name the one this question is about in "
-                f"`skill`, one of: {', '.join(items)}"
-            )
-        if named not in items:
-            raise GroundingError(f"skill must be one of: {', '.join(items)}")
-        skill = named
-    else:
-        skill = items[0] if items else normalize_skill(requirement)
-
-    established = (
-        set() if planned
-        else _established_skills(cur, user_id, run_id, items or [skill], [bullet_id])
-    )
-    if not planned and action == "confirm" and _condition_satisfied(condition, established):
-        # A confirm candidate exists to find out whether they used it. Once the bullet shows
-        # it, that question is answered, and what is left is not a reason for a new one: LLM
-        # establishes AI, and "what improvements did the platform provide?" filled the gap.
+    if not question:
         raise GroundingError(
-            f"this bullet already shows {requirement}, so there is nothing to confirm or ask. "
-            "Use propose_edit with only what the bullet states, or keep_original"
+            "no question was planned for this bullet — improve it from what it already says, "
+            "or keep_original"
         )
-    if intent == ESTABLISH_USE:
-        satisfied = _condition_satisfied(condition, established)
-        if skill in established:
-            if satisfied:
-                raise GroundingError(
-                    f"this bullet already shows {skill}, so there is nothing to establish. Use "
-                    "propose_edit with only what the bullet states, or keep_original if "
-                    "nothing would improve it"
-                )
-            remaining = [item for item in items if item not in established]
-            raise GroundingError(
-                f"this bullet already shows {skill}. Still unestablished for {requirement}: "
-                f"{', '.join(remaining)} — ask about one of those, or keep_original"
-            )
-        if satisfied:
-            raise GroundingError(
-                f"{requirement} is already met here by "
-                f"{', '.join(item for item in items if item in established)}; do not ask "
-                f"about {skill}. Use propose_edit with only what the bullet states, or "
-                "keep_original"
-            )
-        # we write this one, so the intent cannot be a label on a question that assumes the
-        # answer. Whatever the model drafted is discarded.
-        question = establish_use_question(skill)
-        if condition.get("operator") != ALL_OF:
-            # One confirmation at a time for "any of": a yes to one alternative meets it, so a
-            # second question is asked only once the first comes back no or is dismissed.
-            cur.execute(
-                """
-                SELECT question FROM tailoring_detail_requests
-                WHERE run_id = %s AND requirement = %s AND intent = %s AND status = 'pending'
-                LIMIT 1
-                """,
-                (run_id, requirement, ESTABLISH_USE),
-            )
-            waiting = cur.fetchone()
-            if waiting and waiting[0] != question:
-                raise GroundingError(
-                    f'already waiting on "{waiting[0]}" for {requirement} — one confirmation at '
-                    "a time. Move to another candidate"
-                )
-    else:
-        if not question:
-            raise GroundingError("question is required")
-        # the premise is this skill, not the group: "any of go or typescript" met by
-        # TypeScript does not make a question about Go's impact answerable
-        if not planned and skill not in established:
-            raise GroundingError(
-                f"nothing establishes that this bullet involved {skill}, so you cannot "
-                f"ask how it was built or what it improved. Ask with intent "
-                f"'{ESTABLISH_USE}' first — and if the answer is no, that is a real answer."
-            )
-    if len(question) > MAX_DETAIL_QUESTION_CHARS:
-        raise GroundingError(f"question must be {MAX_DETAIL_QUESTION_CHARS} characters or fewer")
-    if any(ord(character) < 32 for character in question):
-        raise GroundingError("question must be one line of plain text")
     verify_citation(cur, user_id, run_id, bullet_id)
 
-    # One confirmation per bullet per skill, and one detail question per bullet per
-    # requirement. The unique constraint below dedupes on the exact question text, which is
-    # no dedup at all against a model that rewords: "what technologies did you use", "what
-    # functionality", "what features" are three strings and were three pending requests, each
-    # one parking the run in waiting_for_user again. The ask also counts as an attempt rather
-    # than a failure, so the repeat-failure cap never saw it. An answer already given is
-    # handed back here so the next move is the rewrite.
-    #
-    # Two budgets, not one: under "typescript and go" the question about Go is still needed
-    # after TypeScript was confirmed, and a confirmation is not the detail question either.
+    # One question per bullet per run. The unique constraint below dedupes on the exact text,
+    # which is no dedup at all against a model that rewords — and rewording used to file a
+    # second pending request, parking the run in waiting_for_user again. An answer already
+    # given is handed back here so the next move is the rewrite.
     cur.execute(
         """
-        SELECT status, answer, question, intent, skill, requirement, outcome
-        FROM tailoring_detail_requests
-        WHERE run_id = %s AND bullet_id = %s AND requirement = %s AND status <> 'dismissed'
+        SELECT status, answer, question FROM tailoring_detail_requests
+        WHERE run_id = %s AND bullet_id = %s AND status <> 'dismissed'
         ORDER BY created_at
         """,
-        (run_id, bullet_id, requirement),
+        (run_id, bullet_id),
     )
-    for status, answer, asked, asked_intent, asked_skill, asked_requirement, outcome in cur.fetchall():
-        if intent == ESTABLISH_USE:
-            if asked_intent != ESTABLISH_USE or _row_skill(asked_skill, asked_requirement) != skill:
-                continue
-            if outcome == "no":
-                raise GroundingError(
-                    f"the user already said they did not use {skill} on this bullet — that is "
-                    "settled. Work with what is left, or keep_original"
-                )
-            if outcome == "unclear":
-                # answered, but not a yes — so nothing is established, and "use the answer to
-                # rewrite" would send the model at an edit the gate is bound to refuse
-                raise GroundingError(
-                    f"the user's answer did not say whether they used {skill} on this bullet, "
-                    "so its use is still unestablished and cannot support an edit. Ask about "
-                    "another alternative or another target bullet if one is open, or "
-                    "keep_original"
-                )
-        elif asked_intent == ESTABLISH_USE:
-            continue
+    for status, answer, asked in cur.fetchall():
         if asked == question:
             continue                       # the insert below hands the same row back
         if status == 'answered':
@@ -1163,14 +911,14 @@ def tool_request_detail(cur, user_id, run_id, arguments, condition=None, action=
     cur.execute(
         """
         INSERT INTO tailoring_detail_requests (
-            run_id, user_id, bullet_id, requirement, question, intent, skill
+            run_id, user_id, bullet_id, requirement, question, intent
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, 'implementation')
         ON CONFLICT (run_id, bullet_id, question)
         DO UPDATE SET question = EXCLUDED.question
         RETURNING id, status, answer
         """,
-        (run_id, user_id, bullet_id, requirement, question, intent, skill),
+        (run_id, user_id, bullet_id, requirement, question),
     )
     request_id, status, answer = cur.fetchone()
     return {
@@ -1292,17 +1040,9 @@ def _verify_approved_target(cur, user_id, requirement, bullet_ids, allowed_targe
         )
 
 
-def _satisfied_on(cur, user_id, run_id, condition, bullet_ids):
-    established = _established_skills(
-        cur, user_id, run_id, _condition_items(condition), bullet_ids,
-    )
-    return _condition_satisfied(condition, established)
-
-
 def execute_tool(
     cur, user_id, run_id, step, call, allowed_requirements, allowed_targets, allowed_actions,
-    allowed_labels=None, resolved=None, allowed_conditions=None, planned_questions=None,
-    rewrite_only=None, allowed_alternatives=None,
+    allowed_labels=None, resolved=None, planned_questions=None, rewrite_only=None,
 ):
     """Run one tool call and record it. A rejection is a failed call handed back to the
     model, not an error the user sees.
@@ -1345,13 +1085,6 @@ def execute_tool(
                     {item["normalized"] for item in candidates_state.load(cur, run_id)},
                 )
             if requirement is not None:
-                # "typescript" for "go or typescript or python" says which alternative the
-                # question is about; keep that before the name is replaced by the group's
-                said = normalize_skill(arguments.get("requirement") or "")
-                if name == "request_detail" and not arguments.get("skill") and said in (
-                    _condition_items(_candidate_condition(allowed_conditions, requirement))
-                ):
-                    arguments["skill"] = said
                 # everything this call writes now carries the canonical handle, so the
                 # question it files and the edit it proposes can be matched to each other
                 arguments["requirement"] = (allowed_labels or {}).get(requirement, requirement)
@@ -1382,20 +1115,6 @@ def execute_tool(
                         "requirement is not an approved tailoring candidate. Use one of these "
                         "exactly: " + "; ".join(sorted(allowed_requirements))
                     )
-            elif (
-                # `strengthen` needs no answer: its requirement is already on the page, and a
-                # missing number is a hint, not a debt. Only `confirm` is waiting on a fact.
-                allowed_actions.get(requirement) == "confirm"
-                and name in {"propose_edit", "merge_bullets"}
-                and not _satisfied_on(
-                    cur, user_id, run_id, _candidate_condition(allowed_conditions, requirement),
-                    _tool_bullet_ids(name, arguments),
-                )
-            ):
-                result, error = None, (
-                    "nothing on this bullet establishes the requirement yet — ask with intent "
-                    f"'{ESTABLISH_USE}' naming the skill, or keep_original"
-                )
             else:
                 # This gate exists to stop the model acting before it holds a real bullet id.
                 # Supplied evidence gives it one without searching, so either channel clears it.
@@ -1423,10 +1142,7 @@ def execute_tool(
                         if name == "request_detail":
                             result = _request_detail(
                                 cur, user_id, run_id, arguments,
-                                _candidate_condition(allowed_conditions, requirement),
-                                allowed_actions.get(requirement),
                                 planned_questions or {}, rewrite_only or set(),
-                                allowed_alternatives or {}, requirement,
                             )
                         else:
                             result = implementation(cur, user_id, run_id, arguments)
@@ -1498,16 +1214,6 @@ def searches_found_nothing(cur, run_id, requirement, supplied=frozenset()):
     return not any(found for _query, found in rows)
 
 
-def _candidate_condition(allowed_conditions, key):
-    """The candidate's requirement shape; a bare label when none was recorded."""
-    condition = (allowed_conditions or {}).get(key)
-    return condition if condition and condition.get("items") else _single_condition(key)
-
-
-def _plan_condition(item):
-    return item.get("condition") or _single_condition(_candidate_key(item))
-
-
 def _candidate_key(item):
     """How a candidate is addressed. Short, so the model can reproduce it."""
     return normalize_skill(item.get("agent_label") or item["requirement"])
@@ -1553,7 +1259,7 @@ def failure_key(tool_name, raw_arguments, error):
 def replay_messages(cur, run_id):
     """Rebuild the conversation from `tool_calls`, minus the rows the model never called.
 
-    `evidence_supplied` and `bullet_diagnosis` are records of something the server did, not
+    `evidence_supplied` and `bullet_review` are records of something the server did, not
     tools the model invoked. Replaying it would hand the model an assistant message calling a tool that is
     not in its schema.
 
@@ -1571,7 +1277,7 @@ def replay_messages(cur, run_id):
         WHERE run_id = %s AND tool_name NOT IN (%s, %s)
         ORDER BY step_number, created_at
         """,
-        (run_id, SUPPLIED, bullet_diagnosis.DIAGNOSIS),
+        (run_id, SUPPLIED, bullet_review.REVIEW),
     )
 
     messages, current_step, pending = [], None, []
@@ -1666,32 +1372,12 @@ def resume_run(get_cursor, user_id, run_id):
     return str(job_id), steps_used
 
 
-def _candidate_still_viable(cur, user_id, run_id, job_id, requirement):
-    """Whether any of the candidate's target bullets could still meet its requirement,
-    given every skill the user has denied on it this run."""
-    key = normalize_skill(requirement or "")
-    _job, assessment = load_job_assessment(cur, user_id, job_id)
-    plan = run_plan(cur, user_id, assessment, bullets_by_entry(cur, user_id),
-                    bullet_diagnosis.load(cur, run_id))
-    item = next((item for item in agent_candidates(plan) if _candidate_key(item) == key), None)
-    if item is None:
-        return False
-    condition = _plan_condition(item)
-    targets = [target["bullet_id"] for target in item.get("targets") or [] if target.get("bullet_id")]
-    denied = _confirmations(cur, user_id, run_id, targets, "no")
-    return any(
-        _condition_viable(condition, {skill for bullet, skill in denied if bullet == str(target)})
-        for target in targets
-    )
-
-
 def resolve_detail_request(get_cursor, user_id, request_id, answer=None, dismiss=False,
                            used=None):
     """Resolve one question and make the paused run runnable exactly once.
 
-    `used` is the answer to an `establish_use` question — True, False, or None for "they
-    answered but did not say". Recorded rather than read out of the prose, because "I didn't
-    use Redis" mentions Redis and a grep cannot tell the two apart.
+    `used` is accepted and ignored: it answered the yes/no confirmations the reviewer replaced,
+    and the route still sends it.
     """
     with get_cursor(commit=True) as cur:
         cur.execute(
@@ -1716,9 +1402,9 @@ def resolve_detail_request(get_cursor, user_id, request_id, answer=None, dismiss
             return {"error": "run_not_waiting"}
 
         next_status = "dismissed" if dismiss else "answered"
+        # `outcome` belonged to the yes/no confirmations the reviewer replaced. Old rows keep
+        # theirs; a question asked now is answered in the user's own words or dismissed.
         outcome = None
-        if intent == ESTABLISH_USE and not dismiss:
-            outcome = "yes" if used is True else "no" if used is False else "unclear"
         cur.execute(
             """
             UPDATE tailoring_detail_requests
@@ -1727,17 +1413,6 @@ def resolve_detail_request(get_cursor, user_id, request_id, answer=None, dismiss
             """,
             (next_status, None if dismiss else answer, outcome, request_id, user_id),
         )
-        if outcome == "no" and not _candidate_still_viable(
-            cur, user_id, run_id, job_id, requirement,
-        ):
-            # A "no" is a real answer, and when nothing is left it finishes the work. Without
-            # this the resumed run rebuilds the plan, finds the candidate open, and asks the
-            # same question again. It settles one skill on one bullet, though: "no Go on
-            # project A" leaves TypeScript, and leaves project B.
-            candidates_state.resolve(
-                cur, run_id, normalize_skill(requirement or ""), candidates_state.SKIPPED,
-                outcome="you said you did not use this here",
-            )
         tool_result = {
             "request_id": str(request_id), "status": next_status,
             "answer": None if dismiss else answer,
@@ -1914,45 +1589,21 @@ def beat(get_cursor, run_id, steps_used=None):
 
 # ── the plan a run works from ────────────────────────────────────────────────
 
-SETTLED_REASON = "The bullet already shows this; there is nothing to confirm."
 KEPT_OUTCOME = "Read in context, the bullet is already clear for this job."
 
-
-def settle_established_confirms(cur, user_id, plan):
-    """Drop `confirm` targets the bullet already settles, before any task exists.
-
-    LLM establishes AI through the hand-written table. Sending that to the agent bought a
-    refused question and then a substitute one; settled here, it costs no step at all. Only
-    what holds outside any run counts — the bullet's own words, the table, the entry's
-    affirmed skills — so a "yes" given during a run cannot retire the rewrite it unlocks.
-    """
-    for item in plan:
-        if item["action"] != "confirm" or not item.get("targets"):
-            continue
-        condition = _plan_condition(item)
-        open_targets = [
-            target for target in item["targets"]
-            if not _satisfied_on(cur, user_id, None, condition, [target["bullet_id"]])
-        ]
-        if len(open_targets) == len(item["targets"]):
-            continue
-        item["targets"] = open_targets
-        if not open_targets:
-            item["action"], item["reason"] = "keep", SETTLED_REASON
-    return plan
-
-
+# The actions whose bullets the review decides on. `show_in_bullet` is the user's own claim —
+# they said the skill belongs to that entry — so it keeps its targets whatever the review says.
 _EDITABLE = ("rewrite", "keep")
 _IMPORTANCE = {"required": 0, "preferred": 1, "nice_to_have": 2}
 
 
-def _diagnosis_owners(plan):
+def _review_owners(plan):
     """{bullet_id: plan index} for every bullet a met requirement cites.
 
     Every one, not only those a regex called weak: "Helped improve the checkout flow" reads as
-    strong to `bullet_quality_gaps` and was never looked at. A bullet a confirm or
-    show-in-bullet candidate holds is left to that candidate. Among the rest, the owner is by
-    importance, then name — never by the order the posting lists requirements in.
+    strong to `bullet_quality_gaps` and was never looked at. A bullet a show-in-bullet
+    candidate holds is left to that candidate. Among the rest, the owner is by importance,
+    then name — never by the order the posting lists requirements in.
     """
     held = {
         target["bullet_id"]
@@ -1973,28 +1624,18 @@ def _diagnosis_owners(plan):
     return {bullet_id: index for bullet_id, (_rank, index) in owner.items()}
 
 
-def _confirm_support(plan):
-    """{bullet_id: alternatives} for every confirm target: the diagnosis reads these too, and
-    decides whether a yes would change anything worth asking for."""
-    return {
-        target["bullet_id"]: target.get("alternatives") or []
-        for item in plan if item["action"] == "confirm"
-        for target in item.get("targets") or [] if target.get("bullet_id")
-    }
+def _reviewed_bullets(plan):
+    return sorted(_review_owners(plan))
 
 
-def _diagnosis_bullets(plan):
-    return sorted(set(_diagnosis_owners(plan)) | set(_confirm_support(plan)))
-
-
-def apply_diagnoses(plan, diagnoses):
+def apply_reviews(plan, reviews):
     """Carry each bullet's decision onto the candidate that owns it.
 
-    A kept bullet leaves the plan, so the model never sees it; a `keep` requirement whose
-    bullet the diagnosis says needs work becomes a `rewrite` candidate. Returns the keys of
+    A kept bullet leaves the plan, so the editor never sees it; a `keep` requirement whose
+    bullet the review says needs work becomes a `rewrite` candidate. Returns the keys of
     candidates left with nothing to do.
     """
-    owners = _diagnosis_owners(plan)
+    owners = _review_owners(plan)
     texts = {
         cited["bullet_id"]: cited.get("text") or ""
         for item in plan for cited in [*(item.get("cited") or []), *(item.get("targets") or [])]
@@ -2002,46 +1643,26 @@ def apply_diagnoses(plan, diagnoses):
     }
     emptied = []
     for index, item in enumerate(plan):
-        if item["action"] == "confirm":
-            targets = []
-            for target in item.get("targets") or []:
-                decision = diagnoses.get(target["bullet_id"]) or {}
-                if decision.get("decision") != bullet_diagnosis.ASK or not decision.get("confirm_skill"):
-                    continue
-                targets.append({
-                    **target,
-                    "decision": "confirm",
-                    # only the alternative the diagnosis showed a yes would be worth asking for
-                    "alternatives": [
-                        support for support in target.get("alternatives") or []
-                        if normalize_skill(support["alternative"]) == decision["confirm_skill"]
-                    ],
-                    "expected_improvement": decision.get("expected_improvement"),
-                })
-            item["targets"] = targets
-            if not targets:
-                item["action"], item["reason"] = "keep", KEPT_OUTCOME
-                emptied.append(_candidate_key(item))
-            continue
         if item["action"] not in _EDITABLE:
             continue
         was_work = item["action"] == "rewrite"
         targets = []
         for bullet_id in sorted(b for b, owner in owners.items() if owner == index):
-            decision = diagnoses.get(bullet_id) or {"decision": bullet_diagnosis.KEEP}
-            if decision["decision"] == bullet_diagnosis.KEEP:
+            decision = reviews.get(bullet_id) or {"decision": bullet_review.KEEP}
+            if decision["decision"] == bullet_review.KEEP:
                 continue
             targets.append({
                 "bullet_id": bullet_id,
                 "text": texts.get(bullet_id, ""),
                 "decision": decision["decision"],
                 "weakness": decision.get("specific_problem") or "",
+                # what the editor needs to act rather than guess: the reviewer's own question,
+                # what it would change, the instruction, and the facts that must survive it
                 "question": decision.get("question"),
-                # what the editor needs to act on the decision rather than guess at it: which
-                # words to fix, and what the answer is supposed to change
-                "problem_type": decision.get("problem_type"),
-                "span": decision.get("span"),
-                "expected_improvement": decision.get("expected_improvement"),
+                "doubt_type": decision.get("doubt_type"),
+                "rewrite_instruction": decision.get("rewrite_instruction"),
+                "expected_improvement": decision.get("expected_resume_improvement"),
+                "facts_to_preserve": decision.get("facts_to_preserve") or [],
             })
         item["targets"] = targets
         if targets:
@@ -2054,12 +1675,10 @@ def apply_diagnoses(plan, diagnoses):
     return plan, emptied
 
 
-def run_plan(cur, user_id, assessment, entry_bullets, diagnoses=None):
-    plan = settle_established_confirms(
-        cur, user_id, build_tailoring_plan(assessment, bullets_by_entry=entry_bullets),
-    )
-    if diagnoses is not None:
-        plan, _emptied = apply_diagnoses(plan, diagnoses)
+def run_plan(cur, user_id, assessment, entry_bullets, reviews=None):
+    plan = build_tailoring_plan(assessment, bullets_by_entry=entry_bullets)
+    if reviews is not None:
+        plan, _emptied = apply_reviews(plan, reviews)
     return plan
 
 
@@ -2250,39 +1869,42 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
         entry_bullets = bullets_by_entry(cur, user_id)
         plan = run_plan(cur, user_id, assessment, entry_bullets)
         # Decided once, at the start of a fresh run, and read back on every resume: a second
-        # diagnosis could disagree with the first about a question the user already answered.
+        # review could disagree with the first about a question the user already answered.
         # A run that never had one — older, or started with the step off — keeps its rules.
-        diagnoses = bullet_diagnosis.load(cur, run_id)
+        reviews = bullet_review.load(cur, run_id)
         tasks = []
-        if diagnoses is None and not resume_from and bullet_diagnosis.ENABLED:
-            tasks = bullet_diagnosis.build_tasks(
-                cur, user_id, assessment, _diagnosis_bullets(plan), _confirm_support(plan),
+        if reviews is None and not resume_from and bullet_review.ENABLED:
+            tasks = bullet_review.build_tasks(
+                cur, user_id, run_id, assessment, _reviewed_bullets(plan),
             )
 
-    diagnosis_error, emptied = None, []
+    review_error, emptied = None, []
     if tasks:
         # no connection held across the call
         try:
-            diagnoses = bullet_diagnosis.diagnose(
-                job, tasks, budget=usage_budget(user_id, "tailoring_diagnosis", run_id=run_id),
+            reviews = bullet_review.review(
+                job, tasks, budget=usage_budget(user_id, "tailoring_review", run_id=run_id),
             )
         except QuotaExceeded:
-            diagnosis_error = "quota_exceeded"
+            review_error = "quota_exceeded"
         except Exception:
-            logger.exception("bullet diagnosis failed run_id=%s", run_id)
-            diagnosis_error = "model_call_failed"
+            logger.exception("bullet review failed run_id=%s", run_id)
+            review_error = "model_call_failed"
 
     with get_cursor(commit=True) as cur:
-        if tasks and diagnoses is not None:
-            bullet_diagnosis.record(cur, run_id, tasks, diagnoses)
-        if diagnoses is not None:
-            plan, emptied = apply_diagnoses(plan, diagnoses)
-            # a requirement the diagnosis turned into work has no row yet; positions are
+        if tasks and reviews is not None:
+            bullet_review.record(cur, run_id, tasks, reviews)
+        if reviews is not None:
+            plan, emptied = apply_reviews(plan, reviews)
+            # a requirement the review turned into work has no row yet; positions are
             # unique per run, so this adds those and leaves the rest alone
             candidates_state.create(cur, user_id, run_id, agent_candidates(plan))
             for key in emptied:
                 candidates_state.resolve(cur, run_id, key, candidates_state.KEPT,
                                          outcome=KEPT_OUTCOME)
+        # this run's answers, on the target they were given about: the brief names what the
+        # editor may add because of them, and `_claim_evidence` is what allows it
+        _attach_answers(cur, user_id, run_id, plan)
         # written before the brief is built, and the brief is built from this plan — so the
         # record and what the model was told cannot disagree
         record_supplied_evidence(cur, run_id, plan)
@@ -2321,24 +1943,16 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
         _candidate_key(item): (item.get("agent_label") or item["requirement"])
         for item in candidates
     }
-    allowed_conditions = {_candidate_key(item): _plan_condition(item) for item in candidates}
-    # What each diagnosed bullet may be asked: its one planned question, or nothing.
+    # What each reviewed bullet may be asked: its one planned question, or nothing.
     planned_questions = {
         target["bullet_id"]: target["question"]
         for item in candidates for target in item.get("targets") or []
-        if target.get("decision") == bullet_diagnosis.ASK and target.get("question")
+        if target.get("decision") == bullet_review.ASK and target.get("question")
     }
     rewrite_only = {
         target["bullet_id"]
         for item in candidates for target in item.get("targets") or []
-        if target.get("decision") == bullet_diagnosis.REWRITE
-    }
-    # (candidate, bullet) → the alternatives that bullet's own evidence supports. Keyed by both:
-    # the same bullet can back two candidates, and each may confirm only its own.
-    allowed_alternatives = {
-        (_candidate_key(item), target["bullet_id"]): target["alternatives"]
-        for item in candidates if item["action"] == "confirm"
-        for target in item.get("targets") or [] if target.get("alternatives")
+        if target.get("decision") == bullet_review.REWRITE
     }
     # Two scopes per candidate, both sets of bullet ids. `edit` is what the planner chose;
     # `merge` widens it to those bullets' entry siblings, since a merge partner is by
@@ -2372,11 +1986,11 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
             if emptied else
             "The fit engine found no safe wording changes. Gaps and confirmations are listed separately."
         )
-    if diagnosis_error:
-        # resumable: no diagnosis was recorded, so the next attempt makes one
+    if review_error:
+        # resumable: no review was recorded, so the next attempt makes one
         allowed_requirements = set()
         status, error_code = (
-            ("limit_reached", "quota_exceeded") if diagnosis_error == "quota_exceeded"
+            ("limit_reached", "quota_exceeded") if review_error == "quota_exceeded"
             else ("failed", "model_call_failed")
         )
         summary = None
@@ -2497,10 +2111,8 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
                             allowed_targets=allowed_targets,
                             allowed_actions=allowed_actions,
                             allowed_labels=allowed_labels,
-                            allowed_conditions=allowed_conditions,
                             planned_questions=planned_questions,
                             rewrite_only=rewrite_only,
-                            allowed_alternatives=allowed_alternatives,
                             resolved=resolved,
                         )
                         if call.function.name == "request_detail" and outcome.get("status") == "awaiting_user":
@@ -2757,8 +2369,8 @@ def load_run(cur, user_id, run_id):
     }
 
     _job, assessment, requirements = load_job_context(cur, user_id, run["job_id"])
-    run["diagnoses"] = bullet_diagnosis.load(cur, run_id)
-    plan = run_plan(cur, user_id, assessment, bullets_by_entry(cur, user_id), run["diagnoses"])
+    run["reviews"] = bullet_review.load(cur, run_id)
+    plan = run_plan(cur, user_id, assessment, bullets_by_entry(cur, user_id), run["reviews"])
     run["outcomes"] = plan
     # what the run was ASKED to do and what became of it. Recomputing the plan alone can
     # never show this: it describes the resume as it is now, not the assignment (AE-02).
@@ -2771,7 +2383,7 @@ def load_run(cur, user_id, run_id):
         "skills_to_surface": sum(item["action"] == "surface_skill" for item in plan),
         "keyword_only": len(keyword_only(plan)),
         "gaps": len(deterministic_gaps(plan)),
-        "confirmations": sum(item["action"] == "confirm" for item in plan),
+        "inferred_only": sum(item["action"] == "inferred_only" for item in plan),
     }
     # Polling runs should stay cheap while the model works. The UI only needs composition
     # after the run has stopped and the download actions are visible.
@@ -2893,7 +2505,7 @@ def load_run(cur, user_id, run_id):
         -- agent's actions, and the supplied targets are already on screen with each candidate.
         SELECT step_number, tool_name, arguments, status, error_message
         FROM tool_calls
-        WHERE run_id = %s AND tool_name NOT IN ('evidence_supplied', 'bullet_diagnosis')
+        WHERE run_id = %s AND tool_name NOT IN ('evidence_supplied', 'bullet_review')
         ORDER BY step_number, created_at
         """,
         (run_id,),

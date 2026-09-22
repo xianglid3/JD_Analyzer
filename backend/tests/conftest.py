@@ -143,9 +143,9 @@ def _isolate_skill_relations():
 
 
 @pytest.fixture(autouse=True)
-def _diagnosis_off(monkeypatch):
-    """Most tests are about the editing loop and script only its model turns. The diagnosis
-    step is its own paid call; tests that exercise it switch it back on and script it."""
-    from services import bullet_diagnosis
+def _review_off(monkeypatch):
+    """Most tests are about the editing loop and script only its model turns. The recruiter
+    review is its own paid call; tests that exercise it switch it back on and script it."""
+    from services import bullet_review
 
-    monkeypatch.setattr(bullet_diagnosis, "ENABLED", False)
+    monkeypatch.setattr(bullet_review, "ENABLED", False)

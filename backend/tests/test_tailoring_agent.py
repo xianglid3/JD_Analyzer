@@ -87,6 +87,35 @@ def fixtures(_db):
     return {"user_id": user_id, "job_id": job_id, "bullets": bullets}
 
 
+PLANNED_QUESTION = "Which part of the Kubernetes deployments did you set up yourself?"
+
+
+def plan_question(monkeypatch, question=PLANNED_QUESTION):
+    """Turn the recruiter review on and have it ask one question about every bullet it sees.
+
+    The server stores the review's question, so this is how a test gets a run to the point of
+    asking at all. `bullet_review.validate` is exercised in test_bullet_review.py.
+    """
+    from services import bullet_review
+
+    monkeypatch.setattr(bullet_review, "ENABLED", True)
+    monkeypatch.setattr(bullet_review, "request_review", lambda job, tasks, **_kw: [
+        {
+            "bullet": f"b{index + 1}",
+            "decision": "ASK",
+            "recruiter_doubt": {"type": "contribution",
+                                "specific_problem": "It does not say which part was theirs."},
+            "anchor": " ".join(task["text"].split()[1:3]),
+            "missing_fact": "which part of it they set up",
+            "question": question,
+            "expected_resume_improvement": "The bullet can name the part they set up.",
+            "facts_to_preserve": ["kubernetes"],
+            "decision_reason": "One named part would make this concrete.",
+        }
+        for index, task in enumerate(tasks)
+    ])
+
+
 @pytest.fixture
 def k8s_bullet(fixtures):
     return fixtures["bullets"]["Worked on Kubernetes deployments across three regions"]
@@ -417,13 +446,14 @@ def test_run_without_evidence_stops_before_spending(monkeypatch, fixtures, _db):
     ("Built an LLM-powered job analysis and resume tailoring platform with server-enforced "
      "grounding", "ai"),
 ])
-def test_a_confirm_the_bullet_already_settles_takes_zero_steps(
+def test_an_inferred_match_alone_takes_zero_steps(
     monkeypatch, fixtures, k8s_bullet, _db, bullet, requirement,
 ):
-    """React implies JavaScript and LLM implies AI through the hand-written table — the rule
-    the fit engine used to call them INFERRED. Sent to the agent, that bought a refused
-    question and then a substitute one ("what improvements did the platform provide?").
-    Settled in the plan, it never becomes a task, and the model is never called."""
+    """React implies JavaScript and LLM implies AI. That used to be a `confirm` candidate, and
+    the agent asked "did you use javascript?" about a React bullet. A match is not a question:
+    the requirement is reported as inferred, no task exists, and no model call is made — not
+    even the review's, which here would have asked about anything it was given."""
+    plan_question(monkeypatch)
     with _db.cursor() as cur:
         cur.execute("UPDATE resume_bullets SET text = %s WHERE user_id = %s",
                     (bullet, fixtures["user_id"]))
@@ -446,7 +476,7 @@ def test_a_confirm_the_bullet_already_settles_takes_zero_steps(
         run = load_run(cur, fixtures["user_id"], result["run_id"]) if result.get("run_id") else None
     if run:
         assert run["detail_requests"] == []
-        assert run["outcomes"][0]["action"] == "keep"
+        assert run["outcomes"][0]["action"] == "inferred_only"
 
 
 def test_load_run_is_ownership_scoped(monkeypatch, fixtures, _db):
@@ -517,7 +547,9 @@ def test_strong_unmeasured_evidence_starts_no_agent_work(
     assert result.get("steps_used", 0) == 0
 
 
-def test_impact_questions_are_refused(monkeypatch, fixtures, k8s_bullet, _db):
+def test_a_question_nobody_planned_is_refused(monkeypatch, fixtures, k8s_bullet, _db):
+    """The review decides which bullets are asked about. Without one, the editor's own
+    question — here the generic impact question that started all this — files nothing."""
     script(
         monkeypatch,
         response([call("request_detail", {
@@ -538,7 +570,7 @@ def test_impact_questions_are_refused(monkeypatch, fixtures, k8s_bullet, _db):
         cur.execute("SELECT count(*) FROM tailoring_detail_requests WHERE run_id = %s",
                     (result["run_id"],))
         assert cur.fetchone()[0] == 0
-    assert any("impact, scale or metrics are not asked" in message for message in refusals)
+    assert any("no question was planned for this bullet" in message for message in refusals)
 
 
 def test_prompt_states_the_positive_target_and_rejects_synonym_swaps():
@@ -598,7 +630,7 @@ def test_gaps_exist_even_when_the_agent_never_flags_them(monkeypatch, fixtures, 
     assert [gap["requirement"] for gap in run["gaps"]] == ["terraform"]
     assert run["coverage"] == {
         "total": 2, "accounted": 2, "rewrite_candidates": 1, "skills_to_surface": 0,
-        "keyword_only": 0, "gaps": 1, "confirmations": 0,
+        "keyword_only": 0, "gaps": 1, "inferred_only": 0,
     }
 
 
@@ -947,7 +979,8 @@ def test_agent_can_merge_repetitive_bullets_in_one_entry(monkeypatch, fixtures, 
 def test_agent_pauses_for_a_detail_and_resumes_with_the_answer(
     monkeypatch, fixtures, k8s_bullet, _db,
 ):
-    question = "Which part of these deployments did you build?"
+    question = PLANNED_QUESTION
+    plan_question(monkeypatch)
     script(
         monkeypatch,
         response([call("search_resume", {"query": "kubernetes"}, "c1")]),
@@ -1499,6 +1532,7 @@ def test_asking_a_question_does_not_count_as_finishing_the_work(monkeypatch, fix
     """A run that only asked questions used to report every candidate `handled` while
     producing zero edits — and left nothing pending, so the answer it waited for was never
     used for anything."""
+    plan_question(monkeypatch)
     script(
         monkeypatch,
         response([call("search_resume", {"query": "kubernetes"}, "c1")]),
@@ -1778,61 +1812,46 @@ def test_keeping_a_bullet_still_requires_a_bullet_that_reached_this_run(
 def test_two_questions_about_one_bullet_in_the_same_step_file_one_request(
     monkeypatch, fixtures, k8s_bullet, _db,
 ):
-    """Rewording walks past the unique constraint, which dedupes on exact question text, so
-    one bullet could collect several pending questions — and an ask is recorded as an attempt
-    rather than a failure, so the repeat-failure cap never saw it."""
+    """Rewording used to walk past the unique constraint, which dedupes on exact question
+    text, so one bullet collected several pending requests. It cannot now: whatever the editor
+    drafts, the review's question is what gets stored, so the second call is the same row."""
+    plan_question(monkeypatch)
     script(
         monkeypatch,
         response([call("search_resume", {"query": "kubernetes"}, "c1")]),
         response([
             call("request_detail", {
-                "requirement": "Kubernetes",
-                "bullet_id": k8s_bullet,
-                "intent": "implementation",
-                "question": "What technologies or functionality did you use?",
+                "requirement": "Kubernetes", "bullet_id": k8s_bullet,
+                "intent": "implementation", "question": "What technologies did you use?",
             }, "c2"),
             call("request_detail", {
-                "requirement": "Kubernetes",
-                "bullet_id": k8s_bullet,
-                "intent": "implementation",
-                "question": "What functionality did you use?",
+                "requirement": "Kubernetes", "bullet_id": k8s_bullet,
+                "intent": "implementation", "question": "What functionality did you use?",
             }, "c3"),
         ]),
     )
 
-    result = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
+    paused = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
 
+    assert paused["status"] == "waiting_for_user"
     with _db.cursor() as cur:
-        cur.execute(
-            "SELECT count(*) FROM tailoring_detail_requests WHERE run_id = %s",
-            (result["run_id"],),
-        )
-        assert cur.fetchone()[0] == 1, "the reworded question filed a second request"
-        cur.execute(
-            """
-            SELECT error_message FROM tool_calls
-            WHERE run_id = %s AND tool_name = 'request_detail' AND status = 'failed'
-            """,
-            (result["run_id"],),
-        )
-        refusals = [row[0] for row in cur.fetchall()]
-
-    assert any("already waiting on an answer" in message for message in refusals)
+        cur.execute("SELECT question FROM tailoring_detail_requests WHERE run_id = %s",
+                    (paused["run_id"],))
+        assert [row[0] for row in cur.fetchall()] == [PLANNED_QUESTION]
 
 
 def test_an_answered_question_is_handed_back_instead_of_asked_again(
     monkeypatch, fixtures, k8s_bullet, _db,
 ):
-    """The loop a real run hit: the user answers, the run resumes, and the model asks the
-    same thing in different words — parking the run in waiting_for_user again. Once there is
-    an answer, re-asking returns it, because the next move is the rewrite that uses it."""
-    question = "Which cluster setup did you build?"
+    """The loop a real run hit: the user answers, the run resumes, and the model asks again.
+    Asking again returns the answer, because the next move is the rewrite that uses it."""
+    plan_question(monkeypatch)
     script(
         monkeypatch,
         response([call("search_resume", {"query": "kubernetes"}, "c1")]),
         response([call("request_detail", {
             "requirement": "Kubernetes", "bullet_id": k8s_bullet, "intent": "implementation",
-            "question": question,
+            "question": "anything at all",
         }, "c2")]),
     )
     paused = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
@@ -1848,10 +1867,8 @@ def test_an_answered_question_is_handed_back_instead_of_asked_again(
     script(
         monkeypatch,
         response([call("request_detail", {
-            "requirement": "Kubernetes",
-            "bullet_id": k8s_bullet,
-            "intent": "implementation",
-            "question": "Which cluster setup was it exactly?",
+            "requirement": "Kubernetes", "bullet_id": k8s_bullet, "intent": "implementation",
+            "question": "asking again in other words",
         }, "c3")]),
         response(content="Nothing further."),
     )
@@ -1863,19 +1880,18 @@ def test_an_answered_question_is_handed_back_instead_of_asked_again(
     with _db.cursor() as cur:
         cur.execute(
             """
-            SELECT error_message FROM tool_calls
-            WHERE run_id = %s AND tool_name = 'request_detail' AND status = 'failed'
+            SELECT result FROM tool_calls
+            WHERE run_id = %s AND tool_name = 'request_detail' AND status = 'completed'
+            ORDER BY step_number DESC LIMIT 1
             """,
             (paused["run_id"],),
         )
-        refusals = [row[0] for row in cur.fetchall()]
-        cur.execute(
-            "SELECT count(*) FROM tailoring_detail_requests WHERE run_id = %s",
-            (paused["run_id"],),
-        )
-        assert cur.fetchone()[0] == 1
-
-    assert any("The Helm charts for the four clusters." in message for message in refusals)
+        handed_back = cur.fetchone()[0]
+        cur.execute("SELECT count(*) FROM tailoring_detail_requests WHERE run_id = %s",
+                    (paused["run_id"],))
+        assert cur.fetchone()[0] == 1, "asking again filed a second request"
+    assert handed_back["answer"] == "The Helm charts for the four clusters."
+    assert handed_back["status"] == "answered"
 
 
 def test_a_merge_must_include_the_bullet_the_candidate_was_assigned(monkeypatch, fixtures, _db):
@@ -2101,54 +2117,18 @@ def _learned_redux_job(monkeypatch, fixtures, k8s_bullet, _db):
     _db.commit()
 
 
-def test_a_question_cannot_assume_use_that_nothing_establishes(
+def test_the_server_stores_the_reviews_question_not_the_models(
     monkeypatch, fixtures, k8s_bullet, _db,
 ):
-    """An intent label is not enough on its own: the backend checks it, and refuses impact and
-    implementation until something says the technology was used here."""
-    _learned_redux_job(monkeypatch, fixtures, k8s_bullet, _db)
+    """The editor may ask the question the review planned, in whatever words it likes — ours
+    are what the user sees. A model that writes its own gets the planned one stored instead."""
+    plan_question(monkeypatch)
     script(
         monkeypatch,
-        response([call("search_resume", {"query": "redux"}, "c1")]),
+        response([call("search_resume", {"query": "kubernetes"}, "c1")]),
         response([call("request_detail", {
-            "requirement": "redux",
-            "bullet_id": k8s_bullet,
-            "intent": "implementation",
-            "question": "Which Redux store did you build?",
-        }, "c2")]),
-        response(content="Understood."),
-    )
-
-    result = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
-
-    with _db.cursor() as cur:
-        cur.execute(
-            "SELECT error_message FROM tool_calls WHERE run_id = %s AND status = 'failed'",
-            (result["run_id"],),
-        )
-        refusals = [row[0] for row in cur.fetchall()]
-        cur.execute(
-            "SELECT count(*) FROM tailoring_detail_requests WHERE run_id = %s",
-            (result["run_id"],),
-        )
-        assert cur.fetchone()[0] == 0, "the question was filed anyway"
-    assert any("nothing establishes" in message for message in refusals), refusals
-
-
-def test_the_server_writes_the_establish_use_question(
-    monkeypatch, fixtures, k8s_bullet, _db,
-):
-    """A model can label "How did X improve this project?" as establish_use and walk past the
-    intent check, so for that intent its wording is discarded and ours is stored."""
-    _learned_redux_job(monkeypatch, fixtures, k8s_bullet, _db)
-    script(
-        monkeypatch,
-        response([call("search_resume", {"query": "redux"}, "c1")]),
-        response([call("request_detail", {
-            "requirement": "redux",
-            "bullet_id": k8s_bullet,
-            "intent": "establish_use",
-            "question": "Which Redux store did you build?",
+            "requirement": "Kubernetes", "bullet_id": k8s_bullet, "intent": "impact",
+            "question": "What improvements did this bring?",
         }, "c2")]),
         response(content="Asked."),
     )
@@ -2160,11 +2140,7 @@ def test_the_server_writes_the_establish_use_question(
             "SELECT question, intent FROM tailoring_detail_requests WHERE run_id = %s",
             (result["run_id"],),
         )
-        question, intent = cur.fetchone()
-
-    assert intent == "establish_use"
-    assert question == "Did you use redux in this project? If so, what did you use it for?"
-    assert "improve" not in question
+        assert cur.fetchall() == [(PLANNED_QUESTION, "implementation")]
 
 
 def test_a_denial_does_not_become_evidence(fixtures, k8s_bullet, _db):
@@ -2190,14 +2166,14 @@ def test_a_denial_does_not_become_evidence(fixtures, k8s_bullet, _db):
                 """
                 INSERT INTO tailoring_detail_requests (
                     run_id, user_id, bullet_id, requirement, question, answer, status,
-                    intent, outcome
+                    intent, outcome, skill
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, 'answered', 'establish_use', %s)
+                VALUES (%s, %s, %s, %s, %s, %s, 'answered', 'establish_use', %s, %s)
                 """,
                 (run_id, fixtures["user_id"], k8s_bullet,
                  "redis" if outcome == "no" else "kafka",
                  f"Did you use {'redis' if outcome == 'no' else 'kafka'} here?",
-                 answer, outcome),
+                 answer, outcome, "redis" if outcome == "no" else "kafka"),
             )
 
     links = {k8s_bullet: None}
@@ -2213,39 +2189,284 @@ def test_a_denial_does_not_become_evidence(fixtures, k8s_bullet, _db):
     assert not any("session caching" in text.lower() for text in affirmed)
 
 
-def test_saying_no_finishes_the_candidate(monkeypatch, fixtures, k8s_bullet, _db):
-    """"No, I didn't use this here" is an answer, not a skipped question. Without closing the
-    candidate the resumed run rebuilds the plan, finds it open, and asks again."""
-    _learned_redux_job(monkeypatch, fixtures, k8s_bullet, _db)
-    script(
-        monkeypatch,
-        response([call("search_resume", {"query": "redux"}, "c1")]),
-        response([call("request_detail", {
-            "requirement": "redux",
-            "bullet_id": k8s_bullet,
-            "intent": "establish_use",
-            "question": "ignored — the server writes this one",
-        }, "c2")]),
-    )
-    paused = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
-    assert paused["status"] == "waiting_for_user"
 
-    with _db.cursor() as cur:
-        run = load_run(cur, fixtures["user_id"], paused["run_id"])
-    request_id = run["detail_requests"][0]["id"]
 
-    resolve_detail_request(
-        get_cursor, fixtures["user_id"], request_id,
-        answer="No — that was a teammate's work.", used=False,
-    )
+def test_answers_support_a_rewrite_only_on_the_bullet_they_were_given_about(fixtures, k8s_bullet, _db):
+    """Scoped to the bullet and the run. A bullet keeps its id when its wording is edited, so
+    an answer from another run may have been given about a sentence that no longer exists."""
+    from services.tailoring_agent import _claim_evidence
+
+    python_bullet = fixtures["bullets"][BULLETS[1]]
+    with get_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            INSERT INTO tailoring_runs (user_id, job_id, model, max_steps, status)
+            VALUES (%s, %s, 'gpt-4o-mini', 12, 'running') RETURNING id
+            """,
+            (fixtures["user_id"], fixtures["job_id"]),
+        )
+        this_run = cur.fetchone()[0]
+        cur.execute(
+            """
+            INSERT INTO tailoring_runs (user_id, job_id, model, max_steps, status, completed_at)
+            VALUES (%s, %s, 'gpt-4o-mini', 12, 'completed', now()) RETURNING id
+            """,
+            (fixtures["user_id"], fixtures["job_id"]),
+        )
+        other_run = cur.fetchone()[0]
+        for run_id, bullet_id, answer in [
+            (this_run, k8s_bullet, "I wrote the Helm charts for all four clusters."),
+            (other_run, k8s_bullet, "Something I said in an older run."),
+            (this_run, python_bullet, "About a different bullet entirely."),
+        ]:
+            cur.execute(
+                """
+                INSERT INTO tailoring_detail_requests (run_id, user_id, bullet_id, requirement,
+                    question, answer, status, intent)
+                VALUES (%s, %s, %s, 'kubernetes', %s, %s, 'answered', 'implementation')
+                """,
+                (run_id, fixtures["user_id"], bullet_id, f"q about {bullet_id}", answer),
+            )
 
     with get_cursor() as cur:
-        cur.execute(
-            "SELECT outcome FROM tailoring_detail_requests WHERE id = %s", (request_id,),
+        texts, _details, answers = _claim_evidence(
+            cur, fixtures["user_id"], this_run, {k8s_bullet: None}, "kubernetes",
         )
-        assert cur.fetchone()[0] == "no"
-        states = {item["normalized"]: item["status"]
-                  for item in candidates_state.load(cur, paused["run_id"])}
 
-    assert states.get("redux") == "skipped"
+    assert answers == ["I wrote the Helm charts for all four clusters."]
+    assert not any("older run" in text for text in texts)
+    assert not any("different bullet" in text for text in texts)
 
+
+# ── what the review decides, and what the run does with it ───────────────────
+# These guarantees were covered in test_bullet_diagnosis.py, which went when the module it
+# tested was replaced. The behaviour they pin is the same; the decision behind it is the
+# recruiter review's.
+
+def plan_decision(monkeypatch, decide):
+    """Turn the review on and answer it with `decide(task) -> raw review`."""
+    from services import bullet_review
+
+    seen = []
+    monkeypatch.setattr(bullet_review, "ENABLED", True)
+
+    def fake(job, tasks, **_kw):
+        seen.append(tasks)
+        return [{"bullet": f"b{i + 1}", **decide(task)} for i, task in enumerate(tasks)]
+
+    monkeypatch.setattr(bullet_review, "request_review", fake)
+    return seen
+
+
+KEEP_REVIEW = {"decision": "KEEP", "decision_reason": "It already names the work and the tools."}
+
+
+def _rewrite_review(task):
+    return {
+        "decision": "REWRITE",
+        "anchor": " ".join(task["text"].split()[:2]),
+        "rewrite_instruction": "Lead with the deployment work instead of 'worked on'.",
+        "expected_resume_improvement": "The bullet reads as a contribution.",
+        "facts_to_preserve": ["kubernetes", "three regions"],
+        "decision_reason": "The facts are there; the wording buries them.",
+    }
+
+
+def test_a_kept_bullet_never_reaches_the_editor(monkeypatch, fixtures, k8s_bullet, _db):
+    plan_decision(monkeypatch, lambda task: KEEP_REVIEW)
+    sent = script(monkeypatch)
+
+    result = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
+
+    assert sent == []
+    assert result["status"] == "completed"
+    with _db.cursor() as cur:
+        states = {item["status"] for item in candidates_state.load(cur, result["run_id"])}
+    assert states <= {"kept"}
+
+
+def test_a_bullet_the_regex_calls_strong_is_still_reviewed(monkeypatch, fixtures, k8s_bullet, _db):
+    """"Helped improve the checkout flow" reads as strong to `bullet_quality_gaps` and was
+    never looked at. Every bullet a met requirement cites is reviewed now."""
+    from services.claim_check import bullet_is_already_strong
+
+    strong = "Helped improve the Kubernetes deployments for the web store backend."
+    assert bullet_is_already_strong(strong)
+    with _db.cursor() as cur:
+        cur.execute("UPDATE resume_bullets SET text = %s WHERE id = %s", (strong, k8s_bullet))
+    _db.commit()
+    seen = plan_decision(monkeypatch, lambda task: KEEP_REVIEW)
+    script(monkeypatch)
+
+    run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
+
+    assert strong in {task["text"] for task in seen[0]}
+
+
+def test_the_brief_states_each_decision(monkeypatch, fixtures, k8s_bullet, _db):
+    plan_decision(monkeypatch, _rewrite_review)
+    sent = script(monkeypatch, response(content="Stopping."))
+
+    run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
+
+    brief = sent[0][1]["content"]
+    assert "Decision: rewrite" in brief
+    assert "Lead with the deployment work" in brief
+    assert "Keep these facts exactly as they are: kubernetes, three regions" in brief
+
+
+def test_a_rewrite_bullet_cannot_be_asked_about(monkeypatch, fixtures, k8s_bullet, _db):
+    plan_decision(monkeypatch, _rewrite_review)
+    script(
+        monkeypatch,
+        response([call("request_detail", {
+            "requirement": "Kubernetes", "bullet_id": k8s_bullet, "intent": "implementation",
+            "question": "Which cluster did you build?",
+        }, "c1")]),
+        response(content="Done."),
+    )
+
+    result = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
+
+    with _db.cursor() as cur:
+        cur.execute(
+            "SELECT error_message FROM tool_calls WHERE run_id = %s AND status = 'failed'",
+            (result["run_id"],),
+        )
+        refusals = [row[0] for row in cur.fetchall()]
+        cur.execute("SELECT count(*) FROM tailoring_detail_requests WHERE run_id = %s",
+                    (result["run_id"],))
+        assert cur.fetchone()[0] == 0
+    assert any("no question was planned" in message for message in refusals)
+
+
+def test_the_review_is_made_once_and_reused_on_resume(monkeypatch, fixtures, k8s_bullet, _db):
+    """A second review could disagree with the first about a question already answered — and
+    it would be paid for twice."""
+    seen = plan_decision(monkeypatch, _rewrite_review)
+    script(monkeypatch, response(content="Stopping."))
+    first = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
+    assert len(seen) == 1
+
+    script(monkeypatch, response(content="Still stopping."))
+    job_id, steps_used = resume_run(get_cursor, fixtures["user_id"], first["run_id"])
+    execute_run(get_cursor, fixtures["user_id"], job_id, first["run_id"], resume_from=steps_used)
+
+    assert len(seen) == 1
+    with _db.cursor() as cur:
+        assert load_run(cur, fixtures["user_id"], first["run_id"])["reviews"]
+
+
+def test_a_failed_review_fails_the_run_resumably(monkeypatch, fixtures, k8s_bullet, _db):
+    from services import bullet_review
+
+    monkeypatch.setattr(bullet_review, "ENABLED", True)
+    monkeypatch.setattr(bullet_review, "request_review",
+                        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("model down")))
+    sent = script(monkeypatch)
+
+    result = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
+
+    assert sent == [] and result["status"] == "failed"
+    with _db.cursor() as cur:
+        cur.execute("SELECT error_code FROM tailoring_runs WHERE id = %s", (result["run_id"],))
+        assert cur.fetchone()[0] == "model_call_failed"
+
+
+def test_run_0dc2d235_asks_nothing_about_a_react_bullet(monkeypatch, fixtures, k8s_bullet, _db):
+    """The real run that asked "did you use data structures?" about a React messaging bullet.
+    The group is inferred through React, so it is reported and never becomes a task — even
+    with a review that would ask about anything it was given."""
+    messaging = ("Built an end-to-end encrypted messaging platform with React and Flask, "
+                 "keeping cryptographic operations in the browser.")
+    with _db.cursor() as cur:
+        cur.execute("UPDATE resume_bullets SET text = %s WHERE user_id = %s",
+                    (messaging, fixtures["user_id"]))
+        cur.execute(
+            """
+            UPDATE jobs SET skills = '[]'::jsonb, match_detail = NULL, requirements = %s::jsonb
+            WHERE id = %s
+            """,
+            (json.dumps([{
+                "condition": {"operator": "any_of", "minimum": 1, "items": [
+                    "data structures", "storage systems", "cloud infrastructure",
+                    "front-end frameworks"]},
+                "source_text": "data structures or storage systems or cloud infrastructure or front-end frameworks",
+                "importance": "required", "type": "skill",
+            }]), fixtures["job_id"]),
+        )
+    _db.commit()
+    seen = plan_decision(monkeypatch, lambda task: {"decision": "ASK"})
+    sent = script(monkeypatch)
+
+    result = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
+
+    assert sent == [] and seen == []
+    with _db.cursor() as cur:
+        cur.execute("SELECT count(*) FROM tailoring_detail_requests WHERE run_id = %s",
+                    (result["run_id"],))
+        assert cur.fetchone()[0] == 0
+
+
+def test_an_assessment_stored_without_provenance_is_recomputed(monkeypatch, fixtures, _db):
+    """Evidence that does not say which alternative it supports, or a requirement with no
+    shape, cannot be rebuilt from labels — it was never stored. Recomputing is deterministic
+    and costs no model call; guessing was how "typescript and go" became "typescript or go"."""
+    from services import tailoring_agent
+    from services.tailoring_agent import _with_conditions
+
+    stored = {"requirements": [{"requirement": "typescript and go", "state": "INFERRED",
+                                "evidence": [{"bullet_id": "b1", "text": "old row"}]}]}
+    fresh = {"requirements": [{"requirement": "typescript and go", "condition": {
+        "operator": "all_of", "minimum": 1, "items": ["typescript", "go"]}}]}
+    monkeypatch.setattr(tailoring_agent, "match_for_job", lambda *_a: fresh)
+
+    with get_cursor() as cur:
+        assert _with_conditions(cur, fixtures["user_id"], stored, [], []) is fresh
+
+
+def test_the_brief_names_the_words_the_rewrite_must_keep(monkeypatch, fixtures, k8s_bullet, _db):
+    """Told "keep every skill word" in prose, the editor kept dropping "backend" and losing the
+    edit — five refusals in six attempts across two eval cases. The server knows which words
+    the claim check enforces, so it names them."""
+    plan_decision(monkeypatch, _rewrite_review)
+    sent = script(monkeypatch, response(content="Stopping."))
+
+    run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
+
+    assert "These words must appear in your rewrite: kubernetes" in sent[0][1]["content"]
+
+
+def test_the_brief_names_what_this_runs_answer_allows(monkeypatch, fixtures, k8s_bullet, _db):
+    """An answer widens what may be written — but only this run's, and only on its bullet."""
+    plan_decision(monkeypatch, lambda task: {
+        "decision": "ASK",
+        "recruiter_doubt": {"type": "contribution", "specific_problem": "Whose part is unclear."},
+        "anchor": "Kubernetes deployments",
+        "missing_fact": "which part they built",
+        "question": PLANNED_QUESTION,
+        "expected_resume_improvement": "The bullet can name the part they built.",
+        "decision_reason": "One named part would fix it.",
+    })
+    script(
+        monkeypatch,
+        response([call("request_detail", {
+            "requirement": "Kubernetes", "bullet_id": k8s_bullet, "intent": "implementation",
+            "question": "anything",
+        }, "c1")]),
+    )
+    paused = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
+    with _db.cursor() as cur:
+        run = load_run(cur, fixtures["user_id"], paused["run_id"])
+    resumed = resolve_detail_request(
+        get_cursor, fixtures["user_id"], run["detail_requests"][0]["id"],
+        answer="I wrote the Helm charts and the Terraform modules behind them.",
+    )
+
+    sent = script(monkeypatch, response(content="Stopping."))
+    execute_run(get_cursor, fixtures["user_id"], fixtures["job_id"], paused["run_id"],
+                resume_from=resumed["steps_used"])
+
+    brief = sent[0][1]["content"]
+    assert "These words must appear in your rewrite: kubernetes" in brief
+    assert "You may also use, from the answer: terraform" in brief
