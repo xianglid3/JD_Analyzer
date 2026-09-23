@@ -1,0 +1,210 @@
+{
+  "_about": "Stage 1 cases for the question-generating reviewer (`services/bullet_review_v2.py`). Nothing here passes or fails: `run_review_eval.py` is the pass/fail check on the production contract, and this one exists to be read. Each case supplies its own four-field fit context with requirement ids, so `requirement_reference` is exercised — including a case whose only match is inferred, and cases where the tempting reference is a resume-wide gap the question must not touch. `expect` is a note to the reader about what a good answer looks like, not an assertion.",
+  "jobs": {
+    "backend": {
+      "title": "Backend Software Engineer",
+      "company": "Globex",
+      "summary": "Owns the services behind the ordering platform: APIs, data storage, background jobs.",
+      "requirements": ["python", "api", "postgresql", "backend", "testing"]
+    },
+    "ai": {
+      "title": "AI Engineer",
+      "company": "Globex",
+      "summary": "Builds LLM features for internal tools.",
+      "requirements": ["ai", "python", "backend"]
+    },
+    "robotics": {
+      "title": "Perception Engineer",
+      "company": "Globex",
+      "summary": "Autonomous vehicle perception.",
+      "requirements": ["c++", "ros", "computer vision"]
+    },
+    "distributed": {
+      "title": "Distributed Systems Engineer",
+      "company": "Globex",
+      "summary": "Runs the event backbone: partitioning, coordination, exactly-once delivery.",
+      "requirements": ["distributed systems", "go", "kafka", "coordination"]
+    },
+    "retail_ops": {
+      "title": "Retail Operations Coordinator",
+      "company": "Globex",
+      "summary": "Keeps store inventory, vendor orders and showroom scheduling running.",
+      "requirements": ["inventory management", "vendor coordination", "excel"]
+    }
+  },
+  "cases": [
+    {
+      "id": "ai_platform",
+      "job": "ai",
+      "entry": "JobMatcha — Developer",
+      "text": "Built an LLM-powered job analysis and resume tailoring platform with server-enforced grounding: proposed edits are rejected unless their cited evidence belongs to the user and was retrieved during the same agent run.",
+      "fit": {
+        "supported_explicit": [
+          {"id": "r0", "label": "ai", "importance": "required"},
+          {"id": "r2", "label": "backend", "importance": "required"}
+        ]
+      },
+      "expect": "No candidates. It names the work, the mechanism and the guarantee; the regression is that this stays untouched."
+    },
+    {
+      "id": "vague_postgres",
+      "job": "backend",
+      "entry": "JobMatcha — Developer",
+      "text": "Worked with PostgreSQL to store and manage application data.",
+      "siblings": ["Built an AI-powered platform that helps users analyze job descriptions and improve their resumes."],
+      "fit": {
+        "supported_explicit": [{"id": "r2", "label": "postgresql", "importance": "required"}],
+        "resume_gaps": [{"id": "r4", "label": "testing", "importance": "required"}]
+      },
+      "expect": "Candidates about what they designed or wrote. None may reference r4 — testing is a resume-wide gap, not this bullet's business."
+    },
+    {
+      "id": "background_worker",
+      "job": "backend",
+      "entry": "JobMatcha — Developer",
+      "text": "Improved the reliability of background processing and prevented duplicate operations.",
+      "siblings": ["Created backend functionality for managing users, messages, and channels."],
+      "fit": {
+        "supported_explicit": [{"id": "r3", "label": "backend", "importance": "required"}]
+      },
+      "expect": "A result is claimed. A candidate may ask what showed it; none may ask for a metric, and none may assume one exists."
+    },
+    {
+      "id": "idempotency",
+      "job": "backend",
+      "entry": "JD Translator — Developer",
+      "text": "Implemented reserve-before-spend idempotency for job-draft creation so duplicate requests cannot trigger duplicate LLM calls, with stored-response replay after completion.",
+      "fit": {
+        "supported_explicit": [
+          {"id": "r0", "label": "python", "importance": "required"},
+          {"id": "r3", "label": "backend", "importance": "required"}
+        ]
+      },
+      "expect": "No candidates. The prevented failure is the outcome and it is stated."
+    },
+    {
+      "id": "fastapi_calendar",
+      "job": "backend",
+      "entry": "Calendar Map — Developer",
+      "text": "Designed a FastAPI backend with Supabase and REST APIs for event creation, updates, and geocoded location storage; integrated it with a React/TypeScript calendar and Mapbox interface.",
+      "siblings": ["Deployed the app on Render with GitHub Actions running the test suite on every push."],
+      "fit": {
+        "supported_explicit": [
+          {"id": "r1", "label": "api", "importance": "required"},
+          {"id": "r3", "label": "backend", "importance": "required"}
+        ]
+      },
+      "expect": "No candidates, or at most one narrow one. Dense and concrete already."
+    },
+    {
+      "id": "ros_contribution",
+      "job": "robotics",
+      "entry": "Panther Racing FSAE — Software Team Member",
+      "text": "Helped develop software for an autonomous vehicle using C++ and ROS 2.",
+      "siblings": [
+        "Worked with LiDAR and camera data for cone detection.",
+        "Assisted with point-cloud processing and perception tasks."
+      ],
+      "fit": {
+        "supported_explicit": [
+          {"id": "r0", "label": "c++", "importance": "required"},
+          {"id": "r1", "label": "ros", "importance": "required"}
+        ],
+        "resume_gaps": [{"id": "r2", "label": "computer vision", "importance": "required"}]
+      },
+      "expect": "Candidates about what they personally built. The explicit C++ match makes this matter MORE, not less — and none may reference r2."
+    },
+    {
+      "id": "point_cloud",
+      "job": "robotics",
+      "entry": "Panther Racing FSAE — Software Team Member",
+      "text": "Assisted with point-cloud processing and perception tasks.",
+      "siblings": ["Built and modified ROS 2 perception nodes in C++ for cone detection and colouring."],
+      "fit": {
+        "related_inferred": [
+          {"id": "r2", "label": "computer vision", "importance": "required",
+           "inferred_from": ["perception"]}
+        ]
+      },
+      "expect": "The only match is inferred. It may explain relevance; no candidate may ask as though computer-vision work is established."
+    },
+    {
+      "id": "irrelevant_retail",
+      "job": "backend",
+      "entry": "Asian Granite & Cabinet — Part-time IT & Sales",
+      "text": "Helped with IT-related tasks and company operations.",
+      "siblings": ["Used Excel to improve business workflows.", "Maintained website content."],
+      "fit": {},
+      "expect": "The control. Vague, and irrelevant to a backend role — so no candidates. Nothing the candidate could answer helps this application."
+    },
+    {
+      "id": "multi_gap_payments",
+      "job": "backend",
+      "entry": "ShopCo — Software Engineering Intern",
+      "text": "Helped improve the checkout and payments flow for the web store backend.",
+      "siblings": ["Joined the weekly on-call rotation for the storefront."],
+      "fit": {
+        "supported_explicit": [
+          {"id": "r0", "label": "python", "importance": "required"},
+          {"id": "r3", "label": "backend", "importance": "required"}
+        ],
+        "claimed_not_demonstrated": [{"id": "r4", "label": "testing", "importance": "required"}]
+      },
+      "expect": "The case the ceiling exists for. Several genuinely distinct gaps: which part was theirs, checkout versus payments, what changed, whether it shipped. Distinct is the test — two questions one answer would settle are one question."
+    },
+    {
+      "id": "same_bullet_high_fit",
+      "job": "distributed",
+      "entry": "ShopCo — Software Engineering Intern",
+      "text": "Worked on the event pipeline that moves orders between services.",
+      "siblings": ["Joined the weekly on-call rotation for the storefront."],
+      "fit": {
+        "supported_explicit": [{"id": "r0", "label": "distributed systems", "importance": "required"}],
+        "related_inferred": [{"id": "r3", "label": "coordination", "importance": "preferred",
+                              "inferred_from": ["event pipeline"]}],
+        "resume_gaps": [{"id": "r1", "label": "go", "importance": "required"},
+                        {"id": "r2", "label": "kafka", "importance": "required"}]
+      },
+      "expect": "Paired with the next case — SAME bullet, high fit. Compare against it: strength_assessment must be identical. No candidate may reference r1 or r2, and none may ask about Go or Kafka."
+    },
+    {
+      "id": "same_bullet_low_fit",
+      "job": "retail_ops",
+      "entry": "ShopCo — Software Engineering Intern",
+      "text": "Worked on the event pipeline that moves orders between services.",
+      "siblings": ["Joined the weekly on-call rotation for the storefront."],
+      "fit": {
+        "resume_gaps": [
+          {"id": "r0", "label": "inventory management", "importance": "required"},
+          {"id": "r1", "label": "vendor coordination", "importance": "required"}
+        ]
+      },
+      "expect": "Same bullet, low fit. Expect FEWER candidates than the high-fit case — ideally none — and the same strength_assessment. Fewer, never thinner."
+    },
+    {
+      "id": "repetitive_temptation",
+      "job": "backend",
+      "entry": "JobMatcha — Developer",
+      "text": "Created backend functionality to support resume tailoring and job analysis.",
+      "siblings": ["Used Docker and GitHub Actions to support deployment and testing."],
+      "fit": {
+        "supported_explicit": [{"id": "r3", "label": "backend", "importance": "required"}]
+      },
+      "expect": "One real gap, phrasable ten ways. Does it stop at one or two, or fill the ceiling with rewordings? Filling it is the failure to watch for."
+    },
+    {
+      "id": "already_answered_control",
+      "job": "backend",
+      "entry": "JobMatcha — Developer",
+      "text": "Worked with PostgreSQL to store and manage application data.",
+      "answers": [
+        "I designed the PostgreSQL schema for jobs, resumes and runs, and wrote the queries behind the job list.",
+        "It was for the tailoring tool's own data; nobody else used the schema."
+      ],
+      "fit": {
+        "supported_explicit": [{"id": "r2", "label": "postgresql", "importance": "required"}]
+      },
+      "expect": "The answers already supply the missing fact. Expect no candidates and a rewrite instruction — never a question for something an answer gave."
+    }
+  ]
+}
