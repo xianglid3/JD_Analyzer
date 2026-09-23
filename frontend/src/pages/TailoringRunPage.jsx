@@ -411,17 +411,30 @@ function WorkPanel({ work, candidates }) {
 // The sidebar, the back link and the download card were all still on screen while tailoring
 // was mid-question, which invites the user to wander off in the middle of something they are
 // being asked to finish. Everything but the current step is removed until the run stops.
+// A run has two phases and only one of them is steps. The reviewer makes one model call per
+// resume bullet and can be most of a run's wall clock; `steps_used` is 0 throughout, so a step
+// counter is not merely uninformative there, it reads as "nothing is happening".
+function reviewPhase(run) {
+  const progress = run?.review_progress
+  if (!progress || !progress.total) return null
+  if (progress.reviewed >= progress.total) return null      // reviewing is done; steps begin
+  return progress
+}
+
 function StepRail({ run }) {
-  const total = run?.max_steps ?? 12
-  const used = Math.min(run?.steps_used ?? 0, total)
-  const percent = Math.max(8, (used / total) * 100)
+  const reviewing = reviewPhase(run)
+  const total = reviewing ? reviewing.total : (run?.max_steps ?? 12)
+  const used = reviewing
+    ? reviewing.reviewed
+    : Math.min(run?.steps_used ?? 0, run?.max_steps ?? 12)
+  const percent = Math.max(8, (used / Math.max(total, 1)) * 100)
 
   return (
     <div className="mb-8">
       <div className="flex items-baseline justify-between gap-3">
         <p className="eyebrow">Tailoring paused</p>
         <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">
-          step {used} of {total}
+          {reviewing ? `reviewing ${used} of ${total} bullets` : `step ${used} of ${total}`}
         </span>
       </div>
       <div
@@ -430,7 +443,7 @@ function StepRail({ run }) {
         aria-valuenow={used}
         aria-valuemin={0}
         aria-valuemax={total}
-        aria-label="Tailoring progress"
+        aria-label={reviewing ? 'Reviewing resume bullets' : 'Tailoring progress'}
       >
         <div
           className="h-full rounded-full bg-obsidian transition-[width] duration-700 ease-out"
@@ -449,12 +462,17 @@ function RunProgress({ run }) {
     return () => clearInterval(timer)
   }, [])
 
+  const reviewing = reviewPhase(run)
   const done = run?.trace?.length ?? 0
   // history only, since the newest call is already the headline
-  const recent = run?.trace?.slice(0, -1).slice(-3).reverse() ?? []
-  const headline = done > 0 ? describe(run.trace[done - 1]) : OPENING_LINES[tick % OPENING_LINES.length]
+  const recent = reviewing ? [] : (run?.trace?.slice(0, -1).slice(-3).reverse() ?? [])
+  const headline = reviewing
+    ? `Reviewing resume bullets: ${reviewing.reviewed} of ${reviewing.total}`
+    : done > 0 ? describe(run.trace[done - 1]) : OPENING_LINES[tick % OPENING_LINES.length]
   // steps, not tool calls — the cap is on model turns
-  const percent = Math.min(95, Math.round(((run?.steps_used ?? 0) / (run?.max_steps ?? 8)) * 100))
+  const percent = reviewing
+    ? Math.min(95, Math.round((reviewing.reviewed / Math.max(reviewing.total, 1)) * 100))
+    : Math.min(95, Math.round(((run?.steps_used ?? 0) / (run?.max_steps ?? 8)) * 100))
 
   return (
     <div className="surface-card p-6">
@@ -470,7 +488,9 @@ function RunProgress({ run }) {
         />
       </div>
       <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.08em] text-muted">
-        step {run?.steps_used ?? 0} of {run?.max_steps ?? 8} · {done} tool {done === 1 ? 'call' : 'calls'}
+        {reviewing
+          ? `bullet ${reviewing.reviewed} of ${reviewing.total} read${reviewing.unavailable ? ` · ${reviewing.unavailable} unavailable` : ''}`
+          : `step ${run?.steps_used ?? 0} of ${run?.max_steps ?? 8} · ${done} tool ${done === 1 ? 'call' : 'calls'}`}
       </p>
 
       {recent.length > 0 && (

@@ -254,6 +254,49 @@ describe('TailoringRunPage', () => {
     expect(screen.queryByRole('heading', { name: /Suggestions/ })).not.toBeInTheDocument()
   })
 
+  it('counts bullets, not steps, while the reviewer is still reading', async () => {
+    // The review is one model call per bullet and can be most of a run's wall clock. Through
+    // all of it `steps_used` is 0 and the trace is empty, so the step counter used to sit at
+    // "step 0 of 8" — which reads as nothing happening.
+    apiFetch.mockResolvedValue({
+      ...running,
+      steps_used: 0,
+      trace: [],
+      review_progress: { reviewed: 4, total: 12, unavailable: 0 },
+    })
+
+    renderWithProviders(<TailoringRunPage />)
+
+    expect(await screen.findByText(/Reviewing resume bullets: 4 of 12/)).toBeInTheDocument()
+    expect(screen.getByText(/bullet 4 of 12 read/)).toBeInTheDocument()
+    expect(screen.queryByText(/step 0 of/)).not.toBeInTheDocument()
+  })
+
+  it('goes back to steps once every bullet has been reviewed', async () => {
+    apiFetch.mockResolvedValue({
+      ...running,
+      review_progress: { reviewed: 12, total: 12, unavailable: 0 },
+    })
+
+    renderWithProviders(<TailoringRunPage />)
+
+    expect(await screen.findByText(/step 2 of 8 · 1 tool call/)).toBeInTheDocument()
+    expect(screen.queryByText(/Reviewing resume bullets/)).not.toBeInTheDocument()
+  })
+
+  it('says plainly when a bullet could not be reviewed', async () => {
+    apiFetch.mockResolvedValue({
+      ...running,
+      steps_used: 0,
+      trace: [],
+      review_progress: { reviewed: 5, total: 12, unavailable: 2 },
+    })
+
+    renderWithProviders(<TailoringRunPage />)
+
+    expect(await screen.findByText(/2 unavailable/)).toBeInTheDocument()
+  })
+
   it('accepts a proposal', async () => {
     apiFetch.mockResolvedValueOnce(finished)
     renderWithProviders(<TailoringRunPage />)
