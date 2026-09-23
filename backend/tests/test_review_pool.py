@@ -14,6 +14,7 @@ from services import bullet_review
 from services.bullet_review import (
     KEEP,
     REVIEW_UNAVAILABLE,
+    REWRITE,
     ReviewUnavailable,
     chunks,
     review_bullets,
@@ -307,3 +308,212 @@ def test_an_unavailable_bullet_is_separated_from_a_missing_one(world, _db):
         state = bullet_review.progress(cur, world["run_id"])
     assert state["unavailable"] == ["a"]
     assert state["missing"] == ["b"]
+
+
+# ── concurrent calls, serialized persistence ─────────────────────────────────
+# The calls are independent — one bullet each — and I/O-bound, so they run several at a time.
+# Everything that is not a call stays on the orchestrator thread. A worker that persisted its own
+# result would have four threads mutating one dict, renewing one lease and opening their own
+# transactions; keeping writes on one thread means completion order is the only thing concurrency
+# changes, and results are keyed by bullet id, so it changes nothing.
+
+import threading                                                   # noqa: E402
+
+
+def test_calls_run_concurrently(monkeypatch):
+    """Four bullets, four workers, and none of them waits for the one before it."""
+    started = threading.Barrier(4, timeout=5)
+
+    def request_review(job, tasks, budget=None, model=None):
+        started.wait()          # only returns if all four are inside the call at once
+        return [kept("b1")]
+
+    monkeypatch.setattr(bullet_review, "request_review", request_review)
+    tasks = [task(f"b{i}") for i in range(4)]
+
+    results = review_bullets(JOB, tasks, concurrency=4)
+
+    assert set(results) == {t["bullet_id"] for t in tasks}
+    assert all(r["decision"] == KEEP for r in results.values())
+
+
+def test_only_the_orchestrator_thread_persists(monkeypatch):
+    """The property the rest of the design rests on: a worker makes its call and returns. Every
+    write, and the lease renewal the caller does inside `on_chunk`, happens on one thread."""
+    caller = threading.current_thread().name
+    call_threads, persist_threads = set(), set()
+
+    def request_review(job, tasks, budget=None, model=None):
+        call_threads.add(threading.current_thread().name)
+        return [kept("b1")]
+
+    monkeypatch.setattr(bullet_review, "request_review", request_review)
+    review_bullets(
+        JOB, [task(f"b{i}") for i in range(6)], concurrency=3,
+        on_chunk=lambda i, chunk, reviews: persist_threads.add(threading.current_thread().name),
+    )
+
+    assert persist_threads == {caller}, "persistence ran off the orchestrator thread"
+    assert call_threads - {caller}, "the calls did not leave the orchestrator thread"
+
+
+def test_completion_order_cannot_change_the_result(monkeypatch):
+    """Results are keyed by bullet id, so finishing out of order is not observable."""
+    import time as _time
+
+    order = {"a": 0.03, "b": 0.0, "c": 0.015}       # c finishes second, a last
+
+    def request_review(job, tasks, budget=None, model=None):
+        _time.sleep(order[tasks[0]["bullet_id"]])
+        return [{"bullet": "b1", "decision": "REWRITE",
+                 "recruiter_doubt": {"type": "clarification", "specific_problem": "Wording."},
+                 "anchor": "the payments",
+                 "rewrite_instruction": "Lead with the work done and cut the filler.",
+                 "expected_resume_improvement": "It reads as a contribution, not a category.",
+                 "decision_reason": "The facts are there."}]
+
+    monkeypatch.setattr(bullet_review, "request_review", request_review)
+    landed = []
+    results = review_bullets(
+        JOB, [task("a"), task("b"), task("c")], concurrency=3,
+        on_chunk=lambda i, chunk, reviews: landed.append(chunk[0]["bullet_id"]),
+    )
+
+    assert landed == ["b", "c", "a"], "they really did land out of order"
+    assert sorted(results) == ["a", "b", "c"]
+    assert all(r["decision"] == REWRITE for r in results.values())
+
+
+def test_one_worker_uses_the_sequential_path(monkeypatch, calls):
+    """A single worker is not a pool: the tests that script one review must not depend on one."""
+    caller = threading.current_thread().name
+    seen_threads = []
+
+    def request_review(job, tasks, budget=None, model=None):
+        seen_threads.append(threading.current_thread().name)
+        return [kept("b1")]
+
+    monkeypatch.setattr(bullet_review, "request_review", request_review)
+    review_bullets(JOB, [task("a"), task("b")], concurrency=1)
+
+    assert seen_threads == [caller, caller]
+
+
+# ── rate limits are one bullet's problem ─────────────────────────────────────
+
+class _Limited(Exception):
+    """What the SDK raises for 429; matched by name, not by a status code we may not see."""
+    def __init__(self):
+        super().__init__("RateLimitError: too many requests")
+
+
+def test_a_rate_limited_bullet_is_retried_alone(monkeypatch):
+    monkeypatch.setattr(bullet_review, "RATE_LIMIT_BACKOFF", 0.0)
+    seen = []
+
+    def request_review(job, tasks, budget=None, model=None):
+        bullet = tasks[0]["bullet_id"]
+        seen.append(bullet)
+        if bullet == "b" and seen.count("b") == 1:
+            raise _Limited()
+        return [kept("b1")]
+
+    monkeypatch.setattr(bullet_review, "request_review", request_review)
+    results = review_bullets(JOB, [task("a"), task("b"), task("c")], concurrency=1)
+
+    assert seen == ["a", "b", "b", "c"], "only the limited bullet was asked again"
+    assert all(r["decision"] == KEEP for r in results.values())
+    assert results["b"]["decision"] == KEEP
+
+
+def test_a_sustained_rate_limit_ends_that_bullet_not_the_pool(monkeypatch):
+    monkeypatch.setattr(bullet_review, "RATE_LIMIT_BACKOFF", 0.0)
+    seen = []
+
+    def request_review(job, tasks, budget=None, model=None):
+        bullet = tasks[0]["bullet_id"]
+        seen.append(bullet)
+        if bullet == "b":
+            raise _Limited()
+        return [kept("b1")]
+
+    monkeypatch.setattr(bullet_review, "request_review", request_review)
+    results = review_bullets(JOB, [task("a"), task("b"), task("c")], concurrency=1)
+
+    assert seen.count("b") <= bullet_review.RATE_LIMIT_ATTEMPTS + 1, "it did not spin"
+    assert results["b"]["decision"] == REVIEW_UNAVAILABLE
+    assert "rate" in results["b"]["unavailable_reason"].lower()
+    # and its siblings were unaffected
+    assert results["a"]["decision"] == KEEP and results["c"]["decision"] == KEEP
+
+
+def test_a_rate_limit_is_told_apart_from_a_bad_response():
+    assert bullet_review.is_rate_limit(_Limited())
+    assert bullet_review.is_rate_limit(RuntimeError("Service Unavailable"))
+    assert not bullet_review.is_rate_limit(ReviewUnavailable("the response was not valid JSON"))
+
+
+def test_the_run_reports_review_progress_while_it_is_partway_through(world, _db):
+    """What the two-phase progress display counts. No new column: it is the pool row compared
+    against the reviews stored so far, which is the same comparison recovery uses."""
+    from services.tailoring_agent import load_run
+
+    with _db.cursor() as cur:
+        ids = bullets_for_review(cur, world["user_id"])["bullet_ids"]
+        bullet_review.record_pool(cur, world["run_id"], ids)
+        bullet_review.record(
+            cur, world["run_id"], [{"bullet_id": ids[0]}],
+            {ids[0]: bullet_review.validate({"decision": "KEEP", "decision_reason": "Fine."},
+                                            task(ids[0]))},
+            chunk=ids[0],
+        )
+        bullet_review.record(
+            cur, world["run_id"], [{"bullet_id": ids[1]}],
+            {ids[1]: bullet_review.unavailable("rate limited after 3 attempts")},
+            chunk=ids[1],
+        )
+    _db.commit()
+
+    with _db.cursor() as cur:
+        run = load_run(cur, world["user_id"], world["run_id"])
+
+    assert run["review_progress"] == {
+        "reviewed": 2, "total": len(ids), "unavailable": 1,
+    }, "a bullet nobody could review still counts as read — it will not be tried again"
+
+
+def test_a_run_with_no_pool_reports_no_review_progress(world, _db):
+    """`None`, not zero: a run that has not started reviewing is not a run 0% through it, and
+    an older run never had a pool at all."""
+    from services.tailoring_agent import load_run
+
+    with _db.cursor() as cur:
+        assert load_run(cur, world["user_id"], world["run_id"])["review_progress"] is None
+
+
+def test_a_fatal_error_keeps_the_reviews_already_paid_for(monkeypatch):
+    """Calls not yet started cost nothing and are cancelled. Ones already in flight are paid
+    for whether or not anybody reads them, so dropping their results means the next attempt
+    buys the same reviews again."""
+    import threading as _threading
+
+    started = _threading.Event()
+
+    def request_review(job, tasks, budget=None, model=None):
+        bullet = tasks[0]["bullet_id"]
+        if bullet == "boom":
+            started.wait(timeout=5)         # let the good one finish first
+            raise RuntimeError("the database went away")
+        started.set()
+        return [kept("b1")]
+
+    monkeypatch.setattr(bullet_review, "request_review", request_review)
+    persisted = {}
+    with pytest.raises(RuntimeError):
+        review_bullets(
+            JOB, [task("good"), task("boom")], concurrency=2,
+            on_chunk=lambda i, chunk, reviews: persisted.update(reviews),
+        )
+
+    assert "good" in persisted, "a review we had already bought was thrown away"
+    assert persisted["good"]["decision"] == KEEP

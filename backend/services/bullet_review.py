@@ -19,6 +19,8 @@ import json
 import logging
 import os
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from services.claim_check import named_skills
 
@@ -49,6 +51,11 @@ IMPROVEMENT_LEVELS = ("high", "medium", "low")
 # Truncation, the reason chunking exists at all, also cannot reach a one-bullet response.
 # Latency is the cost, and these calls are independent, so concurrency is where it goes.
 CHUNK_SIZE = 1
+# How many of those one-bullet calls are in flight at once. Wall clock only: a 30-bullet resume
+# is 30 calls whatever this is, and at 1 it spent its slowest minutes doing them one after the
+# other. Four is small enough to stay well inside the provider's pacing and to keep a rate limit
+# a per-bullet event rather than a stampede.
+REVIEW_CONCURRENCY = int(os.environ.get("TAILORING_REVIEW_CONCURRENCY", "4"))
 DOUBT_TYPES = ("contribution", "implementation", "scope", "result_validation", "clarification")
 MIN_ANCHOR_WORDS, MAX_ANCHOR_WORDS = 2, 8
 # Words that carry no subject: two of these in a row ("for the", "with a") would let any
@@ -732,40 +739,138 @@ def _missing(chunk, reviews):
     ]
 
 
-def review_bullets(job, tasks, budget=None, model=None, size=CHUNK_SIZE, on_chunk=None):
-    """Review a whole pool in chunks, so one bad response costs one chunk.
+class RateLimited(ReviewUnavailable):
+    """The provider asked us to slow down. Not a bad response — the same bullet, tried again."""
 
-    A chunk is retried once when the call fails outright *or* when the response came back
-    valid but short some of its bullets — the second case used to be invisible. Whatever is
-    still missing after the retry stays `REVIEW_UNAVAILABLE`; nothing here turns a failure
-    into a decision.
 
-    `on_chunk(index, chunk, reviews)` is called after each chunk with that chunk's results, so
-    a caller can persist them before the next call is made. It is called outside any cursor
-    this module holds — it holds none.
+# Matched on the exception, not on a status code we may never see: the SDK raises different
+# classes for 429 and for an overloaded upstream, and both mean "this bullet, later".
+_RATE_LIMIT_SIGNS = ("ratelimit", "rate_limit", "toomanyrequests", "overloaded", "serviceunavailable")
+RATE_LIMIT_ATTEMPTS = 3        # a sustained limit ends the bullet, it does not spin
+RATE_LIMIT_BACKOFF = 2.0       # seconds, doubled per attempt
+
+
+def is_rate_limit(exc):
+    name = f"{type(exc).__name__}{exc}".lower().replace(" ", "").replace("-", "")
+    return any(sign in name for sign in _RATE_LIMIT_SIGNS)
+
+
+def _review_one(job, chunk, budget, model):
+    """One chunk's model call, and nothing else.
+
+    This is what runs on a worker thread, so it deliberately touches no shared state, no
+    database and no lease: it takes a chunk, calls the model, and returns what came back. The
+    ordinary retry and the rate-limit retry both live here because both are about this chunk
+    alone — a shared retry would multiply a limit by the number of callers.
     """
-    results = {}
-    for index, chunk in enumerate(chunks(tasks, size), start=1):
-        reviews, failure = {}, None
-        for attempt in (1, 2):
-            pending = _missing(chunk, reviews) if reviews else chunk
-            try:
-                reviews.update(review(job, pending, budget=budget, model=model))
-                failure = None
-            except ReviewUnavailable as exc:
-                failure = str(exc)
-                logger.warning("review chunk %d attempt %d failed: %s", index, attempt, exc)
-            if not failure and not _missing(chunk, reviews):
+    reviews, failure = {}, None
+    delay = RATE_LIMIT_BACKOFF
+    limited = 0
+    attempt = 0
+    while attempt < 2:
+        pending = _missing(chunk, reviews) if reviews else chunk
+        try:
+            reviews.update(review(job, pending, budget=budget, model=model))
+            failure = None
+        except Exception as exc:
+            failure = str(exc)
+            if is_rate_limit(exc):
+                if limited < RATE_LIMIT_ATTEMPTS - 1:
+                    # Not one of the two ordinary attempts: being asked to wait is not a bad
+                    # answer, and spending an attempt on it would retire a bullet nobody read.
+                    limited += 1
+                    logger.warning("review rate-limited, retrying one bullet in %.1fs: %s",
+                                   delay, exc)
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                # Out of patience for this bullet. It ends unavailable — which is honest, and
+                # resumable — rather than raised, because a raise would end the whole pool over
+                # one bullet's pacing.
+                failure = f"rate limited after {RATE_LIMIT_ATTEMPTS} attempts: {exc}"
+                logger.warning("review gave up on one bullet: %s", failure)
                 break
-        for task in chunk:
-            reviews.setdefault(task["bullet_id"], unavailable(failure or "no review came back"))
-        for task in _missing(chunk, reviews):
-            reviews[task["bullet_id"]]["unavailable_reason"] = (
-                failure or "the review did not come back for this bullet, twice"
-            )
+            if not isinstance(exc, ReviewUnavailable):
+                raise
+            logger.warning("review attempt %d failed: %s", attempt + 1, exc)
+        attempt += 1
+        if not failure and not _missing(chunk, reviews):
+            break
+    for task in chunk:
+        reviews.setdefault(task["bullet_id"], unavailable(failure or "no review came back"))
+    for task in _missing(chunk, reviews):
+        reviews[task["bullet_id"]]["unavailable_reason"] = (
+            failure or "the review did not come back for this bullet, twice"
+        )
+    return {task["bullet_id"]: reviews[task["bullet_id"]] for task in chunk}
+
+
+def review_bullets(job, tasks, budget=None, model=None, size=CHUNK_SIZE, on_chunk=None,
+                   concurrency=None):
+    """Review a whole pool, one bullet per model call, several calls at a time.
+
+    The calls are independent — one bullet each, no shared input — and I/O-bound, so they run on
+    a small pool. Everything else runs here, on the orchestrator thread: merging results,
+    calling `on_chunk`, and whatever the caller does inside it (persisting a row, renewing the
+    run's lease). A worker that did its own persisting would have four threads mutating one
+    dict, renewing one lease and opening their own transactions; keeping writes on one thread
+    means completion order is the only thing concurrency changes, and results are keyed by
+    bullet id, so it changes nothing.
+
+    `on_chunk(index, chunk, reviews)` is called as each chunk lands, in completion order, so a
+    caller can persist it before the rest finish. It holds no cursor of ours — this module
+    holds none.
+    """
+    batches = chunks(tasks, size)
+    if not batches:
+        return {}
+    workers = max(1, min(concurrency or REVIEW_CONCURRENCY, len(batches)))
+    results = {}
+    if workers == 1:
+        # the sequential path, kept exact: one worker is not a pool, and the tests that script
+        # a single review should not depend on an executor
+        for index, chunk in enumerate(batches, start=1):
+            reviews = _review_one(job, chunk, budget, model)
+            results.update(reviews)
+            if on_chunk:
+                on_chunk(index, chunk, reviews)
+        return results
+
+    pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="review")
+    futures = {
+        pool.submit(_review_one, job, chunk, budget, model): (index, chunk)
+        for index, chunk in enumerate(batches, start=1)
+    }
+    consumed = set()
+
+    def take(future):
+        index, chunk = futures[future]
+        reviews = future.result()
+        consumed.add(future)
         results.update(reviews)
         if on_chunk:
-            on_chunk(index, chunk, {task["bullet_id"]: reviews[task["bullet_id"]] for task in chunk})
+            on_chunk(index, chunk, reviews)
+
+    try:
+        for future in as_completed(futures):
+            take(future)
+    except BaseException:
+        # Something other than a bad response — the quota, the database. Calls not yet started
+        # are cancelled, so they cost nothing. Ones already in flight cannot be cancelled and
+        # are paid for whether or not anybody reads them, so we wait for them and keep what
+        # came back: dropping a review we have already bought means the next attempt buys it
+        # again. Draining must not mask the original failure, so its own errors are logged.
+        pool.shutdown(wait=True, cancel_futures=True)
+        for future in futures:
+            if future in consumed or future.cancelled() or future.exception():
+                continue
+            try:
+                take(future)
+            except Exception:
+                logger.exception("could not keep a review that was already paid for")
+        raise
+    finally:
+        pool.shutdown(wait=True)
     return results
 
 

@@ -1948,12 +1948,14 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
     review_error = None
     if tasks:
         def store(_index, chunk, chunk_reviews):
-            # Persisted as each chunk lands, before the next call is made. One stored chunk
-            # is not a finished review — `progress()` compares against the pool row — so a
-            # crash here costs the chunks that had not run yet, and nothing more.
+            # Persisted as each review lands. One stored chunk is not a finished review —
+            # `progress()` compares against the pool row — so a crash costs only the calls that
+            # had not run, and the same comparison is what the progress display counts.
             #
-            # Fenced like every other write this worker makes: a worker whose lease expired
-            # mid-review must not keep writing into a run somebody else now owns.
+            # `review_bullets` guarantees this runs on its own thread, never on a worker, which
+            # is what makes all three of these safe to do here: mutating `reviews`, renewing the
+            # fencing lease, and opening a transaction. The renewal doubles as the heartbeat, so
+            # a long review keeps the run visibly alive instead of looking abandoned.
             if token:
                 renew(get_cursor, run_id, token)
             reviews.update(chunk_reviews)
@@ -2612,6 +2614,16 @@ def load_run(cur, user_id, run_id):
 
     _job, assessment, requirements = load_job_context(cur, user_id, run["job_id"])
     run["reviews"] = bullet_review.load(cur, run_id)
+    # Two phases, counted separately. The review is one model call per bullet and can be most of
+    # a run's wall clock, and while it runs `steps_used` is 0 — so a step counter is not just
+    # uninformative here, it is wrong. No new column: `progress()` already compares the stored
+    # reviews against the pool row the run wrote before its first call.
+    review_state = bullet_review.progress(cur, run_id)
+    run["review_progress"] = {
+        "reviewed": len(review_state["pool"]) - len(review_state["missing"]),
+        "total": len(review_state["pool"]),
+        "unavailable": len(review_state["unavailable"]),
+    } if review_state["pool"] else None
     plan = run_plan(cur, user_id, assessment, bullets_by_entry(cur, user_id))
     run["outcomes"] = plan
     # what the run was ASKED to do and what became of it. Recomputing the plan alone can
