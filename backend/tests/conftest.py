@@ -143,9 +143,39 @@ def _isolate_skill_relations():
 
 
 @pytest.fixture(autouse=True)
-def _review_off(monkeypatch):
-    """Most tests are about the editing loop and script only its model turns. The recruiter
-    review is its own paid call; tests that exercise it switch it back on and script it."""
+def _review_rewrites_everything(monkeypatch):
+    """The recruiter review, scripted to hand every bullet back as a plain rewrite.
+
+    It used to be switched off here, because the fit engine created the editing work and the
+    review only narrowed it. The fit engine no longer creates work at all — a requirement is
+    context and priority now — so with the review off a run has nothing to do and every test
+    about the editing loop would be testing an empty run. This is the smallest scripted review
+    that gives the loop something to edit; tests about the review's own judgment replace it.
+    """
     from services import bullet_review
 
-    monkeypatch.setattr(bullet_review, "ENABLED", False)
+    monkeypatch.setattr(bullet_review, "ENABLED", True)
+
+    def _review(job, tasks, **_kw):
+        # One candidate, not one per cited bullet. Each candidate now gets its own
+        # conversation, so two candidates means two scripted model turns — and these tests
+        # script a single thread. Tests that need a second candidate say so themselves.
+        first = next((t["bullet_id"] for t in tasks if t.get("requirements")), None)
+        return [_decision(index, task, task["bullet_id"] == first)
+                for index, task in enumerate(tasks)]
+
+    def _decision(index, task, chosen):
+        return {
+            "bullet": f"b{index + 1}",
+            "decision": "REWRITE" if chosen else "KEEP",
+            "recruiter_doubt": {"type": "clarification",
+                                "specific_problem": "The wording buries the work."},
+            "anchor": " ".join((task["text"] or "x y").split()[:2]),
+            "rewrite_instruction": "Lead with the work done and cut the filler.",
+            "expected_resume_improvement": "The bullet reads as a contribution, not a category.",
+            "improvement_level": "medium",
+            "facts_to_preserve": [],
+            "decision_reason": "The facts are there; the wording buries them.",
+        }
+
+    monkeypatch.setattr(bullet_review, "request_review", _review)

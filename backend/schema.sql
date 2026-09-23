@@ -239,7 +239,10 @@ CREATE TABLE proposed_edits (
   user_id       uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   -- SET NULL not CASCADE: if the bullet is pruned the proposal becomes history, not a hole
   bullet_id     uuid REFERENCES resume_bullets(id) ON DELETE SET NULL,
-  requirement   text NOT NULL,
+  -- NULL when the edit belongs to the bullet rather than to a requirement: the recruiter
+  -- review found the work, and no requirement owns it. A sentinel string here would be a
+  -- requirement nobody asked for.
+  requirement   text,
   proposed_text text NOT NULL,
   edit_type     text NOT NULL DEFAULT 'rewrite'
                 CHECK (edit_type IN ('rewrite', 'merge')),
@@ -300,7 +303,9 @@ CREATE TABLE tailoring_detail_requests (
   run_id       uuid NOT NULL REFERENCES tailoring_runs(id) ON DELETE CASCADE,
   user_id      uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   bullet_id    uuid REFERENCES resume_bullets(id) ON DELETE SET NULL,
-  requirement  text NOT NULL,
+  -- NULL for a question the recruiter review raised about the bullet itself; see
+  -- `tailoring_candidates` for why that is not given a stand-in requirement.
+  requirement  text,
   question     text NOT NULL,
   answer       text,
   -- What the question was for. `establish_use` asks whether the technology was used here at
@@ -442,14 +447,32 @@ CREATE TABLE tailoring_candidates (
   run_id        uuid NOT NULL REFERENCES tailoring_runs(id) ON DELETE CASCADE,
   user_id       uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   position      smallint NOT NULL,                -- the planner's order
-  requirement   text NOT NULL,
-  normalized    text NOT NULL,                    -- what the tool boundary matches on
+  -- Exactly one owner. A recruiter-review action belongs to the BULLET: deciding it from
+  -- requirement evidence is what left a deliberately vague resume with two reviewed bullets
+  -- out of twelve, because a bullet too vague to match anything was never read. A
+  -- requirement is context and priority for that work, never its owner. `show_in_bullet` is
+  -- the one exception and stays requirement-owned: the user affirmed a specific skill, and
+  -- naming that skill is the whole point of the rewrite.
+  requirement   text,
+  normalized    text,                             -- the skill handle, for requirement-owned rows
+  bullet_id     uuid REFERENCES resume_bullets(id) ON DELETE SET NULL,
+  -- Never two owners. Neither is allowed only as a tombstone: `bullet_id` is SET NULL when
+  -- the bullet is deleted, and the row has to survive that — "assigned 3, handled 1" stays
+  -- true about what the run was asked to do even after the resume changes underneath it
+  -- (AE-02). A row is always created with exactly one.
+  CONSTRAINT tailoring_candidates_owner_ck
+             CHECK (requirement IS NULL OR bullet_id IS NULL),
   -- every action `agent_candidates` can hand out; widening the planner without widening
   -- this is a 500 at run creation, which is exactly how it was found
   action        text NOT NULL
-                CHECK (action IN ('rewrite', 'strengthen', 'confirm', 'show_in_bullet')),
+                CHECK (action IN ('rewrite', 'strengthen', 'confirm', 'show_in_bullet', 'ask')),
+  -- An ASK walks its own path, and each step is named so none of them can be mistaken for a
+  -- decision: `pending` (its question is not filed yet), `waiting` (filed, owed an answer),
+  -- `answer_ready` (answered, and now ordinary editing work), `kept` (dismissed, so the
+  -- bullet stands). Only `handled`, `kept`, `skipped` and `needs_review` end anything.
   status        text NOT NULL DEFAULT 'pending'
-                CHECK (status IN ('pending', 'active', 'handled', 'kept', 'skipped', 'needs_review')),
+                CHECK (status IN ('pending', 'active', 'waiting', 'answer_ready',
+                                  'handled', 'kept', 'skipped', 'needs_review')),
   -- why it ended where it did, for the run summary
   outcome       text,
   attempts      smallint NOT NULL DEFAULT 0 CHECK (attempts >= 0),
@@ -458,6 +481,19 @@ CREATE TABLE tailoring_candidates (
   UNIQUE (run_id, position)
 );
 CREATE INDEX tailoring_candidates_run_status_idx ON tailoring_candidates (run_id, status);
+-- One candidate is worked at a time, and the database is what says so. The editor is scoped
+-- to the active candidate's bullet; two active rows would mean two scopes, and the model
+-- could edit one candidate's bullet while another was the one being tracked — corrupting
+-- status, retry counts and answer scope together.
+CREATE UNIQUE INDEX tailoring_candidates_one_active
+  ON tailoring_candidates (run_id) WHERE status = 'active';
+-- Identity, so re-running the assignment on a resume updates nothing and inserts nothing
+-- twice. Position is then free to be allocated rather than guessed, and a collision on it is
+-- a bug that must surface rather than an insert that quietly does nothing.
+CREATE UNIQUE INDEX tailoring_candidates_run_bullet
+  ON tailoring_candidates (run_id, bullet_id) WHERE bullet_id IS NOT NULL;
+CREATE UNIQUE INDEX tailoring_candidates_run_normalized
+  ON tailoring_candidates (run_id, normalized) WHERE normalized IS NOT NULL;
 
 -- "I used this on that project" — the user correcting or completing our reading of them.
 --

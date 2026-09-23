@@ -8,7 +8,15 @@ fixes, and anything that cannot show its work becomes a keep.
 
 import pytest
 
-from services.bullet_review import ASK, KEEP, REWRITE, anchored_in, unsupported_technologies, validate
+from services.bullet_review import (
+    ASK,
+    KEEP,
+    REVIEW_UNAVAILABLE,
+    REWRITE,
+    anchored_in,
+    unsupported_technologies,
+    validate,
+)
 
 
 BULLET = "Created backend functionality for managing users, messages, and channels."
@@ -173,6 +181,47 @@ def test_a_rewrite_that_also_filled_the_ask_fields_keeps_the_rewrite():
 
 # ── keeps ────────────────────────────────────────────────────────────────────
 
+# ── a rewrite that asks a question ───────────────────────────────────────────
+# A conversion lived here: REWRITE + a contribution doubt + a question was re-read as an ASK,
+# because one measured case shipped an instruction no editor could follow. Reordering the
+# prompt fixed that case at the source, and the conversion then turned "Was responsible for the
+# creation of REST API endpoints in Python Flask" into a question about which endpoints they
+# built — asking for a fact the bullet already states, which is the failure this redesign
+# exists to remove. The stray question is dropped and the rewrite stands.
+
+ASKING_REWRITE = {
+    **GOOD_ASK,
+    "decision": "REWRITE",
+    "rewrite_instruction": "Cut the filler and lead with the work, keeping users, messages and channels.",
+}
+
+
+def test_a_rewrite_that_also_asks_keeps_the_rewrite_and_drops_the_question():
+    result = validate(ASKING_REWRITE, TASK)
+    assert result["decision"] == REWRITE
+    assert result["question"] is None and result["missing_fact"] is None
+    assert "the question was dropped" in result["downgraded"]
+
+
+def test_a_rewrite_may_quote_the_answer_it_is_built_from():
+    """Regression: with an answer in this run the model anchors on the new content — "PostgreSQL
+    schema" — and a rewrite correctly built from the user's own words was refused for not
+    quoting a bullet that does not contain them yet."""
+    postgres = {
+        **TASK,
+        "text": "Worked with PostgreSQL to store and manage application data.",
+        "answers": ["I designed the PostgreSQL schema for jobs, resumes and runs."],
+    }
+    rewrite = {
+        **GOOD_REWRITE,
+        "anchor": "PostgreSQL schema",
+        "rewrite_instruction": "Lead with the schema they designed, keeping PostgreSQL.",
+    }
+    assert validate(rewrite, postgres)["decision"] == REWRITE
+    # without the answer those words are nobody's, and the rewrite is refused as before
+    assert validate(rewrite, {**postgres, "answers": []})["decision"] == KEEP
+
+
 def test_a_keep_carries_no_work():
     kept = {"decision": "KEEP", "decision_reason": "The bullet already names the work.",
             "question": "Which endpoint?", "rewrite_instruction": "Tighten it."}
@@ -181,9 +230,49 @@ def test_a_keep_carries_no_work():
     assert result["question"] is None and result["rewrite_instruction"] is None
 
 
-def test_anything_unreadable_is_a_keep():
-    assert validate(None, TASK)["decision"] == KEEP
+def test_a_decision_nobody_recognizes_is_a_keep():
+    """A review did come back for this bullet; it is unusable, so no work comes of it."""
     assert validate({"decision": "OVERHAUL"}, TASK)["decision"] == KEEP
+
+
+def test_a_bullet_the_review_left_out_is_not_a_keep():
+    """It used to be. A response that silently dropped half its bullets was then
+    indistinguishable from one that read them all and approved them."""
+    for nothing in (None, {}, "reviewed"):
+        result = validate(nothing, TASK)
+        assert result["decision"] == REVIEW_UNAVAILABLE
+        assert result["decision"] != KEEP
+        assert result["unavailable_reason"]
+
+
+def test_a_question_naming_the_bullets_technology_is_about_that_bullet():
+    """"Worked with PostgreSQL to store and manage application data" surrounds PostgreSQL with
+    filler, so its only meaningful pairs are "manage application" and "application data" — and
+    a good question about the PostgreSQL work was refused three runs out of three."""
+    postgres = {**TASK, "text": "Worked with PostgreSQL to store and manage application data."}
+    asking = {
+        **GOOD_ASK,
+        "anchor": "manage application data",
+        "question": "What specific features or functionalities did you implement using PostgreSQL?",
+        "missing_fact": "which parts of the data layer they implemented",
+        "expected_resume_improvement": "The bullet could name the schema or queries they wrote.",
+    }
+    assert validate(asking, postgres)["decision"] == ASK
+    # a question naming nothing from the bullet is still refused
+    assert validate({**asking, "question": "What tools did you use on this project?"},
+                    postgres)["decision"] == KEEP
+
+
+def test_a_refused_proposal_does_not_report_the_models_case_for_it():
+    """The user read "clarifying the specific APIs would significantly enhance the candidate's
+    qualifications" as the reason their bullet was left alone."""
+    invented = {**GOOD_ASK, "question": "What specific API functionality did you implement for the backend?",
+                "decision_reason": "Clarifying the API contribution would demonstrate relevant skills."}
+    result = validate(invented, TASK)
+    assert result["decision"] == KEEP
+    assert "API" not in result["decision_reason"]
+    assert "the bullet is unchanged" in result["decision_reason"]
+    assert result["downgraded"] in result["decision_reason"]
 
 
 def test_anchored_in_is_word_for_word_not_fuzzy():

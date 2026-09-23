@@ -282,9 +282,9 @@
       "expect": [
         "keep"
       ],
-      "why": "A learned inference is reported, never a task: no review, no question, no edit.",
+      "why": "A learned inference may provide job context, but it never creates editing work: the bullet is reviewed and kept with no question or edit.",
       "expect_review": [
-        null
+        "KEEP"
       ]
     },
     {
@@ -407,9 +407,9 @@
       "expect": [
         "keep"
       ],
-      "why": "Real run 0dc2d235: React already meets front-end frameworks; never ask about data structures.",
+      "why": "Real run 0dc2d235: every bullet is reviewed, but React already meets front-end frameworks, so this stays KEEP and never asks about data structures.",
       "expect_review": [
-        null
+        "KEEP"
       ]
     },
     {

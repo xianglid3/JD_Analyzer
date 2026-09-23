@@ -13,6 +13,7 @@ import logging
 import os
 import socket
 import time
+from collections import Counter
 from uuid import UUID
 
 from openai import OpenAI
@@ -76,11 +77,22 @@ UUID_PATTERN = (
     "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-"
     "[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
 )
-ACTION_TOOLS = {"propose_edit", "merge_bullets", "request_detail", "keep_original"}
+# `request_detail` is not here any more, and not in TOOLS either. The question text was
+# always the server's — the reviewer wrote it, the server validated it, and whatever the model
+# drafted was discarded — so the only thing the model contributed was which bullet, which the
+# review had already decided. Filing them directly is what lets a run ask everything it needs
+# to ask in one batch instead of pausing after the first one.
+# `merge_bullets` is not offered either, and for a reason of its own. A merge consumes its
+# partner, and the review now reads every experience and project bullet — so every sibling is
+# either work another candidate owns or a bullet the review kept, and both are excluded from
+# every merge scope. Nothing is left for it to consume, so offering it only lets the model
+# spend a candidate's attempt on an action that must be refused. `tool_merge_bullets` stays,
+# tested directly, for the merge candidate that owns both ids.
+ACTION_TOOLS = {"propose_edit", "keep_original"}
 # Asking a question is not doing the work — the work is the improved bullet that comes
 # after the answer. Only these two finish a candidate by CHANGING it; keep_original finishes
 # one by deciding it needs no change, which is why it is an action but not a writing tool.
-WRITING_TOOLS = {"propose_edit", "merge_bullets"}
+WRITING_TOOLS = {"propose_edit"}
 
 
 SYSTEM_PROMPT = """You are a bounded resume editor. Capability, gaps, and which requirements
@@ -95,24 +107,21 @@ Your positive objective is to make supported experience easier for a recruiter t
 A rewrite must improve structure or surface supported evidence, not merely exchange synonyms.
 Example: evidence "Worked on Kubernetes deployments across three regions" may become
 "Deployed Kubernetes services across three regions." Changing "through" to "via" is not useful.
-If two short bullets in the same entry repeat the same work, merge_bullets may combine them.
+Each turn gives you one bullet to work on. Change that bullet and no other.
 Never guess a fact the evidence does not give.
 
 You receive only approved tailoring candidates. Work ONE candidate at a time:
 1. Read the supplied target text and its Decision. Each candidate comes with the exact
    `bullet_id` of the bullet you may edit — use that one. You do not need to search for it, and
    searching for a bullet you have already been given wastes a step.
-2. Call search_resume only when you need something the brief did not give you: a second bullet
-   in the same entry that merge_bullets could combine.
+2. Call search_resume only when you need something the brief did not give you.
 3. Copy bullet ids exactly as given, whether from the brief or from a search_resume result.
    Candidate positions such as 1, 2, or 3 are never bullet ids.
-4. Questions are decided before you start. A target whose Decision is "ask" carries the one
-   question, and the server sends that question whatever you write — so call request_detail
-   with that bullet_id and nothing else matters. A target with any other Decision gets no
-   question at all: there is nothing to ask, and asking is refused.
-5. A target whose Decision is "rewrite" gets propose_edit using only what that bullet says, or
-   merge_bullets for two or three repetitive bullets in the same entry. After an answer comes
-   back, propose_edit using the bullet and that answer.
+4. You never ask the candidate anything. Questions are decided by the review and sent by the
+   server, all together, after you finish. A target you are given either carries an answer
+   already or needs none.
+5. A target whose Decision is "rewrite" gets propose_edit using only what that bullet says.
+   After an answer comes back, propose_edit using the bullet and that answer.
 6. If none is appropriate, call keep_original. That FINISHES the candidate successfully — it is
    not a failure and not something to avoid. A candidate is never finished by silence.
 
@@ -120,7 +129,7 @@ Never work on a requirement outside the approved candidate list. Missing and unc
 already handled by the fit engine and are not writing tasks.
 
 Hard rules:
-- Every propose_edit and merge_bullets carries a `reason`: one sentence saying what the rewrite
+- Every propose_edit carries a `reason`: one sentence saying what the rewrite
   improves and which part of the evidence supports it. Write it for the candidate, who will read
   it while deciding whether to accept — not as a restatement of the new text.
 - Never claim more of the work than the bullet does. "Contributing to", "assisted", "helped" and
@@ -191,75 +200,6 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "merge_bullets",
-            "description": "Combine two or three repetitive bullets from the same resume entry into one grounded bullet.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "requirement": {"type": "string", "description": "The approved job requirement this addresses."},
-                    "bullet_ids": {
-                        "type": "array", "items": {"type": "string", "pattern": UUID_PATTERN},
-                        "minItems": 2, "maxItems": MAX_MERGED_BULLETS,
-                        "description": "Source bullet ids, first id is where the merged bullet will render.",
-                    },
-                    "proposed_text": {"type": "string", "description": "One combined bullet."},
-                    "evidence_bullet_ids": {
-                        "type": "array", "items": {"type": "string", "pattern": UUID_PATTERN},
-                        "description": "All searched bullet ids supporting the combined text.",
-                    },
-                    "reason": {
-                        "type": "string",
-                        "description": "One short sentence: what this merge improves and what in the evidence supports it.",
-                    },
-                },
-                "required": ["requirement", "bullet_ids", "proposed_text", "evidence_bullet_ids", "reason"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "request_detail",
-            "description": (
-                "Ask the user one question whose answer would make the bullet more convincing "
-                "to a skeptical engineer. Ask what they personally implemented, modified, "
-                "debugged, tested or operated — the specific component, query, service or "
-                "algorithm, and what data or result it involved. Do not ask which technologies "
-                "they used: the bullet already says that, so the answer only restates it."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "requirement": {"type": "string", "description": "The approved job requirement this addresses."},
-                    "bullet_id": {
-                        "type": "string", "pattern": UUID_PATTERN,
-                        "description": "The exact bullet_id UUID returned by search_resume; never 1, 2, or 3.",
-                    },
-                    "question": {
-                        "type": "string",
-                        "description": (
-                            "One concrete question the user can answer briefly. Name the thing "
-                            "you are asking about; a question they could answer with a "
-                            "paraphrase of the bullet is a wasted question. Ignored for "
-                            "establish_use, where the server writes the question."
-                        ),
-                    },
-                    "intent": {
-                        "type": "string",
-                        "enum": ["implementation"],
-                        "description": (
-                            "Always 'implementation': the question was written before you "
-                            "started, and it asks what the candidate built or changed."
-                        ),
-                    },
-                },
-                "required": ["requirement", "bullet_id"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "keep_original",
             "description": (
                 "Finish a candidate by deciding the bullet it points at is already better than "
@@ -308,7 +248,7 @@ def strip_fence_markers(value):
     return value.replace(POSTING_OPEN, "").replace(POSTING_CLOSE, "").replace(RESUME_OPEN, "").replace(RESUME_CLOSE, "")
 
 
-def job_brief(job, assessment=None, plan=None):
+def job_brief(job, assessment=None, plan=None, candidates=None):
     """The opening message: the posting, the fit we already computed, and the bullet each
     candidate may edit.
 
@@ -338,7 +278,7 @@ def job_brief(job, assessment=None, plan=None):
 
     if assessment and assessment.get("requirements"):
         plan = plan or build_tailoring_plan(assessment)
-        candidates = agent_candidates(plan)
+        candidates = requirement_candidates(plan) if candidates is None else candidates
         lines.append("")
         lines.append("Approved tailoring candidates (the complete list):")
         if not candidates:
@@ -347,6 +287,10 @@ def job_brief(job, assessment=None, plan=None):
             note = f"- {item.get('agent_label') or item['requirement']} [{item['action']}]"
             if item.get("inferred_from"):
                 note += f" — evidence names {', '.join(item['inferred_from'])}"
+            if item.get("requirement_context"):
+                # context and priority, never ownership: these are the requirements this
+                # bullet already supports, so the editor knows what the work is for
+                note += f" — supports {', '.join(item['requirement_context'][:3])}"
             lines.append(note)
             for target in item.get("targets") or []:
                 if target.get("bullet_id"):
@@ -367,16 +311,16 @@ def job_brief(job, assessment=None, plan=None):
     return "\n".join(lines)
 
 
-def _attach_answers(cur, user_id, run_id, plan):
+def _attach_answers(cur, user_id, run_id, candidates):
     """Put this run's answers on the targets they were given about. This run's only: a bullet
     keeps its id when its wording is edited, so an older answer may be about a sentence that
     no longer exists."""
     targets = {
         target["bullet_id"]: target
-        for item in plan for target in item.get("targets") or [] if target.get("bullet_id")
+        for item in candidates for target in item.get("targets") or [] if target.get("bullet_id")
     }
     if not targets:
-        return plan
+        return candidates
     cur.execute(
         """
         SELECT bullet_id, answer FROM tailoring_detail_requests
@@ -388,7 +332,7 @@ def _attach_answers(cur, user_id, run_id, plan):
     )
     for bullet_id, answer in cur.fetchall():
         targets[str(bullet_id)].setdefault("answers", []).append(answer)
-    return plan
+    return candidates
 
 
 def _target_instruction(target):
@@ -416,9 +360,21 @@ def _target_instruction(target):
         keep_line += f" You may also use, from the answer: {', '.join(allowed)}."
 
     if target.get("decision") == bullet_review.ASK:
-        return (f"Decision: ask ({kind}) — {problem} Call request_detail with this bullet_id and "
-                f"intent implementation; the server sends: \"{line('question')}\". Once it is "
-                f"answered, propose_edit so that: {line('expected_improvement') or 'the bullet states what the answer says'}."
+        answered = " ".join(target.get("answers") or [])
+        if not answered:
+            # It is here only for the record; the loop does not hand this target out until
+            # the answer is in, because there is nothing it could honestly do with it yet.
+            return (f"Decision: ask ({kind}) — {problem} The server has asked: "
+                    f"\"{line('question')}\". Nothing to do until the answer arrives.")
+        # The answer itself, not just the fact that one exists. Each candidate gets a fresh
+        # conversation now, so there is no tool result carrying it in from an earlier turn —
+        # without this the editor is told to use an answer it has never seen. Fenced, because
+        # unlike our decisions it is prose somebody typed.
+        return (f"Decision: rewrite from the answer ({kind}) — {problem} They were asked "
+                f"\"{line('question')}\" and answered:\n  {RESUME_OPEN}\n"
+                f"  {strip_fence_markers(answered)}\n  {RESUME_CLOSE}\n"
+                f"  propose_edit so that: "
+                f"{line('expected_improvement') or 'the bullet states what the answer says'}."
                 f" Use only the bullet and the answer; add no result the answer does not give."
                 + keep_line)
     if target.get("decision") == bullet_review.REWRITE:
@@ -433,7 +389,7 @@ def _target_instruction(target):
 SUPPLIED = "evidence_supplied"
 
 
-def record_supplied_evidence(cur, run_id, plan):
+def record_supplied_evidence(cur, run_id, candidates):
     """Write down exactly which bullets this run handed the model, and return them.
 
     `verify_citation` asks the database how a bullet reached this run. Before the brief
@@ -449,7 +405,7 @@ def record_supplied_evidence(cur, run_id, plan):
     have left a record that no longer matched the brief.
     """
     seen, results = set(), []
-    for item in agent_candidates(plan):
+    for item in candidates:
         for target in item.get("targets") or []:
             bullet_id = target.get("bullet_id")
             if not bullet_id or bullet_id in seen:
@@ -689,13 +645,15 @@ def entry_is_ongoing(end_date):
 
 
 def tool_propose_edit(cur, user_id, run_id, arguments, surfacing=None):
-    requirement = (arguments.get("requirement") or "").strip()
+    # None when the bullet owns this work; see `tailoring_candidates` for why that is not
+    # given a stand-in. The tool boundary has already resolved which candidate this is.
+    requirement = (arguments.get("requirement") or "").strip() or None
     bullet_id = (arguments.get("bullet_id") or "").strip()
     proposed_text = (arguments.get("proposed_text") or "").strip()
     evidence_ids = arguments.get("evidence_bullet_ids") or []
 
-    if not requirement or not proposed_text:
-        raise GroundingError("requirement and proposed_text are both required")
+    if not proposed_text:
+        raise GroundingError("proposed_text is required")
     try:
         bullet_id = str(UUID(bullet_id))
         evidence_ids = [str(UUID(str(value))) for value in evidence_ids]
@@ -713,7 +671,7 @@ def tool_propose_edit(cur, user_id, run_id, arguments, surfacing=None):
         raise GroundingError(
             "a one-bullet rewrite may cite only that bullet. Anything the user told you about "
             "it is already counted as evidence and does not need citing; to combine facts "
-            "from a second bullet, use merge_bullets instead."
+            "from a second bullet, which this bullet's own words do not support."
         )
 
     # the rewritten bullet is a claim too, so it gets verified the same way
@@ -844,34 +802,18 @@ def tool_merge_bullets(cur, user_id, run_id, arguments):
 ESTABLISH_USE = "establish_use"
 
 
-def _request_detail(cur, user_id, run_id, arguments, planned, rewrite_only):
-    """The review decided which bullets get a question and what it is. The model may ask that
-    question, in whatever words — ours are what is stored — and nothing else."""
-    try:
-        bullet_id = str(UUID(str(arguments.get("bullet_id") or "").strip()))
-    except (TypeError, ValueError, AttributeError):
-        bullet_id = None
-    if bullet_id in rewrite_only:
-        raise GroundingError(
-            "no question was planned for this bullet — it can be improved from what it already "
-            "says. Use propose_edit, or keep_original"
-        )
-    return tool_request_detail(cur, user_id, run_id, arguments,
-                               question=(planned or {}).get(bullet_id))
-
-
 def tool_request_detail(cur, user_id, run_id, arguments, question=None):
     """File the one question the review planned for this bullet.
 
     `question` is the server's: the reviewer wrote it, the server validated that it quotes the
     bullet and names no evidence nobody gave, and whatever the model drafted is discarded. A
-    bullet the review did not mark ASK has no question to file, and `_request_detail` refuses
-    it before this is reached.
+    Called by the orchestrator now, not by the model: there is no tool for it. A bullet the
+    review did not mark ASK has no question, and reaches this with `question` empty.
     """
-    requirement = (arguments.get("requirement") or "").strip()
+    requirement = (arguments.get("requirement") or "").strip() or None
     bullet_id = (arguments.get("bullet_id") or "").strip()
-    if not requirement or not bullet_id:
-        raise GroundingError("requirement and bullet_id are required")
+    if not bullet_id:
+        raise GroundingError("bullet_id is required")
     try:
         bullet_id = str(UUID(bullet_id))
     except (TypeError, ValueError, AttributeError):
@@ -939,11 +881,11 @@ def tool_keep_original(cur, user_id, run_id, arguments):
     been returned by a search in THIS run. Without that, declining becomes cheaper than
     looking, and the model can close its whole assignment without reading any of it.
     """
-    requirement = (arguments.get("requirement") or "").strip()
+    # None when the bullet owns this work; the tool boundary has already resolved which
+    # candidate this is, and a caption is not a requirement.
+    requirement = (arguments.get("requirement") or "").strip() or None
     bullet_id = (arguments.get("bullet_id") or "").strip()
     reason = (arguments.get("reason") or "").strip()
-    if not requirement:
-        raise GroundingError("requirement is required")
     if not reason:
         raise GroundingError(
             "say why the bullet is already better — the user sees this instead of an edit"
@@ -960,8 +902,6 @@ def tool_keep_original(cur, user_id, run_id, arguments):
 TOOL_IMPLEMENTATIONS = {
     "search_resume": tool_search_resume,
     "propose_edit": tool_propose_edit,
-    "merge_bullets": tool_merge_bullets,
-    "request_detail": tool_request_detail,
     "keep_original": tool_keep_original,
 }
 
@@ -982,10 +922,18 @@ def complete(messages, max_tokens=None):
     )
 
 
+def _is_uuid(value):
+    try:
+        UUID(str(value).strip())
+        return True
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
 def _tool_bullet_ids(name, arguments):
     if name == "merge_bullets":
         return arguments.get("bullet_ids") or []
-    if name in {"propose_edit", "request_detail", "keep_original"}:
+    if name in {"propose_edit", "keep_original"}:
         return [arguments.get("bullet_id")]
     return []
 
@@ -1003,7 +951,12 @@ def _verify_approved_target(cur, user_id, requirement, bullet_ids, allowed_targe
     of them is a real target for this candidate. Without the anchor the model can combine two
     siblings and never touch the bullet it was assigned.
     """
-    scope = allowed_targets.get(normalize_skill(requirement)) or {}
+    # `requirement` is the candidate key the tool boundary already resolved, which for a
+    # bullet-owned candidate is "bullet:<uuid>". Normalizing it again mangled that into
+    # something no scope was keyed by, and every bullet-owned edit was refused for naming an
+    # unapproved target.
+    scope = (allowed_targets.get(requirement)
+             or allowed_targets.get(normalize_skill(requirement)) or {})
     anchors = scope.get("edit", set())
     expected = scope.get("merge", set()) if merging else anchors
     try:
@@ -1042,7 +995,7 @@ def _verify_approved_target(cur, user_id, requirement, bullet_ids, allowed_targe
 
 def execute_tool(
     cur, user_id, run_id, step, call, allowed_requirements, allowed_targets, allowed_actions,
-    allowed_labels=None, resolved=None, planned_questions=None, rewrite_only=None,
+    allowed_labels=None, resolved=None, candidate_ids=None,
 ):
     """Run one tool call and record it. A rejection is a failed call handed back to the
     model, not an error the user sees.
@@ -1071,23 +1024,27 @@ def execute_tool(
         elif implementation is None:
             result, error = None, f"unknown tool {name}"
         elif name in ACTION_TOOLS:
-            requirement = resolve_requirement(
-                arguments.get("requirement"), allowed_requirements,
-            )
+            requirement = resolve_candidate(name, arguments, allowed_requirements)
             # A finished candidate is no longer in the open list, so resolution has to fall
             # back to the run's whole assignment. Without this, repeating finished work is
             # refused as "not an approved candidate" — which reads as our bookkeeping error
             # rather than as "you already did that one".
             finished = None
             if requirement is None:
-                finished = resolve_requirement(
-                    arguments.get("requirement"),
-                    {item["normalized"] for item in candidates_state.load(cur, run_id)},
+                finished = resolve_candidate(
+                    name, arguments,
+                    {candidates_state.key(item) for item in candidates_state.load(cur, run_id)},
                 )
             if requirement is not None:
-                # everything this call writes now carries the canonical handle, so the
-                # question it files and the edit it proposes can be matched to each other
-                arguments["requirement"] = (allowed_labels or {}).get(requirement, requirement)
+                # Everything this call writes carries the canonical handle, so the question it
+                # files and the edit it proposes can be matched to each other — except when the
+                # bullet owns the work, where there is no requirement and the label is only a
+                # caption. Writing the caption into the column would store a requirement nobody
+                # asked for, which is the whole reason that column is nullable.
+                arguments["requirement"] = (
+                    None if requirement.startswith("bullet:")
+                    else (allowed_labels or {}).get(requirement, requirement)
+                )
             # ...and so can the caller's bookkeeping. A model asked to repeat
             # "java or golang or python" says "python", which resolves fine here and matched
             # no candidate at all back in the loop, where the raw arguments were read again —
@@ -1096,19 +1053,40 @@ def execute_tool(
             if resolved is not None:
                 resolved["requirement"] = requirement or finished
 
-            if requirement is None or candidates_state.is_finished(cur, run_id, requirement):
+            if requirement is None or candidates_state.is_finished(
+                    cur, run_id, (candidate_ids or {}).get(requirement)):
                 # The model re-sends its whole batch every step, so a candidate that succeeded
                 # two steps ago is offered again on the next one. Taking it a second time put
                 # the same rewrite in front of the user as two cards to review.
                 done = finished or requirement
-                if done is not None:
+                now_open = ("You are working on: " + "; ".join(sorted(allowed_requirements))
+                            if allowed_requirements else
+                            "Nothing is left open: reply with a short summary and no tool call.")
+                if done is not None and candidates_state.is_finished(
+                        cur, run_id, (candidate_ids or {}).get(done)):
                     result, error = None, (
                         f"{done} is already finished in this run — do not work on it again. "
-                        + (
-                            "Still open: " + "; ".join(sorted(allowed_requirements))
-                            if allowed_requirements else
-                            "Nothing is left open: reply with a short summary and no tool call."
-                        )
+                        + now_open
+                    )
+                elif done is not None:
+                    # Assigned, but not the candidate being worked. Saying "already finished"
+                    # here was wrong twice over: it is not finished, and it taught the model
+                    # that the bullet was done when it was still owed an edit of its own.
+                    result, error = None, (
+                        f"{done} is a candidate in this run, but it is not the one you are "
+                        "working on. It gets its own turn; it is not an approved tailoring "
+                        "candidate right now. " + now_open
+                    )
+                elif any(
+                    value and not _is_uuid(value)
+                    for value in _tool_bullet_ids(name, arguments)
+                ):
+                    # A candidate POSITION where a bullet id belongs. Every live run used to
+                    # open this way and lose its first step, so the refusal names the mistake
+                    # rather than reporting the candidate it could not find as a result of it.
+                    result, error = None, (
+                        f"that is not a bullet id — {name} needs the UUID given with the "
+                        "candidate in your brief, not its position in a list"
                     )
                 else:
                     result, error = None, (
@@ -1139,13 +1117,7 @@ def execute_tool(
                             cur, user_id, requirement, _tool_bullet_ids(name, arguments),
                             allowed_targets, merging=name == "merge_bullets",
                         )
-                        if name == "request_detail":
-                            result = _request_detail(
-                                cur, user_id, run_id, arguments,
-                                planned_questions or {}, rewrite_only or set(),
-                            )
-                        else:
-                            result = implementation(cur, user_id, run_id, arguments)
+                        result = implementation(cur, user_id, run_id, arguments)
                         error = None
                     except GroundingError as exc:
                         result, error = None, str(exc)
@@ -1215,8 +1187,33 @@ def searches_found_nothing(cur, run_id, requirement, supplied=frozenset()):
 
 
 def _candidate_key(item):
-    """How a candidate is addressed. Short, so the model can reproduce it."""
-    return normalize_skill(item.get("agent_label") or item["requirement"])
+    """How a candidate is addressed. Short, so the model can reproduce it.
+
+    One definition, in `tailoring_candidates`: two copies of this rule that drifted would make
+    `candidate_ids` lookups miss, and `resolve` and `record_attempt` both no-op on a missing
+    id — so candidates would silently never close.
+    """
+    return candidates_state.key({
+        "bullet_id": item.get("bullet_id"),
+        "normalized": normalize_skill(item.get("agent_label") or item.get("requirement") or ""),
+    })
+
+
+def resolve_candidate(name, arguments, allowed):
+    """Which candidate this call addresses.
+
+    The bullet first: a recruiter-review candidate is owned by its bullet, and the model
+    already sends that id with every action. Only when no open candidate holds the bullet does
+    the requirement wording decide, which is how `show_in_bullet` — the one requirement-owned
+    action left — is still addressed.
+    """
+    for bullet_id in _tool_bullet_ids(name, arguments):
+        if bullet_id and f"bullet:{bullet_id}" in allowed:
+            return f"bullet:{bullet_id}"
+    return resolve_requirement(
+        arguments.get("requirement"),
+        {key for key in allowed if not key.startswith("bullet:")},
+    )
 
 
 def resolve_requirement(named, allowed):
@@ -1591,95 +1588,143 @@ def beat(get_cursor, run_id, steps_used=None):
 
 KEPT_OUTCOME = "Read in context, the bullet is already clear for this job."
 
-# The actions whose bullets the review decides on. `show_in_bullet` is the user's own claim —
-# they said the skill belongs to that entry — so it keeps its targets whatever the review says.
-_EDITABLE = ("rewrite", "keep")
+# `show_in_bullet` is the user's own claim — they said the skill belongs to that entry — so it
+# keeps its target whatever the review says. Everything else the review decides now belongs to
+# the BULLET: a requirement is context and priority, never an owner.
 _IMPORTANCE = {"required": 0, "preferred": 1, "nice_to_have": 2}
 
 
-def _review_owners(plan):
-    """{bullet_id: plan index} for every bullet a met requirement cites.
+def requirement_candidates(plan):
+    """The only work a requirement still owns: a skill the user placed on an entry herself.
 
-    Every one, not only those a regex called weak: "Helped improve the checkout flow" reads as
-    strong to `bullet_quality_gaps` and was never looked at. A bullet a show-in-bullet
-    candidate holds is left to that candidate. Among the rest, the owner is by importance,
-    then name — never by the order the posting lists requirements in.
+    The fit engine used to create editing work directly — a match became a task, and a task had
+    to produce something. It no longer does. It reports fit, and the recruiter review decides
+    what is worth changing.
     """
-    held = {
+    return [item for item in plan if item["action"] == "show_in_bullet" and item.get("targets")]
+
+
+def _held_bullets(plan):
+    return {
         target["bullet_id"]
-        for item in plan if item["action"] not in _EDITABLE
+        for item in requirement_candidates(plan)
         for target in item.get("targets") or [] if target.get("bullet_id")
     }
-    owner = {}
-    for index, item in enumerate(plan):
-        if item["action"] not in _EDITABLE:
-            continue
-        rank = (_IMPORTANCE.get(item.get("importance"), 3), _candidate_key(item))
-        for cited in [*(item.get("cited") or []), *(item.get("targets") or [])]:
-            bullet_id = cited.get("bullet_id")
-            if bullet_id and bullet_id not in held and (
-                bullet_id not in owner or rank < owner[bullet_id][0]
-            ):
-                owner[bullet_id] = (rank, index)
-    return {bullet_id: index for bullet_id, (_rank, index) in owner.items()}
 
 
-def _reviewed_bullets(plan):
-    return sorted(_review_owners(plan))
+def _review_context(plan, bullet_id):
+    """Which requirements this bullet supports, most important first. Context for the editor
+    and the order questions are asked in — not ownership."""
+    seen = []
+    for item in plan:
+        cites = [*(item.get("cited") or []), *(item.get("targets") or [])]
+        if any(cite.get("bullet_id") == bullet_id for cite in cites):
+            seen.append((
+                _IMPORTANCE.get(item.get("importance"), 3),
+                item.get("agent_label") or item.get("requirement") or "",
+            ))
+    return [label for _rank, label in sorted(seen)]
 
 
-def apply_reviews(plan, reviews):
-    """Carry each bullet's decision onto the candidate that owns it.
-
-    A kept bullet leaves the plan, so the editor never sees it; a `keep` requirement whose
-    bullet the review says needs work becomes a `rewrite` candidate. Returns the keys of
-    candidates left with nothing to do.
-    """
-    owners = _review_owners(plan)
-    texts = {
-        cited["bullet_id"]: cited.get("text") or ""
-        for item in plan for cited in [*(item.get("cited") or []), *(item.get("targets") or [])]
-        if cited.get("bullet_id")
+def _decision_targets(decision, bullet_id, text):
+    return {
+        "bullet_id": bullet_id,
+        "text": text,
+        "decision": decision["decision"],
+        "weakness": decision.get("specific_problem") or "",
+        # what the editor needs to act rather than guess: the reviewer's own question,
+        # what it would change, the instruction, and the facts that must survive it
+        "question": decision.get("question"),
+        "doubt_type": decision.get("doubt_type"),
+        "rewrite_instruction": decision.get("rewrite_instruction"),
+        "expected_improvement": decision.get("expected_resume_improvement"),
+        "improvement_level": decision.get("improvement_level"),
+        "facts_to_preserve": decision.get("facts_to_preserve") or [],
     }
-    emptied = []
-    for index, item in enumerate(plan):
-        if item["action"] not in _EDITABLE:
+
+
+def review_candidates(plan, reviews, tasks):
+    """One bullet-owned candidate per bullet the review gave work to.
+
+    Every bullet reviewed, not only those a requirement cited — that eligibility rule is what
+    left a deliberately vague resume with two reviewed bullets out of twelve. A bullet held by
+    a `show_in_bullet` candidate is still reviewed; its findings are attached to that candidate
+    instead of creating a second one, so a bullet never has two owners.
+    """
+    held = _held_bullets(plan)
+    by_id = {task["bullet_id"]: task for task in tasks}
+    for item in requirement_candidates(plan):
+        for target in item.get("targets") or []:
+            decision = (reviews or {}).get(target.get("bullet_id")) or {}
+            if decision.get("decision") in (bullet_review.REWRITE, bullet_review.ASK):
+                # correction 7: the review informs the user's own claim, it does not replace
+                # it. The instruction comes too — it is the part the editor acts on, and
+                # dropping it left the finding as decoration.
+                target.setdefault("weakness", decision.get("specific_problem") or "")
+                target.setdefault("facts_to_preserve", decision.get("facts_to_preserve") or [])
+                target.setdefault("rewrite_instruction", decision.get("rewrite_instruction"))
+                target.setdefault("expected_improvement",
+                                  decision.get("expected_resume_improvement"))
+
+    # No position here: `tailoring_candidates.create` allocates it under the run row's lock,
+    # from what is actually stored. Deriving it from a freshly recomputed plan let two writers
+    # seconds apart pick the same number, and the insert that lost was swallowed silently.
+    candidates = []
+    # In the resume's own order, which is the order `tasks` arrives in. Iterating the reviews
+    # dict sorted by bullet id ordered candidates by UUID: the run then worked the résumé
+    # backwards, and "the first candidate" meant nothing a reader could predict.
+    for task in tasks:
+        bullet_id = task["bullet_id"]
+        decision = (reviews or {}).get(bullet_id) or {}
+        if bullet_id in held or decision.get("decision") not in (bullet_review.REWRITE, bullet_review.ASK):
             continue
-        was_work = item["action"] == "rewrite"
-        targets = []
-        for bullet_id in sorted(b for b, owner in owners.items() if owner == index):
-            decision = reviews.get(bullet_id) or {"decision": bullet_review.KEEP}
-            if decision["decision"] == bullet_review.KEEP:
-                continue
-            targets.append({
-                "bullet_id": bullet_id,
-                "text": texts.get(bullet_id, ""),
-                "decision": decision["decision"],
-                "weakness": decision.get("specific_problem") or "",
-                # what the editor needs to act rather than guess: the reviewer's own question,
-                # what it would change, the instruction, and the facts that must survive it
-                "question": decision.get("question"),
-                "doubt_type": decision.get("doubt_type"),
-                "rewrite_instruction": decision.get("rewrite_instruction"),
-                "expected_improvement": decision.get("expected_resume_improvement"),
-                "facts_to_preserve": decision.get("facts_to_preserve") or [],
-            })
-        item["targets"] = targets
-        if targets:
-            item["action"] = "rewrite"
-            item["reason"] = "Read in context, this bullet can be made clearer for this job."
-        else:
-            item["action"], item["reason"] = "keep", KEPT_OUTCOME
-            if was_work:
-                emptied.append(_candidate_key(item))
-    return plan, emptied
+        context = _review_context(plan, bullet_id)
+        candidates.append({
+            "requirement": None,
+            "bullet_id": bullet_id,
+            # the honest name for work the bullet owns: where it came from
+            "agent_label": task.get("entry") or "Resume bullet",
+            "action": "ask" if decision["decision"] == bullet_review.ASK else "rewrite",
+            "importance": "required" if context else "preferred",
+            "reason": decision.get("specific_problem") or "",
+            "requirement_context": context,
+            "targets": [_decision_targets(decision, bullet_id, task.get("text") or "")],
+        })
+    return candidates
 
 
-def run_plan(cur, user_id, assessment, entry_bullets, reviews=None):
-    plan = build_tailoring_plan(assessment, bullets_by_entry=entry_bullets)
-    if reviews is not None:
-        plan, _emptied = apply_reviews(plan, reviews)
-    return plan
+def run_plan(cur, user_id, assessment, entry_bullets):
+    """The fit report. Reviews no longer change it: what a requirement is and whether a bullet
+    reads well are different questions, and mixing them is what made a match into a task."""
+    return build_tailoring_plan(assessment, bullets_by_entry=entry_bullets)
+
+
+REVIEW_POOL_LIMIT = 30
+
+
+def bullets_for_review(cur, user_id, limit=REVIEW_POOL_LIMIT):
+    """Every bullet worth a recruiter's attention: `{bullet_ids, omitted}`.
+
+    Membership is the resume's, not the fit engine's. Deciding it from requirement evidence is
+    what left a deliberately vague resume with two reviewed bullets out of twelve — a bullet
+    too vague to match anything is exactly the bullet that most needs reading.
+
+    Experience and projects only, by entry `kind` rather than by guessing from the text.
+    Education, certificates and the skills block are not work the candidate can be asked about.
+    """
+    cur.execute(
+        """
+        SELECT b.id FROM resume_bullets AS b
+        JOIN resume_entries AS e ON e.id = b.entry_id
+        WHERE b.user_id = %s AND e.kind IN ('experience', 'project')
+        ORDER BY e.sort_order, e.created_at, b.sort_order, b.created_at
+        """,
+        (user_id,),
+    )
+    found = [str(row[0]) for row in cur.fetchall()]
+    # Reported, never silently dropped: a bullet nobody reviewed must not read as one nobody
+    # found anything wrong with.
+    return {"bullet_ids": found[:limit], "omitted": found[limit:]}
 
 
 def bullets_by_entry(cur, user_id):
@@ -1809,11 +1854,13 @@ def start_run(get_cursor, user_id, job_id, max_steps=DEFAULT_MAX_STEPS):
             return {"error": "stale_evidence"}   # it would cite a resume they replaced
         plan = run_plan(cur, user_id, assessment, bullets_by_entry(cur, user_id))
 
-    if agent_candidates(plan):
-        try:
-            check_quota(user_id)     # refuse before creating a paid run row at all
-        except QuotaExceeded as exc:
-            return {"error": "quota_exceeded", "detail": str(exc)}
+    # The review itself is a paid call and every resume with bullets gets one, so the quota is
+    # checked whatever the fit engine found. It used to be checked only when a requirement had
+    # produced work, which is a question the fit engine no longer answers.
+    try:
+        check_quota(user_id)         # refuse before creating a paid run row at all
+    except QuotaExceeded as exc:
+        return {"error": "quota_exceeded", "detail": str(exc)}
 
     with get_cursor(commit=True) as cur:
 
@@ -1849,7 +1896,9 @@ def start_run(get_cursor, user_id, job_id, max_steps=DEFAULT_MAX_STEPS):
         # The assignment is written down before the worker starts, so "did this run do what
         # it was asked?" stays answerable even after a restart recomputes the plan from a
         # resume that may have changed underneath it (AE-02).
-        candidates_state.create(cur, user_id, run_id, agent_candidates(plan))
+        # Only the work a requirement owns is known this early. The recruiter review has not
+        # run yet, and every candidate it produces is written when it does.
+        candidates_state.create(cur, user_id, run_id, requirement_candidates(plan))
         return {"run_id": run_id, "created": True}
 
 
@@ -1868,22 +1917,55 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
         # kept, not discarded: the merge scope below needs each target's entry siblings
         entry_bullets = bullets_by_entry(cur, user_id)
         plan = run_plan(cur, user_id, assessment, entry_bullets)
+        # Every waiting candidate whose question has been answered or dismissed is editable
+        # again. Done before anything else reads the assignment, so a resumed run hands out
+        # the answered work instead of asking for it twice.
+        candidates_state.make_answerable(cur, run_id)
+        if resume_from:
+            # A new attempt, so work owed to a human is owed to this attempt instead. Within a
+            # single run `claim_next` leaves `needs_review` alone, or one bad candidate would
+            # burn every remaining step on the same refusal.
+            candidates_state.reopen_for_resume(cur, run_id)
         # Decided once, at the start of a fresh run, and read back on every resume: a second
         # review could disagree with the first about a question the user already answered.
         # A run that never had one — older, or started with the step off — keeps its rules.
-        reviews = bullet_review.load(cur, run_id)
-        tasks = []
-        if reviews is None and not resume_from and bullet_review.ENABLED:
-            tasks = bullet_review.build_tasks(
-                cur, user_id, run_id, assessment, _reviewed_bullets(plan),
-            )
+        state = bullet_review.progress(cur, run_id)
+        omitted = []
+        if bullet_review.ENABLED and not state["pool"] and not resume_from:
+            found = bullets_for_review(cur, user_id)
+            omitted = found["omitted"]
+            bullet_review.record_pool(cur, run_id, found["bullet_ids"])
+            state = bullet_review.progress(cur, run_id)
+        # Built for the whole pool, not only the part still owed a review: a resumed run needs
+        # every bullet's text and entry to rebuild its candidates, and this costs one query.
+        all_tasks = bullet_review.build_tasks(
+            cur, user_id, run_id, assessment, state["pool"],
+        ) if state["pool"] else []
+        owed = set(state["missing"])
+        tasks = [task for task in all_tasks if task["bullet_id"] in owed]
+        reviews = dict(state["reviews"])
 
-    review_error, emptied = None, []
+    review_error = None
     if tasks:
-        # no connection held across the call
+        def store(_index, chunk, chunk_reviews):
+            # Persisted as each chunk lands, before the next call is made. One stored chunk
+            # is not a finished review — `progress()` compares against the pool row — so a
+            # crash here costs the chunks that had not run yet, and nothing more.
+            #
+            # Fenced like every other write this worker makes: a worker whose lease expired
+            # mid-review must not keep writing into a run somebody else now owns.
+            if token:
+                renew(get_cursor, run_id, token)
+            reviews.update(chunk_reviews)
+            with get_cursor(commit=True) as cur:
+                bullet_review.record(cur, run_id, chunk, chunk_reviews,
+                                     chunk=chunk[0]["bullet_id"])
+
+        # no connection held across the calls
         try:
-            reviews = bullet_review.review(
+            bullet_review.review_bullets(
                 job, tasks, budget=usage_budget(user_id, "tailoring_review", run_id=run_id),
+                on_chunk=store,
             )
         except QuotaExceeded:
             review_error = "quota_exceeded"
@@ -1892,26 +1974,23 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
             review_error = "model_call_failed"
 
     with get_cursor(commit=True) as cur:
-        if tasks and reviews is not None:
-            bullet_review.record(cur, run_id, tasks, reviews)
-        if reviews is not None:
-            plan, emptied = apply_reviews(plan, reviews)
-            # a requirement the review turned into work has no row yet; positions are
-            # unique per run, so this adds those and leaves the rest alone
-            candidates_state.create(cur, user_id, run_id, agent_candidates(plan))
-            for key in emptied:
-                candidates_state.resolve(cur, run_id, key, candidates_state.KEPT,
-                                         outcome=KEPT_OUTCOME)
+        # Requirement-owned work first, keeping the plan's positions; the review's own
+        # candidates follow. One bullet has one candidate either way.
+        candidates = requirement_candidates(plan) + review_candidates(plan, reviews, all_tasks)
+        candidates_state.create(cur, user_id, run_id, candidates)
         # this run's answers, on the target they were given about: the brief names what the
         # editor may add because of them, and `_claim_evidence` is what allows it
-        _attach_answers(cur, user_id, run_id, plan)
-        # written before the brief is built, and the brief is built from this plan — so the
-        # record and what the model was told cannot disagree
-        record_supplied_evidence(cur, run_id, plan)
+        _attach_answers(cur, user_id, run_id, candidates)
+        # written before the brief is built, and the brief is built from these candidates —
+        # so the record and what the model was told cannot disagree
+        record_supplied_evidence(cur, run_id, candidates)
+        stored_ids = {
+            candidates_state.key(row): row["id"]
+            for row in candidates_state.load(cur, run_id)
+        }
         supplied = supplied_bullet_ids(cur, run_id)
         # the opening two messages are rebuilt, not stored: they are derived from rows we
         # still have, and storing them would mean a stale brief after the resume is edited
-        replayed = replay_messages(cur, run_id) if resume_from else []
         prior_failures = {}
         if resume_from:
             cur.execute(
@@ -1932,28 +2011,31 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
                 key = failure_key(tool_name, arguments, error)
                 prior_failures[key] = prior_failures.get(key, 0) + count
 
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": job_brief(job, assessment, plan)},
-    ] + replayed
-    candidates = agent_candidates(plan)
-    allowed_requirements = {_candidate_key(item) for item in candidates}
-    allowed_actions = {_candidate_key(item): item["action"] for item in candidates}
+    # Questions are filed by the server after the loop, so the model is handed only the work
+    # it can finish on its own. An ASK whose answer is already in hand is editable too.
+    answered = {
+        _candidate_key(item) for item in candidates
+        if item["action"] == "ask" and any(
+            target.get("answers") for target in item.get("targets") or []
+        )
+    }
+    asking = [item for item in candidates
+              if item["action"] == "ask" and _candidate_key(item) not in answered]
+    editable = [item for item in candidates if item not in asking]
+
+    # Each candidate gets its own conversation, built when it is claimed, so there is no
+    # single thread to prime here and nothing to replay into: a resumed run re-claims its
+    # unfinished candidate and starts that candidate's brief fresh. What survives a resume is
+    # the record — the candidate's status and its failure count — not the transcript.
+    by_key = {_candidate_key(item): item for item in candidates}
+    allowed_requirements = {_candidate_key(item) for item in editable}
+    allowed_actions = {_candidate_key(item): item["action"] for item in editable}
     allowed_labels = {
-        _candidate_key(item): (item.get("agent_label") or item["requirement"])
-        for item in candidates
+        _candidate_key(item): (item.get("agent_label") or item.get("requirement") or "")
+        for item in editable
     }
-    # What each reviewed bullet may be asked: its one planned question, or nothing.
-    planned_questions = {
-        target["bullet_id"]: target["question"]
-        for item in candidates for target in item.get("targets") or []
-        if target.get("decision") == bullet_review.ASK and target.get("question")
-    }
-    rewrite_only = {
-        target["bullet_id"]
-        for item in candidates for target in item.get("targets") or []
-        if target.get("decision") == bullet_review.REWRITE
-    }
+    candidate_ids = {key: stored_ids.get(key) for key in
+                     {_candidate_key(item) for item in candidates}}
     # Two scopes per candidate, both sets of bullet ids. `edit` is what the planner chose;
     # `merge` widens it to those bullets' entry siblings, since a merge partner is by
     # definition a bullet the planner did not single out. Ids rather than text, so two
@@ -1963,18 +2045,46 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
         for entry_id, bullets in entry_bullets.items()
         for bullet in bullets
     }
+    # A merge consumes its partner, so every bullet it touches has to be one this candidate is
+    # authorised to change. Two kinds of partner are not:
+    #
+    #   * another candidate's bullet — changing it while a different row is the one being
+    #     tracked is the corruption the active-candidate rule exists to prevent, reached
+    #     through merge_bullets instead of propose_edit;
+    #   * a bullet the review KEPT — keep means it stays as written, and consuming it in a
+    #     merge overrules that decision rather than implementing it.
+    #
+    # What remains authorises nothing for a bullet-owned candidate, so merging is off for them
+    # entirely: their scope is their own bullet, and `merge_bullets` needs two. A merge design
+    # that works would be one candidate owning both ids and resolving them together — separate
+    # work, deliberately not attempted here.
+    owned = {
+        target["bullet_id"]
+        for item in candidates for target in item.get("targets") or []
+        if target.get("bullet_id")
+    }
+    kept_by_review = {
+        bullet_id for bullet_id, decision in (reviews or {}).items()
+        if (decision or {}).get("decision") == bullet_review.KEEP
+    }
     allowed_targets = {}
     for item in candidates:
         key = _candidate_key(item)
         scope = allowed_targets.setdefault(key, {"edit": set(), "merge": set()})
+        bullet_owned = bool(item.get("bullet_id"))
         for target in item.get("targets") or []:
             bullet_id = target.get("bullet_id")
             if not bullet_id:
                 continue
             scope["edit"].add(bullet_id)
             scope["merge"].add(bullet_id)
+            if bullet_owned:
+                continue
             siblings = entry_bullets.get(entry_of.get(bullet_id), [])
-            scope["merge"].update(sibling["id"] for sibling in siblings)
+            scope["merge"].update(
+                sibling["id"] for sibling in siblings
+                if sibling["id"] not in owned and sibling["id"] not in kept_by_review
+            )
     for (_tool, requirement, _error), count in prior_failures.items():
         if count >= 2:
             allowed_requirements.discard(requirement)
@@ -1982,8 +2092,9 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
     if not allowed_requirements:
         status = "completed"
         summary = (
+            "Questions about your own work are below." if asking else
             "Every bullet already reads clearly for this job — nothing to change."
-            if emptied else
+            if reviews else
             "The fit engine found no safe wording changes. Gaps and confirmations are listed separately."
         )
     if review_error:
@@ -1999,225 +2110,265 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
     t0 = time.perf_counter()
 
     if resume_from:
-        logger.info("resuming run=%s from step %d with %d replayed message(s)",
-                    run_id, resume_from + 1, len(replayed))
+        logger.info("resuming run=%s from step %d", run_id, resume_from + 1)
 
     # whatever happens in here, the run gets closed below: a worker that exits without
     # writing a final status leaves a row stuck at 'running' and a user watching a spinner
     try:
-        steps = range(resume_from + 1, max_steps + 1) if allowed_requirements else ()
         failed_attempts = dict(prior_failures)
-        for step in steps:
-            try:
-                # reserve this step's ceiling before spending it. Two runs for the same user
-                # can no longer both read "under budget" and both spend.
-                reservation = reserve(user_id, "tailoring_step", MODEL, run_id=run_id)
-            except QuotaExceeded:
-                status, error_code = "limit_reached", "quota_exceeded"
+        step = resume_from
+        # One candidate at a time, each with its own conversation. The model used to get every
+        # candidate in one brief and one long thread, which is how it came to edit a bullet
+        # belonging to a candidate nobody was tracking: the status, the retry count and the
+        # answer scope then all belonged to a different row than the work did.
+        while step < max_steps and allowed_requirements:
+            with get_cursor(commit=True) as cur:
+                active = candidates_state.claim_next(cur, run_id)
+            if active is None:
                 break
-            except Exception:
-                # the reservation itself failed, which means the database did. Stop
-                # deliberately rather than spend more money against an unknown balance.
-                logger.exception("could not reserve budget for run_id=%s", run_id)
-                status, error_code = "failed", "quota_check_failed"
-                break
-
-            # renew before the call, not only after it: a 60s model call would otherwise eat
-            # most of the lease. A lost lease stops the worker here, before it spends money
-            # on a run somebody else is already driving.
-            renew(get_cursor, run_id, token) if token else beat(get_cursor, run_id)
-
-            step_started = time.perf_counter()
-            try:
-                response = complete(messages)          # no DB connection held here
-            except Exception as exc:
-                logger.exception("tailoring run failed run_id=%s step=%d", run_id, step)
-                # the tokens were sent even though nothing came back, so the reservation is
-                # settled as spend rather than handed back
-                settle_quietly(reservation, 0, 0,
-                               (time.perf_counter() - step_started) * 1000,
-                               outcome=_spend_outcome(exc))
-                status, error_code = "failed", "model_call_failed"
-                break
-            step_latency_ms = (time.perf_counter() - step_started) * 1000
-
-            steps_used = step
-            if response.usage:
-                input_tokens += response.usage.prompt_tokens
-                output_tokens += response.usage.completion_tokens
-            # measured, not 0: these rows are what the p50/p95 in `usage report` is built from.
-            # `finalize` never raises — bookkeeping must not end a run the user is watching.
-            settle_quietly(
-                reservation,
-                getattr(response.usage, "prompt_tokens", 0),
-                getattr(response.usage, "completion_tokens", 0),
-                step_latency_ms,
-                outcome="ok" if response.usage else "unknown",
-            )
-
-            message = response.choices[0].message
-            if not message.tool_calls:
-                # The model saying it is done is a hint, not a decision. If the assignment
-                # still has unfinished candidates, this run stopped early — recording it as
-                # "completed" is what made a one-of-four run indistinguishable from a run
-                # with genuinely nothing to do (AE-02).
+            active_key = candidates_state.key(active)
+            item = by_key.get(active_key)
+            if item is None or active_key not in allowed_requirements:
+                # assigned but not editable in this attempt — an ASK still owed its answer,
+                # or a row from an assignment this attempt did not rebuild
                 with get_cursor(commit=True) as cur:
-                    remaining = candidates_state.unfinished(cur, run_id)
-                if remaining:
-                    # left pending on purpose: there is budget left, so this is resumable
-                    # rather than owed to a human
-                    status, error_code = "incomplete", "stopped_early"
-                    summary = (
-                        f"Stopped after handling part of the work. Left untouched: "
-                        f"{', '.join(remaining)}."
+                    candidates_state.resolve(
+                        cur, run_id, active["id"], candidates_state.NEEDS_REVIEW,
+                        outcome="no editable work for this candidate in this run",
                     )
-                else:
-                    status, summary = "completed", (message.content or "").strip()
+                continue
+            # Scoped to this one candidate, and nothing else. `allowed_targets` is the whole
+            # of the editor's authority: a bullet belonging to another pending candidate is
+            # valid work later and is refused now.
+            scope_keys = {active_key}
+            scope_targets = {active_key: allowed_targets.get(active_key, {"edit": set(), "merge": set()})}
+            scope_actions = {active_key: allowed_actions.get(active_key, "rewrite")}
+            scope_labels = {active_key: allowed_labels.get(active_key, "")}
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": job_brief(job, assessment, plan, [item])},
+            ]
+            fatal = False
+            while step < max_steps:
+                try:
+                    # reserve this step's ceiling before spending it. Two runs for the same user
+                    # can no longer both read "under budget" and both spend.
+                    reservation = reserve(user_id, "tailoring_step", MODEL, run_id=run_id)
+                except QuotaExceeded:
+                    status, error_code, fatal = "limit_reached", "quota_exceeded", True
+                    break
+                except Exception:
+                    # the reservation itself failed, which means the database did. Stop
+                    # deliberately rather than spend more money against an unknown balance.
+                    logger.exception("could not reserve budget for run_id=%s", run_id)
+                    status, error_code, fatal = "failed", "quota_check_failed", True
+                    break
+                # After the reservation, never before it: a step is one attempt at a model
+                # call, and a refused reservation makes no attempt. Counting it spent budget
+                # the run never had.
+                step += 1
+
+                # renew before the call, not only after it: a 60s model call would otherwise eat
+                # most of the lease. A lost lease stops the worker here, before it spends money
+                # on a run somebody else is already driving.
+                renew(get_cursor, run_id, token) if token else beat(get_cursor, run_id)
+
+                step_started = time.perf_counter()
+                try:
+                    response = complete(messages)          # no DB connection held here
+                except Exception as exc:
+                    logger.exception("tailoring run failed run_id=%s step=%d", run_id, step)
+                    # the tokens were sent even though nothing came back, so the reservation is
+                    # settled as spend rather than handed back
+                    settle_quietly(reservation, 0, 0,
+                                   (time.perf_counter() - step_started) * 1000,
+                                   outcome=_spend_outcome(exc))
+                    status, error_code, fatal = "failed", "model_call_failed", True
+                    break
+                step_latency_ms = (time.perf_counter() - step_started) * 1000
+
+                steps_used = step
+                if response.usage:
+                    input_tokens += response.usage.prompt_tokens
+                    output_tokens += response.usage.completion_tokens
+                # measured, not 0: these rows are what the p50/p95 in `usage report` is built from.
+                # `finalize` never raises — bookkeeping must not end a run the user is watching.
+                settle_quietly(
+                    reservation,
+                    getattr(response.usage, "prompt_tokens", 0),
+                    getattr(response.usage, "completion_tokens", 0),
+                    step_latency_ms,
+                    outcome="ok" if response.usage else "unknown",
+                )
+
+                message = response.choices[0].message
+                if not message.tool_calls:
+                    # The model saying it is done is a hint, not a decision — and now it is a
+                    # hint about one candidate, not about the run. This candidate got its turn
+                    # and produced nothing, which is owed to a human rather than called
+                    # complete: a one-of-four run used to be indistinguishable from a run with
+                    # genuinely nothing to do (AE-02).
+                    with get_cursor(commit=True) as cur:
+                        candidates_state.resolve(
+                            cur, run_id, active["id"], candidates_state.NEEDS_REVIEW,
+                            outcome="the editor answered without proposing anything",
+                        )
+                    allowed_requirements.discard(active_key)
+                    break
+
+                messages.append({
+                    "role": "assistant",
+                    "content": message.content,
+                    "tool_calls": [
+                        {
+                            "id": call.id,
+                            "type": "function",
+                            "function": {"name": call.function.name, "arguments": call.function.arguments},
+                        }
+                        for call in message.tool_calls
+                    ],
+                })
+
+                try:
+                    with get_cursor(commit=True) as cur:
+                        # the step and the rows it produced commit together. Committing the
+                        # counter first meant a crash in between left a step counted but its
+                        # tool calls unwritten, and the resume skipped it.
+                        if token:
+                            checkpoint(cur, run_id, token, step)
+                        else:
+                            cur.execute(
+                                "UPDATE tailoring_runs SET steps_used = %s, heartbeat_at = now() WHERE id = %s",
+                                (step, run_id),
+                            )
+                        # one strike per candidate per step: see below
+                        struck = set()
+                        for call in message.tool_calls:
+                            resolved = {}
+                            outcome = execute_tool(
+                                cur, user_id, run_id, step, call,
+                                allowed_requirements=scope_keys,
+                                allowed_targets=scope_targets,
+                                allowed_actions=scope_actions,
+                                allowed_labels=scope_labels,
+                                candidate_ids=candidate_ids,
+                                resolved=resolved,
+                            )
+                            if call.function.name in ACTION_TOOLS:
+                                # what the tool matched, falling back to what the model typed —
+                                # re-reading the raw arguments was how a candidate the tool had
+                                # already identified went unresolved
+                                requirement = resolved.get("requirement") or normalize_skill(
+                                    _tool_requirement(call.function.arguments)
+                                )
+                                # The candidate the ORCHESTRATOR claimed — never the one the
+                                # model named. Deriving this from the model's arguments meant a
+                                # reach for candidate B while A was active counted against B,
+                                # and a second such reach retired B: a candidate that had never
+                                # had a turn, closed by work that was not its own.
+                                chosen = active["id"]
+                            if call.function.name in WRITING_TOOLS and not outcome.get("error"):
+                                # a bullet actually changed, so this candidate is finished
+                                candidates_state.resolve(
+                                    cur, run_id, chosen, candidates_state.HANDLED,
+                                    outcome=call.function.name,
+                                )
+                                # and it leaves the open list with it. Keeping it there meant the
+                                # refusal for repeating it read "X is already finished... Still
+                                # open: X", which is where the model learned to try again.
+                                allowed_requirements.discard(active_key)
+                            if call.function.name == "keep_original" and not outcome.get("error"):
+                                # deciding the bullet is already better is finishing the work, not
+                                # ducking it — the reason becomes what the user reads for this
+                                # candidate in place of a proposal
+                                candidates_state.resolve(
+                                    cur, run_id, chosen, candidates_state.KEPT,
+                                    outcome=outcome.get("reason"),
+                                )
+                                allowed_requirements.discard(active_key)
+                            if call.function.name in ACTION_TOOLS and outcome.get("error"):
+                                candidates_state.record_attempt(cur, run_id, chosen)
+                                if searches_found_nothing(cur, run_id, requirement, supplied):
+                                    # nothing to cite, so nothing to do: close it honestly rather
+                                    # than let the model keep guessing at ids
+                                    allowed_requirements.discard(active_key)
+                                    candidates_state.resolve(
+                                        cur, run_id, chosen, candidates_state.SKIPPED,
+                                        outcome="no evidence could be retrieved for this",
+                                    )
+                                    outcome = {
+                                        "error": "no search in this run returned any bullet for "
+                                                 "this requirement, so there is nothing to edit. "
+                                                 "Move on to the next candidate."
+                                    }
+                                key = failure_key(
+                                    call.function.name, call.function.arguments, outcome["error"]
+                                )
+                                # Two strikes retires a candidate, and a strike has to mean "it was
+                                # told, and did it again". The model sends a whole batch before it
+                                # sees a single reply, so the same mistake arrives twice in one
+                                # step — which used to retire a candidate on step 1, before any
+                                # search had run and while the only possible answer was a refusal.
+                                if key not in struck:
+                                    struck.add(key)
+                                    failed_attempts[key] = failed_attempts.get(key, 0) + 1
+                                if failed_attempts[key] >= 2:
+                                    allowed_requirements.discard(active_key)
+                                    candidates_state.resolve(
+                                        cur, run_id, chosen, candidates_state.NEEDS_REVIEW,
+                                        outcome=outcome["error"],
+                                    )
+                                    outcome = {
+                                        "error": outcome["error"]
+                                        + "; this action failed twice, so this requirement now needs human review"
+                                    }
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": call.id,
+                                "content": json.dumps(outcome),
+                            })
+                    if active_key not in allowed_requirements:
+                        # This candidate reached a terminal state inside the step. Its
+                        # conversation ends with it, and the orchestrator claims the next one
+                        # with a brief of its own.
+                        break
+                except Exception:
+                    # anything that isn't a grounding rejection aborts the transaction, taking the
+                    # tool_call row with it. End the run rather than leave it stuck at 'running'.
+                    logger.exception("tool execution failed run_id=%s step=%d", run_id, step)
+                    status, error_code, fatal = "failed", "tool_execution_failed", True
+                    break
+
+            if fatal:
+                # The run has decided to stop. Claiming another candidate would spend money
+                # after that decision, and would leave this one `active` behind it — which the
+                # one-active index then rejects, reporting a database error in place of the
+                # real reason the run stopped.
                 break
 
-            messages.append({
-                "role": "assistant",
-                "content": message.content,
-                "tool_calls": [
-                    {
-                        "id": call.id,
-                        "type": "function",
-                        "function": {"name": call.function.name, "arguments": call.function.arguments},
-                    }
-                    for call in message.tool_calls
-                ],
-            })
-
-            try:
-                waiting_for_user = False
-                with get_cursor(commit=True) as cur:
-                    # the step and the rows it produced commit together. Committing the
-                    # counter first meant a crash in between left a step counted but its
-                    # tool calls unwritten, and the resume skipped it.
-                    if token:
-                        checkpoint(cur, run_id, token, step)
-                    else:
-                        cur.execute(
-                            "UPDATE tailoring_runs SET steps_used = %s, heartbeat_at = now() WHERE id = %s",
-                            (step, run_id),
-                        )
-                    # one strike per candidate per step: see below
-                    struck = set()
-                    for call in message.tool_calls:
-                        resolved = {}
-                        outcome = execute_tool(
-                            cur, user_id, run_id, step, call,
-                            allowed_requirements=allowed_requirements,
-                            allowed_targets=allowed_targets,
-                            allowed_actions=allowed_actions,
-                            allowed_labels=allowed_labels,
-                            planned_questions=planned_questions,
-                            rewrite_only=rewrite_only,
-                            resolved=resolved,
-                        )
-                        if call.function.name == "request_detail" and outcome.get("status") == "awaiting_user":
-                            waiting_for_user = True
-                        if call.function.name in ACTION_TOOLS:
-                            # what the tool matched, falling back to what the model typed —
-                            # re-reading the raw arguments was how a candidate the tool had
-                            # already identified went unresolved
-                            requirement = resolved.get("requirement") or normalize_skill(
-                                _tool_requirement(call.function.arguments)
-                            )
-                        if call.function.name in WRITING_TOOLS and not outcome.get("error"):
-                            # a bullet actually changed, so this candidate is finished
-                            candidates_state.resolve(
-                                cur, run_id, requirement, candidates_state.HANDLED,
-                                outcome=call.function.name,
-                            )
-                            # and it leaves the open list with it. Keeping it there meant the
-                            # refusal for repeating it read "X is already finished... Still
-                            # open: X", which is where the model learned to try again.
-                            allowed_requirements.discard(requirement)
-                        if call.function.name == "keep_original" and not outcome.get("error"):
-                            # deciding the bullet is already better is finishing the work, not
-                            # ducking it — the reason becomes what the user reads for this
-                            # candidate in place of a proposal
-                            candidates_state.resolve(
-                                cur, run_id, requirement, candidates_state.KEPT,
-                                outcome=outcome.get("reason"),
-                            )
-                            allowed_requirements.discard(requirement)
-                        if call.function.name == "request_detail" and not outcome.get("error"):
-                            # Asked, not handled. Marking a question as the work made a run
-                            # that produced zero edits report "2 of 2 handled", and left the
-                            # orchestrator with nothing pending to hand back once the user
-                            # had answered — so the answer was never used for anything.
-                            candidates_state.record_attempt(cur, run_id, requirement)
-                        if call.function.name in ACTION_TOOLS and outcome.get("error"):
-                            candidates_state.record_attempt(cur, run_id, requirement)
-                            if searches_found_nothing(cur, run_id, requirement, supplied):
-                                # nothing to cite, so nothing to do: close it honestly rather
-                                # than let the model keep guessing at ids
-                                allowed_requirements.discard(requirement)
-                                candidates_state.resolve(
-                                    cur, run_id, requirement, candidates_state.SKIPPED,
-                                    outcome="no evidence could be retrieved for this",
-                                )
-                                outcome = {
-                                    "error": "no search in this run returned any bullet for "
-                                             "this requirement, so there is nothing to edit. "
-                                             "Move on to the next candidate."
-                                }
-                            key = failure_key(
-                                call.function.name, call.function.arguments, outcome["error"]
-                            )
-                            # Two strikes retires a candidate, and a strike has to mean "it was
-                            # told, and did it again". The model sends a whole batch before it
-                            # sees a single reply, so the same mistake arrives twice in one
-                            # step — which used to retire a candidate on step 1, before any
-                            # search had run and while the only possible answer was a refusal.
-                            if key not in struck:
-                                struck.add(key)
-                                failed_attempts[key] = failed_attempts.get(key, 0) + 1
-                            if failed_attempts[key] >= 2:
-                                allowed_requirements.discard(requirement)
-                                candidates_state.resolve(
-                                    cur, run_id, requirement, candidates_state.NEEDS_REVIEW,
-                                    outcome=outcome["error"],
-                                )
-                                outcome = {
-                                    "error": outcome["error"]
-                                    + "; this action failed twice, so this requirement now needs human review"
-                                }
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": call.id,
-                            "content": json.dumps(outcome),
-                        })
-                if waiting_for_user:
-                    status = "waiting_for_user"
-                    summary = "A stronger rewrite needs one detail from you before it can continue."
-                    break
-                if candidates and not allowed_requirements:
-                    # Nothing is left for the model to work on. Whether that is an assignment
-                    # finished or an assignment burned is the candidate table's answer, not
-                    # this set's. Either way the run ends here rather than paying for one more
-                    # model call whose only job is to say "done".
-                    with get_cursor() as cur:
-                        states = {item["status"] for item in candidates_state.load(cur, run_id)}
-                    status = "completed"
-                    # `needs_review` is terminal but it is not done — a candidate retired for
-                    # failing twice is owed to a human, and calling that "handled" is the
-                    # conflation this table exists to prevent.
-                    summary = (
-                        "No safe rewrite passed grounding; what is left needs human review."
-                        if states & {candidates_state.PENDING, candidates_state.ACTIVE,
-                                     candidates_state.NEEDS_REVIEW}
-                        else "Every approved candidate was handled."
-                    )
-                    break
-            except Exception:
-                # anything that isn't a grounding rejection aborts the transaction, taking the
-                # tool_call row with it. End the run rather than leave it stuck at 'running'.
-                logger.exception("tool execution failed run_id=%s step=%d", run_id, step)
-                status, error_code = "failed", "tool_execution_failed"
-                break
+        # Every claimable candidate has been worked, or the budget ran out. Which of those it
+        # was is the candidate table's answer, not this loop's — and `error_code` means the run
+        # stopped for a reason of its own, which must not be overwritten with "completed".
+        if status == "limit_reached" and step < max_steps and not error_code:
+            with get_cursor() as cur:
+                rows = candidates_state.load(cur, run_id)
+            # `needs_review` is not done — a candidate retired for failing twice, or one the
+            # editor answered without touching, is still owed. Calling that "handled" is the
+            # conflation this table exists to prevent.
+            owed = [row["label"] for row in rows
+                    if row["status"] == candidates_state.NEEDS_REVIEW]
+            if owed:
+                # Budget remains and the work is owed, so this is resumable rather than
+                # terminal — `resume_run` refuses a `completed` run, and refusing to pick this
+                # one back up would strand work the run itself says is unfinished.
+                status, error_code = "incomplete", "stopped_early"
+                summary = (
+                    f"Stopped after handling part of the work. Left untouched: "
+                    f"{', '.join(owed[:5])}" + ("…" if len(owed) > 5 else "") + "."
+                )
+            else:
+                status = "completed"
+                summary = summary or "Every approved candidate was handled."
 
     except LeaseLost:
         # another worker owns this run now. Write nothing — not even a status — because every
@@ -2230,12 +2381,48 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
         status, error_code = "failed", "worker_error"
 
     with get_cursor(commit=True) as cur:
+        # One fenced transaction for everything this worker still has to write. The token is
+        # checked BEFORE anything is inserted: the status update at the end was fenced, but
+        # the questions were not, so a worker whose lease had expired could file questions
+        # into a run somebody else was already driving.
+        if token is not None:
+            cur.execute(
+                "SELECT 1 FROM tailoring_runs WHERE id = %s AND claim_token = %s FOR UPDATE",
+                (run_id, token),
+            )
+            if cur.fetchone() is None:
+                logger.warning("run_id=%s was reclaimed; this worker writes nothing", run_id)
+                return {"run_id": str(run_id), "status": "lease_lost",
+                        "steps_used": steps_used, "summary": None}
+        # Every question this run is going to ask, filed together, now that the work needing
+        # no input is done. One pause, not one per question: the run used to break out of the
+        # loop the moment a single question was filed, so a resume with six vague bullets
+        # meant six rounds of pause, answer, resume.
+        if status in ("completed", "incomplete") and asking:
+            filed = file_planned_questions(cur, user_id, run_id, asking, candidate_ids)
+            if filed:
+                status, error_code = "waiting_for_user", None
+                summary = (
+                    f"{filed} question{'s' if filed > 1 else ''} about your own work would let "
+                    "these bullets say what you actually did."
+                )
         # Whatever stopped the loop — the step cap, the quota, a model error — anything still
         # pending is now owed to a human. Leaving it `pending` reads as work still coming.
         # `incomplete` keeps its candidates pending so the run can be resumed; every other
         # non-terminal exit is out of budget, so what is left is owed to a human.
         if status not in ("waiting_for_user", "completed", "incomplete"):
-            candidates_state.close_out(cur, run_id, error_code or status)
+            owed = candidates_state.close_out(
+                cur, run_id, error_code or status,
+                # Named exactly, because it is the one non-terminal ending that is nobody's
+                # fault and is worth resuming unchanged.
+                untouched=(UNTOUCHED if status == "limit_reached" and not error_code else None),
+            )
+            if owed and status == "limit_reached" and not error_code:
+                summary = (
+                    f"Improved what the step budget allowed. {len(owed)} bullet"
+                    f"{'s' if len(owed) > 1 else ''} were not reached: {', '.join(owed[:5])}"
+                    + ("…" if len(owed) > 5 else "") + "."
+                )
 
         cur.execute(
             """
@@ -2277,6 +2464,61 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
     )
 
     return {"run_id": str(run_id), "status": status, "steps_used": steps_used, "summary": summary}
+
+
+# High first, then whether a requirement cites the bullet, then resume order. Expected
+# improvement leads deliberately: ranking by requirement importance alone would push a vague
+# bullet that matched nothing back out of the run, which is the fault this redesign removes.
+QUESTION_CAP = 8
+UNTOUCHED = "step budget exhausted before attempt"
+_LEVEL_RANK = {"high": 0, "medium": 1, "low": 2}
+
+
+def question_order(candidates):
+    def rank(item):
+        target = (item.get("targets") or [{}])[0]
+        return (
+            _LEVEL_RANK.get(target.get("improvement_level"), 3),
+            0 if item.get("requirement_context") else 1,
+            item.get("position", 0),
+        )
+    return sorted(candidates, key=rank)
+
+
+def file_planned_questions(cur, user_id, run_id, candidates, candidate_ids=None):
+    """File the review's questions and park their candidates. Returns how many were asked.
+
+    The model has no tool for this. The question text was always the server's — the reviewer
+    wrote it and the server validated it — so the only thing a tool call added was a step, a
+    chance to reword it, and a pause after the first one.
+    """
+    asked = 0
+    for item in question_order(candidates):
+        target = (item.get("targets") or [{}])[0]
+        question, bullet_id = target.get("question"), target.get("bullet_id")
+        candidate_id = (candidate_ids or {}).get(_candidate_key(item))
+        if not question or not bullet_id:
+            continue
+        if asked >= QUESTION_CAP:
+            # Named, not silently dropped: the work is still owed and a later run can ask it.
+            candidates_state.resolve(
+                cur, run_id, candidate_id, candidates_state.NEEDS_REVIEW,
+                outcome="more questions than one round should ask; left for a later run",
+            )
+            continue
+        try:
+            tool_request_detail(
+                cur, user_id, run_id,
+                {"requirement": item.get("requirement") or "", "bullet_id": bullet_id},
+                question=question,
+            )
+        except GroundingError as exc:
+            # already asked and answered in this run, or the bullet is gone from under us
+            logger.info("question not filed run_id=%s bullet=%s: %s", run_id, bullet_id, exc)
+            continue
+        candidates_state.await_answer(cur, run_id, candidate_id)
+        asked += 1
+    return asked
 
 
 def run_tailoring(get_cursor, user_id, job_id, max_steps=DEFAULT_MAX_STEPS):
@@ -2370,16 +2612,29 @@ def load_run(cur, user_id, run_id):
 
     _job, assessment, requirements = load_job_context(cur, user_id, run["job_id"])
     run["reviews"] = bullet_review.load(cur, run_id)
-    plan = run_plan(cur, user_id, assessment, bullets_by_entry(cur, user_id), run["reviews"])
+    plan = run_plan(cur, user_id, assessment, bullets_by_entry(cur, user_id))
     run["outcomes"] = plan
     # what the run was ASKED to do and what became of it. Recomputing the plan alone can
     # never show this: it describes the resume as it is now, not the assignment (AE-02).
     run["candidates"] = candidates_state.load(cur, run_id)
     run["work"] = candidates_state.summary(cur, run_id)
+    # Counted from the review, not from the plan. `apply_reviews` used to flip plan items to
+    # `rewrite` and this counted those; with the work bullet-owned, the plan is a statement
+    # about fit and says nothing about what the review found.
+    decisions = Counter(
+        (item or {}).get("decision") for item in (run["reviews"] or {}).values()
+    )
+    run["review_counts"] = {
+        "reviewed": sum(decisions.values()),
+        "rewrite": decisions.get(bullet_review.REWRITE, 0),
+        "ask": decisions.get(bullet_review.ASK, 0),
+        "keep": decisions.get(bullet_review.KEEP, 0),
+        "unavailable": decisions.get(bullet_review.REVIEW_UNAVAILABLE, 0),
+    }
     run["coverage"] = {
         "total": len(plan),
         "accounted": len(plan),
-        "rewrite_candidates": len(rewrite_candidates(plan)),
+        "rewrite_candidates": run["review_counts"]["rewrite"] + run["review_counts"]["ask"],
         "skills_to_surface": sum(item["action"] == "surface_skill" for item in plan),
         "keyword_only": len(keyword_only(plan)),
         "gaps": len(deterministic_gaps(plan)),
@@ -2395,8 +2650,13 @@ def load_run(cur, user_id, run_id):
 
     cur.execute(
         """
-        SELECT e.id, e.bullet_id, e.requirement, e.proposed_text, e.status,
-               e.edit_type, b.text, e.reason,
+        SELECT e.id, e.bullet_id,
+               -- NULL when the bullet owns the work; the entry it came from is the honest
+               -- caption, and an empty one would read as a missing requirement
+               coalesce(e.requirement,
+                        nullif(concat_ws(' — ', en.title, en.organization), ''),
+                        'From your resume') AS requirement,
+               e.proposed_text, e.status, e.edit_type, b.text, e.reason,
                COALESCE((
                    SELECT json_agg(json_build_object('bullet_id', l.bullet_id, 'text', eb.text))
                    FROM evidence_links AS l
@@ -2427,6 +2687,7 @@ def load_run(cur, user_id, run_id):
                  WHERE l.edit_id = e.id AND l.bullet_id = e.bullet_id LIMIT 1)
         FROM proposed_edits AS e
         LEFT JOIN resume_bullets AS b ON b.id = e.bullet_id
+        LEFT JOIN resume_entries AS en ON en.id = b.entry_id
         WHERE e.run_id = %s AND e.user_id = %s
         ORDER BY e.created_at
         """,
@@ -2464,10 +2725,15 @@ def load_run(cur, user_id, run_id):
 
     cur.execute(
         """
-        SELECT q.id, q.bullet_id, q.requirement, q.question, q.answer, q.status,
+        SELECT q.id, q.bullet_id,
+               coalesce(q.requirement,
+                        nullif(concat_ws(' — ', en.title, en.organization), ''),
+                        'About your resume') AS requirement,
+               q.question, q.answer, q.status,
                b.text, q.created_at, q.resolved_at, q.intent, q.outcome
         FROM tailoring_detail_requests AS q
         LEFT JOIN resume_bullets AS b ON b.id = q.bullet_id
+        LEFT JOIN resume_entries AS en ON en.id = b.entry_id
         WHERE q.run_id = %s AND q.user_id = %s
         ORDER BY q.created_at
         """,
@@ -2515,18 +2781,17 @@ def load_run(cur, user_id, run_id):
         for r in cur.fetchall()
     ]
 
-    repeated_failures = {}
-    for item in run["trace"]:
-        if item["tool"] != "propose_edit" or item["status"] != "failed":
-            continue
-        key = json.dumps(item["arguments"] or {}, sort_keys=True, separators=(",", ":"))
-        repeated_failures[key] = repeated_failures.get(key, 0) + 1
+    # From the candidate table, not from the trace. It used to be reconstructed by grouping
+    # identical `propose_edit` arguments, which named the work by the requirement the model
+    # typed — and bullet-owned work has no requirement, so every entry degraded to the word
+    # "Requirement". The candidates already record what was owed and why.
     run["needs_review"] = [
         {
-            "requirement": (json.loads(arguments).get("requirement") or "Requirement"),
-            "reason": "The same proposed rewrite failed grounding twice; no claim was added.",
+            "requirement": item["label"],
+            "reason": item["outcome"] or "This candidate was left for human review.",
         }
-        for arguments, count in repeated_failures.items() if count >= 2
+        for item in run["candidates"]
+        if item["status"] == candidates_state.NEEDS_REVIEW
     ]
 
     return run

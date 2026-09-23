@@ -69,6 +69,18 @@
         "testing",
         "embedded"
       ]
+    },
+    "generalist": {
+      "title": "Software Engineer, Early Career",
+      "company": "Northwind",
+      "summary": "Design, develop, test, deploy, maintain and improve software across the stack. Manage individual project priorities, deadlines and deliverables.",
+      "requirements": [
+        "bachelor's degree in computer science or equivalent practical experience",
+        "experience in software development in one or more general purpose programming languages",
+        "c or c++",
+        "experience with data structures or storage systems or cloud infrastructure or front-end frameworks",
+        "experience developing accessible technologies"
+      ]
     }
   },
   "cases": [
@@ -384,6 +396,51 @@
         "REWRITE"
       ],
       "why": "This run's answer supplies the fact; rewrite rather than ask again."
+    },
+    {
+      "id": "generalist_vague_backend_functionality",
+      "job": "generalist",
+      "entry": "ChatRoom — Developer",
+      "text": "Created backend functionality for managing users, messages, and channels.",
+      "siblings": [
+        "Developed a secure messaging application using React and Flask.",
+        "Implemented encryption features to protect user messages."
+      ],
+      "expect": [
+        "ASK"
+      ],
+      "why": "Against a generalist posting this came back KEEP twice: the vaguest bullet on the resume, excused because the project sounds relevant. A broad posting is not a reason to stop reading the bullet."
+    },
+    {
+      "id": "generalist_explicit_match_does_not_excuse_vagueness",
+      "job": "generalist",
+      "entry": "Panther Racing FSAE — Software Team Member",
+      "text": "Helped develop software for an autonomous vehicle using C++ and ROS 2.",
+      "siblings": [
+        "Worked with LiDAR and camera data for cone detection.",
+        "Assisted with point-cloud processing and perception tasks."
+      ],
+      "match_findings": [
+        {"requirement": "c or c++", "match": "EXPLICIT", "importance": "required"}
+      ],
+      "expect": [
+        "ASK"
+      ],
+      "why": "The C++ match is why this bullet matters most, not why it is fine. It was kept for 'aligning well with the job requirements' while never saying what was built — the exact inversion this pins."
+    },
+    {
+      "id": "generalist_irrelevant_it_sales",
+      "job": "generalist",
+      "entry": "Asian Granite & Cabinet — Part-time IT & Sales",
+      "text": "Helped with IT-related tasks and company operations.",
+      "siblings": [
+        "Used Excel to improve business workflows.",
+        "Maintained website content."
+      ],
+      "expect": [
+        "KEEP"
+      ],
+      "why": "The control for the two above: reading the bullet before the job must not turn every vague sentence into a question. Nothing the candidate could answer here helps this application."
     },
     {
       "id": "result_claimed_no_evidence",

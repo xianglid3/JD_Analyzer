@@ -141,9 +141,10 @@ def test_an_invented_claim_is_counted_and_can_be_read_back(monkeypatch, fixtures
 def test_samples_can_be_filtered_to_one_reason(monkeypatch, fixtures, _db):
     import uuid as _uuid
 
-    # an id belonging to nobody. Ownership is checked before authorisation and before the
-    # citation, so this stops at the first gate — and `uncited_bullet` now only arises for a
-    # merge partner, which is authorised by entry but still has to have reached the run.
+    # The orchestrator scopes each turn to one candidate before the ownership gate. An id
+    # belonging to nobody therefore cannot select the active bullet-owned candidate and is
+    # reported as an unapproved candidate. The ownership classifier itself is covered by the
+    # table-driven classifier test above and by the direct tool tests.
     stranger = str(_uuid.uuid4())
     script(
         monkeypatch,
@@ -158,7 +159,7 @@ def test_samples_can_be_filtered_to_one_reason(monkeypatch, fixtures, _db):
     run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
 
     with _db.cursor() as cur:
-        assert samples(cur, limit=10, reason="not_your_bullet")
+        assert samples(cur, limit=10, reason="unapproved_requirement")
         assert samples(cur, limit=10, reason="unsupported_claim") == []
 
 

@@ -1,0 +1,130 @@
+{
+  "_about": "One whole resume, reviewed the way Stage 1 reviews it: every experience and project bullet, in chunks, with no requirement deciding who gets read. These are the owner's real entries in their vague form — the resume that produced two reviewed bullets and one question in run f03279a8 against a Google-style backend posting. There is no `expect` field and nothing passes or fails: the point is to read all fifteen decisions and judge whether the reviewer's opinion of the thirteen bullets it has never seen is worth wiring into the planner. `match_findings` mirror what the fit engine actually produced for that run — C/C++ explicit on the robotics work, the grouped requirement inferred, everything else unmatched.",
+  "job": {
+    "title": "Software Engineer, Early Career",
+    "company": "Northwind",
+    "summary": "Design, develop, test, deploy, maintain and improve software across the stack. Manage individual project priorities, deadlines and deliverables.",
+    "requirements": [
+      "bachelor's degree in computer science or equivalent practical experience",
+      "experience in software development in one or more general purpose programming languages",
+      "c or c++",
+      "experience with data structures or storage systems or cloud infrastructure or front-end frameworks",
+      "experience developing accessible technologies"
+    ]
+  },
+  "entries": [
+    {
+      "name": "Panther Racing FSAE — Software Team Member",
+      "kind": "experience",
+      "bullets": [
+        {
+          "id": "fsae-1",
+          "text": "Helped develop software for an autonomous vehicle using C++ and ROS 2.",
+          "match_findings": [
+            {"requirement": "c or c++", "match": "EXPLICIT", "importance": "required"}
+          ]
+        },
+        {
+          "id": "fsae-2",
+          "text": "Worked with LiDAR and camera data for cone detection.",
+          "match_findings": []
+        },
+        {
+          "id": "fsae-3",
+          "text": "Assisted with point-cloud processing and perception tasks.",
+          "match_findings": []
+        }
+      ]
+    },
+    {
+      "name": "JobMatcha — Developer",
+      "kind": "project",
+      "bullets": [
+        {
+          "id": "jm-1",
+          "text": "Built an AI-powered platform that helps users analyze job descriptions and improve their resumes.",
+          "match_findings": []
+        },
+        {
+          "id": "jm-2",
+          "text": "Worked with PostgreSQL to store and manage application data.",
+          "match_findings": [
+            {"requirement": "experience with data structures or storage systems or cloud infrastructure or front-end frameworks", "match": "INFERRED", "importance": "required"}
+          ]
+        },
+        {
+          "id": "jm-3",
+          "text": "Created backend functionality to support resume tailoring and job analysis.",
+          "match_findings": []
+        },
+        {
+          "id": "jm-4",
+          "text": "Used Docker and GitHub Actions to support deployment and testing.",
+          "match_findings": []
+        }
+      ]
+    },
+    {
+      "name": "ChatRoom — Developer",
+      "kind": "project",
+      "bullets": [
+        {
+          "id": "chat-1",
+          "text": "Developed a secure messaging application using React and Flask.",
+          "match_findings": [
+            {"requirement": "experience with data structures or storage systems or cloud infrastructure or front-end frameworks", "match": "INFERRED", "importance": "required"}
+          ]
+        },
+        {
+          "id": "chat-2",
+          "text": "Created backend functionality for managing users, messages, and channels.",
+          "match_findings": []
+        },
+        {
+          "id": "chat-3",
+          "text": "Implemented encryption features to protect user messages.",
+          "match_findings": []
+        }
+      ]
+    },
+    {
+      "name": "Calendar Map — Developer",
+      "kind": "project",
+      "bullets": [
+        {
+          "id": "cal-1",
+          "text": "Developed a calendar application with map functionality.",
+          "match_findings": []
+        },
+        {
+          "id": "cal-2",
+          "text": "Built REST APIs using FastAPI and stored application data using Supabase.",
+          "match_findings": [
+            {"requirement": "experience with data structures or storage systems or cloud infrastructure or front-end frameworks", "match": "INFERRED", "importance": "required"}
+          ]
+        },
+        {
+          "id": "cal-3",
+          "text": "Connected the backend with a React frontend.",
+          "match_findings": []
+        }
+      ]
+    },
+    {
+      "name": "Asian Granite & Cabinet — Part-time IT & Sales",
+      "kind": "experience",
+      "bullets": [
+        {
+          "id": "agc-1",
+          "text": "Helped with IT-related tasks and company operations.",
+          "match_findings": []
+        },
+        {
+          "id": "agc-2",
+          "text": "Used Excel to improve business workflows.",
+          "match_findings": []
+        }
+      ]
+    }
+  ]
+}

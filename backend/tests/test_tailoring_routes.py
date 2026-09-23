@@ -169,7 +169,9 @@ def test_detail_answer_resumes_the_same_run(client, monkeypatch, setup):
     while not launched and time.time() < deadline:
         time.sleep(0.01)
     assert launched[0][0][2] == run_id
-    assert launched[0][1]["resume_from"] == 2
+    # Reviewing and filing a question use no editor steps. The resumed candidate starts a
+    # fresh conversation with the stored answer rather than replaying the old transcript.
+    assert launched[0][1]["resume_from"] == 0
 
 
 def test_detail_answer_validation_and_ownership(client, monkeypatch, setup):

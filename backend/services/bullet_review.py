@@ -34,6 +34,21 @@ class ReviewUnavailable(Exception):
 
 KEEP, REWRITE, ASK = "KEEP", "REWRITE", "ASK"
 DECISIONS = (KEEP, REWRITE, ASK)
+# Not a decision: the bullet was sent for review and no review came back for it. Kept apart
+# from KEEP because "the recruiter read it and saw nothing to fix" and "nobody read it" are
+# different facts, and only the first one may be reported to the user as a judgment.
+REVIEW_UNAVAILABLE = "REVIEW_UNAVAILABLE"
+# How much better the bullet would get. Free text cannot be ranked, and the question cap has
+# to drop the least valuable asks rather than the ones no requirement happened to match.
+IMPROVEMENT_LEVELS = ("high", "medium", "low")
+# One bullet per call. Not a cost decision — a correctness one, measured: at six per call the
+# reviewer kept five vague bullets it asks about when they arrive alone, and asked its only
+# question about the part-time retail job this prompt names as an example of what to leave
+# alone. Fourteen of its fifteen reasons came back as the same sentence. The prompt is written
+# in the singular and every case that validates it feeds one bullet; six was never measured.
+# Truncation, the reason chunking exists at all, also cannot reach a one-bullet response.
+# Latency is the cost, and these calls are independent, so concurrency is where it goes.
+CHUNK_SIZE = 1
 DOUBT_TYPES = ("contribution", "implementation", "scope", "result_validation", "clarification")
 MIN_ANCHOR_WORDS, MAX_ANCHOR_WORDS = 2, 8
 # Words that carry no subject: two of these in a row ("for the", "with a") would let any
@@ -80,7 +95,8 @@ The job description describes what the employer wants. It does not prove that th
 a technology, performed a task, owned a component, or achieved an outcome.
 
 Match findings are hints about relevance. They do not prove candidate experience, establish
-facts, or require a question.
+facts, or require a question — and they never make a vague bullet a strong one. An explicit
+match means the bullet is worth getting right, not that it is already right.
 
 DECISIONS
 
@@ -117,12 +133,24 @@ Bullet: "Created backend functionality for managing users, messages, and channel
 Good: "What did you personally build to manage users, messages, and channels?"
 Bad: "Which API endpoints did you create for users, messages, and channels?"
 
-RELEVANCE COMES FIRST
+TWO QUESTIONS, IN THIS ORDER
 
-If the bullet describes work that is not relevant to this job, choose KEEP however vague it is.
-A part-time job's "helped with IT tasks and company operations" is not worth a backend
-candidate's time: no answer to it would make this resume better for this posting. Vagueness is
-only worth a question when the work itself matters for the job.
+First: is the contribution clear and specific? Decide this from the bullet and its project
+context alone, before you look at the job at all.
+
+Second, only then: does this job make the weakness worth fixing?
+
+Never let the second answer change the first. A bullet that names a technology the posting asks
+for is not thereby clear — "Helped develop software for an autonomous vehicle using C++ and
+ROS 2" names C++ and still does not say what the candidate built. A match tells you the bullet
+MATTERS; it never tells you the bullet is GOOD. An explicit match on a vague bullet makes
+clarifying it more important, not less: it is the bullet the recruiter will look at hardest, and
+the one where "helped develop" will cost the candidate most.
+
+Relevance decides only whether a real weakness is worth the candidate's time. If the work is not
+relevant to this job, choose KEEP however vague it is: a part-time job's "helped with IT tasks
+and company operations" is vague, and no answer to it would make this resume better for this
+posting, so there is nothing to ask. That is the only thing relevance settles.
 
 WHEN A VAGUE BULLET IS WORTH A QUESTION
 
@@ -131,7 +159,11 @@ functionality", "helped develop", "assisted with" or "supported" is an ASK when 
 its project context names a concrete contribution, artifact or mechanism — no component,
 service, endpoint, schema, algorithm, query or file that the candidate personally produced.
 That is the most common real weakness: the recruiter cannot tell what the candidate did.
-If the bullet or a sibling already names such a thing, prefer KEEP.
+If the TARGET bullet already names such a thing, prefer KEEP. A sibling naming one does not
+settle this bullet: a sibling is a different piece of work, and "implemented encryption
+features" beside "created backend functionality for managing users, messages, and channels"
+answers nothing about the second. A sibling only settles it when the context establishes that
+both bullets describe the same work.
 
 ASK — choose it only when one missing fact prevents a worthwhile improvement and only the
 candidate can supply it. Every ASK must satisfy all of these:
@@ -151,11 +183,14 @@ If you cannot complete that sentence concretely, choose KEEP or REWRITE.
 
 REVIEW PROCEDURE
 
-1. Identify the job responsibility or qualification most relevant to the bullet.
-2. Read the complete supplied project context.
-3. List what is already established: the candidate's contribution; the system, feature or
+1. Read the complete supplied project context.
+2. List what is already established: the candidate's contribution; the system, feature or
    component; technologies and their roles; implementation details; scope or constraints;
-   results or observed behaviour.
+   results or observed behaviour. Do this before reading the job description, and name the
+   candidate's own work first: if you cannot say what they personally built or changed, that
+   is the weakness, whatever else the bullet names.
+3. Only now, identify the job responsibility or qualification most relevant to the bullet, and
+   decide whether the weakness you found is worth the candidate's time.
 4. Preserve technology roles. "Python backend and TypeScript frontend" does not support
    "Python and TypeScript backend."
 5. Identify the recruiter's exact remaining doubt. Useful doubts: what did the candidate
@@ -256,6 +291,7 @@ Return ONLY one JSON object: {"reviews": [{
  "missing_fact": "<one missing fact, or null>",
  "question": "<one focused question, or null>",
  "expected_resume_improvement": "<what would become clearer, or null>",
+ "improvement_level": "high | medium | low | null",
  "rewrite_instruction": "<supported rewrite direction, or null>",
  "facts_to_preserve": ["<fact, technology role, ownership level, or result>"],
  "decision_reason": "<why this action is worthwhile>"}]}
@@ -266,8 +302,17 @@ Consistency rules:
   repeat at least two consecutive words of the bullet.
 - REWRITE: anchor, rewrite_instruction and expected_resume_improvement are specific;
   missing_fact and question are null.
-- KEEP: missing_fact, question, expected_resume_improvement and rewrite_instruction are null;
-  decision_reason explains why no action is worthwhile.
+- KEEP: missing_fact, question, expected_resume_improvement, improvement_level and
+  rewrite_instruction are null; decision_reason explains why no action is worthwhile.
+
+improvement_level, on an ASK or a REWRITE, is how much better this bullet would get for THIS
+job — not how vague it is. Only a few bullets on a resume are "high".
+- high: the recruiter currently cannot tell whether the candidate can do a core part of this
+  job, and the change would settle it.
+- medium: the bullet is relevant and the change makes a real difference to how it reads.
+- low: worth doing if there is time; the recruiter's understanding barely changes.
+Always give one on an ASK or a REWRITE. Omitting it does not make the bullet more important —
+an unranked question is asked after every ranked one, and may fall off the end.
 
 Use JSON null, not the string "null". Never invent supporting quotations. One entry per bullet
 key, in the order given."""
@@ -318,10 +363,20 @@ def quotes_bullet(question, bullet, min_words=MIN_ANCHOR_WORDS):
     """
     words = squash(bullet).split()
     asked = f" {squash(question)} "
-    return any(
+    if any(
         all(word not in FILLER for word in words[i:i + min_words])
         and f" {' '.join(words[i:i + min_words])} " in asked
         for i in range(len(words) - min_words + 1)
+    ):
+        return True
+    # A technology the bullet names is distinctive on its own, and a pair is not always
+    # available: "Worked with PostgreSQL to store and manage application data" surrounds
+    # PostgreSQL with filler, so its only meaningful pairs are "manage application" and
+    # "application data". A good question about what they did with PostgreSQL was refused
+    # three times out of three for quoting the wrong part of the sentence.
+    return bool(
+        {skill.lower() for skill in named_skills(bullet)}
+        & {skill.lower() for skill in named_skills(question)}
     )
 
 
@@ -339,8 +394,83 @@ def unsupported_technologies(question, task):
     return sorted({skill.lower() for skill in named_skills(question)} - supported)
 
 
+def unsupported_requirement_terms(question, task):
+    """Phrases the question takes from the JOB that the evidence never gave.
+
+    `unsupported_technologies` only sees what `named_skills` recognises, so "API" and "Redis"
+    are caught and "data structures" is not. A real run asked "did you use data structures?"
+    about a React messaging bullet: the phrase came from the posting, the match was inferred
+    through React, and the question put a word in the candidate's mouth. The fit engine used to
+    prevent that by never handing an inferred requirement over as work — the review reads every
+    bullet now, so the guarantee has to live here instead.
+    """
+    evidence = f" {squash(' '.join([task['text'], *(task.get('answers') or [])]))} "
+    asked = f" {squash(question)} "
+    found = []
+    for item in task.get("requirements") or []:
+        label = (item.get("requirement") or "") if isinstance(item, dict) else str(item)
+        # a grouped requirement is a sentence of alternatives; each is its own phrase
+        for part in re.split(r"\bor\b|,|/", label.lower()):
+            phrase = squash(part).strip()
+            if len(phrase.split()) < 2:
+                continue                  # one word is `named_skills`'s job, not this one
+            if f" {phrase} " in asked and f" {phrase} " not in evidence:
+                found.append(phrase)
+    return sorted(set(found))
+
+
 def _nulls(result, *fields):
     return all(result.get(field) in (None, "") for field in fields)
+
+
+def _ask_problems(result, task, ignore_instruction=False):
+    """Everything wrong with this as a question, worst first, or [] when it is a good one.
+
+    `ignore_instruction` is for reading a REWRITE that is really an ASK: it arrives with an
+    instruction by definition, and that instruction is what gets dropped.
+    """
+    question = result["question"] or ""
+    problems = []
+    if not result["doubt_type"]:
+        problems.append("an ask must name the kind of doubt it answers")
+    if not all(_specific(result[field]) for field in (
+        "specific_problem", "missing_fact", "expected_resume_improvement",
+    )):
+        problems.append("an ask must name the problem, the missing fact and what it changes")
+    if not _specific(question) or question.count("?") != 1 or "\n" in question:
+        problems.append("an ask is exactly one question")
+    elif len(question) > MAX_QUESTION_CHARS or len(question.split()) > MAX_QUESTION_WORDS:
+        problems.append("the question is too long to be one question")
+    elif not quotes_bullet(question, task["text"]):
+        problems.append("the question must quote the words of the bullet it is about")
+    elif unsupported_technologies(question, task):
+        problems.append(
+            "the question names what no evidence does: "
+            + ", ".join(unsupported_technologies(question, task))
+        )
+    elif unsupported_requirement_terms(question, task):
+        problems.append(
+            "the question asks the posting's own words back at the candidate: "
+            + ", ".join(unsupported_requirement_terms(question, task))
+        )
+    elif GENERIC_QUESTION.search(question):
+        problems.append("that question asks for impact or elaboration, not one fact")
+    if result["rewrite_instruction"] and not ignore_instruction:
+        problems.append("an ask does not also carry a rewrite instruction")
+    return problems
+
+
+def unavailable(reason):
+    """A bullet nobody reviewed. Every field a review would carry is empty, and the decision
+    is not one of `DECISIONS` — so code that switches on KEEP/REWRITE/ASK cannot mistake it
+    for a judgment, which is exactly what used to happen."""
+    return {
+        "decision": REVIEW_UNAVAILABLE, "requirement": None, "relevance_reason": None,
+        "doubt_type": None, "specific_problem": None, "anchor": None, "missing_fact": None,
+        "question": None, "expected_resume_improvement": None, "improvement_level": None,
+        "rewrite_instruction": None, "facts_to_preserve": [], "established_facts": [],
+        "decision_reason": None, "downgraded": None, "unavailable_reason": reason,
+    }
 
 
 def validate(raw, task):
@@ -348,8 +478,14 @@ def validate(raw, task):
 
     An ASK that cannot show its work becomes a REWRITE when the review also described a safe
     evidence-only improvement, and a KEEP otherwise.
+
+    Nothing at all is not a keep. A bullet the model left out of an otherwise valid response
+    was read as "no change needed" here, so a response that silently dropped half its bullets
+    was indistinguishable from one that approved them. It is now unavailable, and the caller
+    retries it.
     """
-    raw = raw if isinstance(raw, dict) else {}
+    if not isinstance(raw, dict) or not raw:
+        return unavailable("the review did not come back for this bullet")
     doubt = raw.get("recruiter_doubt") if isinstance(raw.get("recruiter_doubt"), dict) else {}
     relevance = raw.get("job_relevance") if isinstance(raw.get("job_relevance"), dict) else {}
     result = {
@@ -362,6 +498,14 @@ def validate(raw, task):
         "missing_fact": _text(raw.get("missing_fact")) or None,
         "question": _text(raw.get("question")) or None,
         "expected_resume_improvement": _text(raw.get("expected_resume_improvement")) or None,
+        # Unreadable or absent stays None — unranked, and ranked last. `medium` was worse than
+        # it looked: a review that said nothing about value would have outranked one that
+        # honestly said `low`, so silence bought a question a better place than a real answer.
+        # An unranked ask is not refused, only asked after every ask that earned its place.
+        "improvement_level": (
+            _text(raw.get("improvement_level")).lower()
+            if _text(raw.get("improvement_level")).lower() in IMPROVEMENT_LEVELS else None
+        ),
         "rewrite_instruction": _text(raw.get("rewrite_instruction")) or None,
         "facts_to_preserve": [_text(f) for f in raw.get("facts_to_preserve") or [] if _text(f)][:10],
         "established_facts": [
@@ -382,35 +526,28 @@ def validate(raw, task):
         result["decision"] = REWRITE if safe_rewrite else KEEP
 
     if result["decision"] == ASK:
-        question = result["question"] or ""
-        problems = []
-        if not result["doubt_type"]:
-            problems.append("an ask must name the kind of doubt it answers")
-        if not all(_specific(result[field]) for field in (
-            "specific_problem", "missing_fact", "expected_resume_improvement",
-        )):
-            problems.append("an ask must name the problem, the missing fact and what it changes")
-        if not _specific(question) or question.count("?") != 1 or "\n" in question:
-            problems.append("an ask is exactly one question")
-        elif len(question) > MAX_QUESTION_CHARS or len(question.split()) > MAX_QUESTION_WORDS:
-            problems.append("the question is too long to be one question")
-        elif not quotes_bullet(question, task["text"]):
-            problems.append("the question must quote the words of the bullet it is about")
-        elif unsupported_technologies(question, task):
-            problems.append(
-                "the question names what no evidence does: "
-                + ", ".join(unsupported_technologies(question, task))
-            )
-        elif GENERIC_QUESTION.search(question):
-            problems.append("that question asks for impact or elaboration, not one fact")
-        if result["rewrite_instruction"]:
-            problems.append("an ask does not also carry a rewrite instruction")
+        problems = _ask_problems(result, task)
         if problems:
             downgrade(problems[0])
+    # There WAS a conversion here: a REWRITE carrying a contribution doubt and a question was
+    # re-read as an ASK, because one measured case ("Created backend functionality to support
+    # resume tailoring") shipped an instruction no editor could follow. It is gone. Reordering
+    # the prompt to read the bullet before the job fixed that case at the source — the reviewer
+    # now chooses ASK itself, three runs out of three — and the conversion went on to turn
+    # "Was responsible for the creation of REST API endpoints in Python Flask" into a question
+    # about which endpoints they built. Asking for a fact the bullet already states is the
+    # exact failure this redesign exists to remove, so the cure was worse than the disease.
     elif result["decision"] == REWRITE:
         if not _specific(result["rewrite_instruction"]) or not _specific(result["expected_resume_improvement"]):
             result["decision"], result["downgraded"] = KEEP, "a rewrite must name the change it makes"
-        elif not anchor_is_usable(result["anchor"], task["text"]):
+        elif not any(
+            anchor_is_usable(result["anchor"], source)
+            for source in (task["text"], *(task.get("answers") or []))
+        ):
+            # The answer counts as a source for the anchor. When this run's answer supplies
+            # the new content, the model names that content — "PostgreSQL schema" — and the
+            # rewrite it had correctly built from the user's own words was refused for not
+            # quoting a bullet that does not contain them yet.
             result["decision"], result["downgraded"] = KEEP, "a rewrite must quote the words it fixes"
         elif not _nulls(result, "missing_fact", "question"):
             # The instruction is sound; the model also filled the ask fields. That is schema
@@ -420,8 +557,17 @@ def validate(raw, task):
 
     if result["decision"] == KEEP:
         for field in ("missing_fact", "question", "expected_resume_improvement",
-                      "rewrite_instruction"):
+                      "rewrite_instruction", "improvement_level"):
             result[field] = None
+        if result["downgraded"]:
+            # `decision_reason` is the model's case for the decision it did NOT get, and the
+            # user reads it as the reason their bullet was left alone. It said "the bullet is
+            # relevant but vague; clarifying the specific APIs would significantly enhance the
+            # candidate's qualifications" — under a KEEP. Whoever kept it did not think that.
+            result["decision_reason"] = (
+                "The review proposed work its own evidence did not support "
+                f"({result['downgraded']}), so the bullet is unchanged."
+            )
     if result["decision"] != ASK:
         result["question"] = result["missing_fact"] = None
     return result
@@ -436,7 +582,9 @@ def build_tasks(cur, user_id, run_id, assessment, bullet_ids):
     claim it — and sorted, so the order a posting lists its requirements in cannot change the
     input, and so cannot change the decision.
     """
-    bullet_ids = sorted({str(value) for value in bullet_ids if value})
+    # Deduped, but in the order given: that order is the resume's, and it decides which
+    # candidate is worked first. Sorting here ordered the run's work by UUID.
+    bullet_ids = list(dict.fromkeys(str(value) for value in bullet_ids if value))
     if not bullet_ids:
         return []
 
@@ -557,7 +705,7 @@ def request_review(job, tasks, budget=None, model=None):
 
 
 def review(job, tasks, budget=None, model=None):
-    """{bullet_id: validated review}. A bullet the model skipped is kept.
+    """{bullet_id: validated review}. A bullet the model skipped comes back unavailable.
 
     Raises `ReviewUnavailable` when nothing usable came back: what an unavailable review means
     is the caller's decision, and "keep everything" is a decision only a caller may make.
@@ -572,6 +720,55 @@ def review(job, tasks, budget=None, model=None):
     }
 
 
+def chunks(tasks, size=CHUNK_SIZE):
+    size = max(1, size)
+    return [tasks[i:i + size] for i in range(0, len(tasks), size)]
+
+
+def _missing(chunk, reviews):
+    return [
+        task for task in chunk
+        if (reviews.get(task["bullet_id"]) or {}).get("decision") == REVIEW_UNAVAILABLE
+    ]
+
+
+def review_bullets(job, tasks, budget=None, model=None, size=CHUNK_SIZE, on_chunk=None):
+    """Review a whole pool in chunks, so one bad response costs one chunk.
+
+    A chunk is retried once when the call fails outright *or* when the response came back
+    valid but short some of its bullets — the second case used to be invisible. Whatever is
+    still missing after the retry stays `REVIEW_UNAVAILABLE`; nothing here turns a failure
+    into a decision.
+
+    `on_chunk(index, chunk, reviews)` is called after each chunk with that chunk's results, so
+    a caller can persist them before the next call is made. It is called outside any cursor
+    this module holds — it holds none.
+    """
+    results = {}
+    for index, chunk in enumerate(chunks(tasks, size), start=1):
+        reviews, failure = {}, None
+        for attempt in (1, 2):
+            pending = _missing(chunk, reviews) if reviews else chunk
+            try:
+                reviews.update(review(job, pending, budget=budget, model=model))
+                failure = None
+            except ReviewUnavailable as exc:
+                failure = str(exc)
+                logger.warning("review chunk %d attempt %d failed: %s", index, attempt, exc)
+            if not failure and not _missing(chunk, reviews):
+                break
+        for task in chunk:
+            reviews.setdefault(task["bullet_id"], unavailable(failure or "no review came back"))
+        for task in _missing(chunk, reviews):
+            reviews[task["bullet_id"]]["unavailable_reason"] = (
+                failure or "the review did not come back for this bullet, twice"
+            )
+        results.update(reviews)
+        if on_chunk:
+            on_chunk(index, chunk, {task["bullet_id"]: reviews[task["bullet_id"]] for task in chunk})
+    return results
+
+
 # ── the record ───────────────────────────────────────────────────────────────
 # Like `evidence_supplied`, a row the server wrote rather than a tool the model called: replay
 # and the user-facing trace both leave it out, and a resumed run reads it back instead of
@@ -580,7 +777,30 @@ def review(job, tasks, budget=None, model=None):
 REVIEW = "bullet_review"
 
 
-def record(cur, run_id, tasks, reviews):
+POOL = f"{REVIEW}:pool"
+
+
+def record_pool(cur, run_id, bullet_ids):
+    """Write down which bullets this run intends to review, before any of them are.
+
+    Without it, recovery cannot tell a complete review from a crash after the first chunk:
+    both leave stored reviews behind, and the only difference is what is missing from a set
+    nobody wrote down.
+    """
+    cur.execute(
+        """
+        INSERT INTO tool_calls (run_id, step_number, call_id, tool_name, arguments, result, status)
+        VALUES (%s, 1, %s, %s, %s, %s, 'completed')
+        ON CONFLICT (run_id, call_id) DO NOTHING
+        """,
+        (run_id, POOL, REVIEW,
+         json.dumps({"pool": [str(value) for value in bullet_ids]}), json.dumps({})),
+    )
+
+
+def record(cur, run_id, tasks, reviews, chunk=None):
+    """One row per chunk. `chunk=None` writes the single-call row a whole-pool review uses."""
+    call_id = REVIEW if chunk is None else f"{REVIEW}:{chunk}"
     cur.execute(
         """
         INSERT INTO tool_calls (run_id, step_number, call_id, tool_name, arguments, result, status)
@@ -588,18 +808,57 @@ def record(cur, run_id, tasks, reviews):
         ON CONFLICT (run_id, call_id) DO NOTHING
         """,
         (
-            run_id, REVIEW, REVIEW,
+            run_id, call_id, REVIEW,
             json.dumps({"bullets": [task["bullet_id"] for task in tasks]}),
             json.dumps({"reviews": reviews}),
         ),
     )
 
 
-def load(cur, run_id):
-    """This run's reviews, or None when it never had any — an older run keeps its own rules."""
+def _rows(cur, run_id):
     cur.execute(
-        "SELECT result FROM tool_calls WHERE run_id = %s AND tool_name = %s LIMIT 1",
+        "SELECT call_id, arguments, result FROM tool_calls "
+        "WHERE run_id = %s AND tool_name = %s ORDER BY call_id",
         (run_id, REVIEW),
     )
-    row = cur.fetchone()
-    return (row[0] or {}).get("reviews") if row else None
+    return cur.fetchall()
+
+
+def load(cur, run_id):
+    """This run's reviews, merged across chunks, or None when it never had any.
+
+    None means an older run, or one that failed before its first chunk landed; either keeps
+    its own rules. An empty dict would say "reviewed, nothing to do", which is a different
+    claim.
+    """
+    merged, found = {}, False
+    for call_id, _arguments, result in _rows(cur, run_id):
+        if call_id == POOL:
+            continue
+        found = True
+        merged.update((result or {}).get("reviews") or {})
+    return merged if found else None
+
+
+def progress(cur, run_id):
+    """What this run still owes: `{reviews, pool, missing, unavailable}`.
+
+    `missing` is a bullet in the pool with no stored review at all — the crash case. It is
+    kept apart from `unavailable`, which is a bullet that was reviewed twice and came back
+    empty both times: one is work to redo, the other is work already given up on.
+    """
+    pool, merged = [], {}
+    for call_id, arguments, result in _rows(cur, run_id):
+        if call_id == POOL:
+            pool = [str(value) for value in (arguments or {}).get("pool") or []]
+        else:
+            merged.update((result or {}).get("reviews") or {})
+    return {
+        "reviews": merged,
+        "pool": pool,
+        "missing": [bullet_id for bullet_id in pool if bullet_id not in merged],
+        "unavailable": sorted(
+            bullet_id for bullet_id, review_result in merged.items()
+            if (review_result or {}).get("decision") == REVIEW_UNAVAILABLE
+        ),
+    }
