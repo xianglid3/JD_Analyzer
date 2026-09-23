@@ -8,6 +8,7 @@ import ProtectedRoute from './components/ProtectedRoute'
 import ToastHost from './components/Toast'
 
 import LoginPage from './pages/LoginPage'
+import LandingPage from './pages/LandingPage'
 import DashboardPage from './pages/DashboardPage'
 import SignupPage from './pages/SignupPage'
 import ResumePage from './pages/ResumePage'
@@ -23,6 +24,7 @@ createRoot(document.getElementById('root')).render(
       <ToastHost />
       <BrowserRouter>
         <Routes>
+          <Route path="/" element={<LandingPage />} />
           
           <Route path="/login" element={<LoginPage />} />
           <Route path="/signup" element={<SignupPage />} />
