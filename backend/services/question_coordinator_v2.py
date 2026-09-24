@@ -61,9 +61,10 @@ def automatic_rejection_reason(candidate):
         return None
     bullet = _text(candidate.get("target_bullet"))
     question = _text(candidate.get("question"))
+    detailed_list = len(squash(bullet).split()) >= 12 and bullet.count(",") >= 2
     if (
         DIRECT_OWNERSHIP.search(bullet)
-        and CONCRETE_SECOND_CLAUSE.search(bullet)
+        and (CONCRETE_SECOND_CLAUSE.search(bullet) or detailed_list)
         and BROAD_OWNERSHIP_QUESTION.search(question)
     ):
         return "low_value"

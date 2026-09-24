@@ -713,14 +713,24 @@ def evaluation_problems(result, expected):
 # ── the call ─────────────────────────────────────────────────────────────────
 
 def request_review(job, tasks, budget=None, model=None, ceiling=STAGE_1_EVAL_CEILING,
-                   decision=True):
+                   decision=True, correction=None):
     from services.openai_services import complete_json
 
+    messages = [
+        {"role": "system", "content": prompt_for(ceiling, decision=decision)},
+        {"role": "user", "content": json.dumps(payload(job, tasks))},
+    ]
+    if correction:
+        messages.append({
+            "role": "user",
+            "content": (
+                "Your previous response could not be used: " + str(correction) + ". "
+                "Return exactly one review entry for every supplied bullet, inside the required "
+                "top-level reviews array. Follow the KEEP | REWRITE | ASK consistency rules."
+            ),
+        })
     response = complete_json(
-        [
-            {"role": "system", "content": prompt_for(ceiling, decision=decision)},
-            {"role": "user", "content": json.dumps(payload(job, tasks))},
-        ],
+        messages,
         model=model or MODEL, budget=budget, kind="tailoring_review", timeout=60,
     )
     content = response.choices[0].message.content or "{}"
@@ -732,11 +742,25 @@ def request_review(job, tasks, budget=None, model=None, ceiling=STAGE_1_EVAL_CEI
         raise ReviewUnavailable(
             f"the model's response was not valid JSON ({len(content)} chars)"
         ) from exc
-    return data.get("reviews") or []
+    reviews = data.get("reviews")
+    if isinstance(reviews, list):
+        return reviews
+    # JSON mode guarantees an object, not our wrapper. For one server-known target, a direct
+    # review object is unambiguous and still goes through the full decision/schema validator.
+    if len(tasks) == 1 and any(
+        key in data for key in ("decision", "question_candidates",
+                                "rewrite_from_existing_evidence")
+    ):
+        return [data]
+    kind = type(reviews).__name__ if "reviews" in data else "missing"
+    keys = ", ".join(sorted(map(str, data.keys()))) or "none"
+    raise ReviewUnavailable(
+        f"the model returned reviews as {kind}, not an array (top-level keys: {keys})"
+    )
 
 
 def review(job, tasks, budget=None, model=None, ceiling=STAGE_1_EVAL_CEILING,
-           decision=True):
+           decision=True, correction=None):
     """{bullet_id: validated review}. A bullet the model skipped comes back unavailable.
 
     Production deliberately sends one bullet per call. In that case the server already knows
@@ -747,7 +771,7 @@ def review(job, tasks, budget=None, model=None, ceiling=STAGE_1_EVAL_CEILING,
     if not tasks:
         return {}
     raw = request_review(job, tasks, budget=budget, model=model, ceiling=ceiling,
-                         decision=decision)
+                         decision=decision, correction=correction)
     if not isinstance(raw, list):
         return {
             task["bullet_id"]: unavailable(
@@ -788,7 +812,7 @@ def _missing(chunk, reviews):
 
 def _review_one(job, chunk, budget, model, ceiling):
     """Review one bullet with ordinary and rate-limit retries, without shared state or writes."""
-    reviews, failure = {}, None
+    reviews, failure, correction = {}, None, None
     delay = RATE_LIMIT_BACKOFF
     limited = 0
     attempt = 0
@@ -797,8 +821,19 @@ def _review_one(job, chunk, budget, model, ceiling):
         try:
             reviews.update(review(
                 job, pending, budget=budget, model=model, ceiling=ceiling,
+                correction=correction,
             ))
-            failure = None
+            missing = _missing(chunk, reviews)
+            if missing:
+                reasons = [
+                    (reviews.get(task["bullet_id"]) or {}).get("unavailable_reason")
+                    for task in missing
+                ]
+                failure = "; ".join(reason for reason in reasons if reason)
+                failure = failure or "the review did not come back for this bullet"
+                correction = failure
+            else:
+                failure = None
         except Exception as exc:
             failure = str(exc)
             if is_rate_limit(exc):
@@ -813,14 +848,16 @@ def _review_one(job, chunk, budget, model, ceiling):
             if not isinstance(exc, ReviewUnavailable):
                 raise
             logger.warning("v2 review attempt %d failed: %s", attempt + 1, exc)
+            correction = failure
         attempt += 1
         if not failure and not _missing(chunk, reviews):
             break
     for task in chunk:
         reviews.setdefault(task["bullet_id"], unavailable(failure or "no review came back"))
     for task in _missing(chunk, reviews):
-        reviews[task["bullet_id"]]["unavailable_reason"] = (
-            failure or "the review did not come back for this bullet, twice"
+        existing = reviews[task["bullet_id"]].get("unavailable_reason")
+        reviews[task["bullet_id"]]["unavailable_reason"] = failure or existing or (
+            "the review did not come back for this bullet, twice"
         )
     return {task["bullet_id"]: reviews[task["bullet_id"]] for task in chunk}
 

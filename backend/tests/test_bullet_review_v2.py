@@ -12,8 +12,12 @@ because a real run broke them:
   Neither reinterpretation is safe, so the response is retried and then abandoned.
 """
 
+import json
+from types import SimpleNamespace
+
 import pytest
 
+from services import bullet_review_v2 as reviewer
 from services.bullet_review import REVIEW_UNAVAILABLE
 from services.bullet_review_v2 import (
     MAX_QUESTION_CANDIDATES,
@@ -447,6 +451,48 @@ def test_one_bullet_review_reports_an_empty_model_result(monkeypatch):
     )
 
     result = review(("Backend Engineer", "Acme", "", []), [TASK])
+
+    assert result["b"]["decision"] == REVIEW_UNAVAILABLE
+    assert result["b"]["unavailable_reason"] == "the model returned no review entry"
+
+
+def test_one_bullet_review_accepts_an_unwrapped_review_object(monkeypatch):
+    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        content=json.dumps(GOOD),
+    ))])
+    monkeypatch.setattr("services.openai_services.complete_json", lambda *_a, **_k: response)
+
+    result = review(("Backend Engineer", "Acme", "", []), [TASK])
+
+    assert result["b"]["decision_claimed"] == "ASK"
+    assert result["b"]["question_candidates"][0]["id"] == "c1"
+
+
+def test_retry_explains_an_empty_review_and_recovers(monkeypatch):
+    calls = []
+
+    def request(*_args, **kwargs):
+        calls.append(kwargs.get("correction"))
+        return [] if len(calls) == 1 else [{**GOOD, "decision": "KEEP",
+                                            "decision_reason": "The contribution is concrete.",
+                                            "question_candidates": []}]
+
+    monkeypatch.setattr(reviewer, "request_review", request)
+    result = reviewer.review_bullets(
+        ("Security Engineer", "Acme", "", []), [TASK], concurrency=1,
+    )
+
+    assert calls[0] is None
+    assert calls[1] == "the model returned no review entry"
+    assert result["b"]["decision_claimed"] == "KEEP"
+
+
+def test_two_empty_reviews_preserve_the_specific_failure_reason(monkeypatch):
+    monkeypatch.setattr(reviewer, "request_review", lambda *_a, **_k: [])
+
+    result = reviewer.review_bullets(
+        ("Security Engineer", "Acme", "", []), [TASK], concurrency=1,
+    )
 
     assert result["b"]["decision"] == REVIEW_UNAVAILABLE
     assert result["b"]["unavailable_reason"] == "the model returned no review entry"

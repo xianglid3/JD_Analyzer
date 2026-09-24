@@ -215,11 +215,28 @@ def test_automatic_filter_is_narrow_to_redundant_ownership_questions():
     short = {**concrete, "target_bullet": "Built an app."}
     vague = {**concrete, "target_bullet": "Worked on an LLM platform using Python."}
     mechanism = {**concrete, "recruiter_doubt_type": "implementation"}
+    detailed_list = {
+        **concrete,
+        "target_bullet": (
+            "Implemented browser-side key exchange, derivation, authenticated encryption, key "
+            "wrapping and rotation, and signatures using ECDH, HKDF, AES-GCM, and Ed25519."
+        ),
+        "question": (
+            "What specific components did you personally implement for the key exchange and "
+            "encryption processes?"
+        ),
+    }
+    vague_list = {
+        **concrete,
+        "target_bullet": "Built features, fixes, and improvements.",
+    }
 
     assert coordinator.automatic_rejection_reason(concrete) == "low_value"
     assert coordinator.automatic_rejection_reason(short) is None
     assert coordinator.automatic_rejection_reason(vague) is None
     assert coordinator.automatic_rejection_reason(mechanism) is None
+    assert coordinator.automatic_rejection_reason(detailed_list) == "low_value"
+    assert coordinator.automatic_rejection_reason(vague_list) is None
 
 
 def test_request_selection_filters_redundant_ownership_before_the_model(monkeypatch):

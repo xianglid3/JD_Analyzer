@@ -333,6 +333,23 @@
           }]
         },
         {
+          "bullet_id": "crypto-pipeline",
+          "entry": "ChatRoom — End-to-End Encrypted Messaging Platform",
+          "text": "Implemented browser-side key exchange, derivation, authenticated encryption, key wrapping/rotation, and signatures using ECDH, HKDF, AES-GCM, AES-KW, Ed25519, and PBKDF2 for DMs, group channels, and anonymous messaging.",
+          "siblings": [],
+          "answers": [],
+          "question_candidates": [{
+            "id": "c1",
+            "question": "What specific components did you personally implement for the key exchange and encryption processes?",
+            "missing_fact": "specific components implemented",
+            "recruiter_doubt_type": "contribution",
+            "why_it_matters_for_this_job": "The role values secure backend implementation.",
+            "expected_resume_change": "The bullet could specify the exact components implemented.",
+            "priority": "high",
+            "requirement_reference": null
+          }]
+        },
+        {
           "bullet_id": "postgres",
           "entry": "JobMatcha — Developer",
           "text": "Worked on the PostgreSQL backend and database functionality using psycopg2, full-text search, locking, and indexes to support application data and resume matching.",
@@ -355,7 +372,8 @@
         "required_selected_ids": ["postgres:c1"],
         "required_rejections": {
           "ai-platform:c1": "low_value",
-          "idempotency:c1": "low_value"
+          "idempotency:c1": "low_value",
+          "crypto-pipeline:c1": "low_value"
         }
       }
     },
