@@ -539,6 +539,19 @@ function EditCard({ edit, onDecide, busy, pending, error }) {
         <p className="mt-1 text-sm leading-6 text-ink">{edit.proposed_text}</p>
       </div>
 
+      {edit.validation_warnings?.length > 0 && (
+        <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs leading-5 text-charcoal">
+          <p className="font-medium text-ink">Check before accepting</p>
+          <ul className="mt-1 list-disc space-y-1 pl-4">
+            {edit.validation_warnings.map((warning) => (
+              <li key={`${warning.code}:${warning.message}`}>
+                {warning.message} {warning.evidence}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* The one category of edit with no positive evidence behind it. The factual checks
           passed, so no technology or number was lost — but those are not every fact, and a
           rewrite can drop "Pitt's FSAE EV driverless program" and still arrive here. Saying so
@@ -605,7 +618,7 @@ function EditCard({ edit, onDecide, busy, pending, error }) {
   )
 }
 
-function DetailRequestCard({ request, onResolve, busy, error }) {
+function DetailRequestCard({ request, onResolve, busy, error, showContext = true }) {
   const [answer, setAnswer] = useState('')
   const isThisQuestion = busy && request.pending
   // "Did you use X here?" is a different question from "how big was it", and answering no is
@@ -613,10 +626,14 @@ function DetailRequestCard({ request, onResolve, busy, error }) {
   const asksAboutUse = request.intent === 'establish_use' 
 
   return (
-    <article className="surface-card p-5">
-      <p className="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">{request.requirement}</p>
-      <h3 className="mt-2 text-base font-medium text-ink">{request.question}</h3>
-      {request.bullet_text && (
+    <article className={showContext ? 'surface-card p-5' : 'border-t border-border pt-4 first:border-t-0 first:pt-0'}>
+      {showContext && (
+        <p className="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">{request.requirement}</p>
+      )}
+      <h3 className={showContext ? 'mt-2 text-base font-medium text-ink' : 'text-base font-medium text-ink'}>
+        {request.question}
+      </h3>
+      {showContext && request.bullet_text && (
         <div className="mt-3 border-l-2 border-border pl-3">
           <p className="text-xs leading-5 text-muted">“{request.bullet_text}”</p>
         </div>
@@ -689,6 +706,24 @@ function DetailRequestCard({ request, onResolve, busy, error }) {
       {error && <InlineAlert className="mt-3">{error.message}</InlineAlert>}
     </article>
   )
+}
+
+function groupDetailRequests(requests) {
+  const groups = new Map()
+  for (const request of requests || []) {
+    // An old unscoped row must stand alone. Grouping all NULL bullet ids would imply that
+    // unrelated questions describe one piece of work.
+    const key = request.bullet_id || `question:${request.id}`
+    if (!groups.has(key)) groups.set(key, { key, context: request, requests: [] })
+    groups.get(key).requests.push(request)
+  }
+  return [...groups.values()]
+    .map((group) => ({
+      ...group,
+      pending: group.requests.filter((request) => request.status === 'pending'),
+      resolved: group.requests.filter((request) => request.status !== 'pending').length,
+    }))
+    .filter((group) => group.pending.length > 0)
 }
 
 function compositionDescription(composition) {
@@ -1071,6 +1106,7 @@ export default function TailoringRunPage() {
   const skillsToSurface = (run.outcomes || []).filter((item) => item.action === 'surface_skill')
   const keywordOnly = (run.outcomes || []).filter((item) => item.action === 'only_in_skills')
   const detailRequests = (run.detail_requests || []).filter((request) => request.status === 'pending')
+  const detailGroups = groupDetailRequests(run.detail_requests || [])
   // matches RESUMABLE_ERRORS on the backend: the worker died, rather than the run being done
   const resumable = run.status === 'failed'
     && ['abandoned', 'tool_execution_failed', 'model_call_failed'].includes(run.error_code)
@@ -1080,7 +1116,9 @@ export default function TailoringRunPage() {
     <header className="mb-6">
       <p className="eyebrow">Tailoring</p>
       <h1 className="page-heading mt-2">
-        {running ? 'Working through the posting' : waiting ? 'One detail needs your input' : 'Proposed changes'}
+        {running ? 'Working through the posting' : waiting
+          ? `${detailRequests.length === 1 ? 'One detail needs' : `${detailRequests.length} details need`} your input`
+          : 'Proposed changes'}
       </h1>
       <p className="mt-2 max-w-2xl text-sm text-muted">
         Every proposal cites bullets from your own resume, and any technology or number it names is
@@ -1137,20 +1175,41 @@ export default function TailoringRunPage() {
                 </h1>
                 <p className="mt-2 text-sm leading-6 text-muted">
                   Tailoring paused rather than guessing. Answer what you know or skip it — the
-                  same run picks straight back up.
+                  same run picks straight back up. If you skip every question for a bullet, that
+                  bullet stays unchanged.
                 </p>
                 <div className="mt-6 space-y-4">
-                  {detailRequests.map((request) => (
-                    <DetailRequestCard
-                      key={request.id}
-                      request={{
-                        ...request,
-                        pending: detailMutation.variables?.questionId === request.id,
-                      }}
-                      busy={detailMutation.isPending}
-                      error={detailMutation.variables?.questionId === request.id ? detailMutation.error : null}
-                      onResolve={(questionId, payload) => detailMutation.mutate({ questionId, payload })}
-                    />
+                  {detailGroups.map((group) => (
+                    <section key={group.key} className="surface-card p-5">
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <p className="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">
+                          {group.context.requirement}
+                        </p>
+                        <p className="text-xs text-muted">
+                          {group.resolved} of {group.requests.length} answered or skipped
+                        </p>
+                      </div>
+                      {group.context.bullet_text && (
+                        <div className="mt-3 border-l-2 border-border pl-3">
+                          <p className="text-xs leading-5 text-muted">“{group.context.bullet_text}”</p>
+                        </div>
+                      )}
+                      <div className="mt-5 space-y-5">
+                        {group.pending.map((request) => (
+                          <DetailRequestCard
+                            key={request.id}
+                            showContext={false}
+                            request={{
+                              ...request,
+                              pending: detailMutation.variables?.questionId === request.id,
+                            }}
+                            busy={detailMutation.isPending}
+                            error={detailMutation.variables?.questionId === request.id ? detailMutation.error : null}
+                            onResolve={(questionId, payload) => detailMutation.mutate({ questionId, payload })}
+                          />
+                        ))}
+                      </div>
+                    </section>
                   ))}
                 </div>
               </section>

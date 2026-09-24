@@ -160,6 +160,53 @@ def unsupported_claims(proposed_text, evidence_texts, approved=frozenset()):
     return skills + unsupported_numbers(proposed_text, evidence_texts)
 
 
+def explicit_answer_contradictions(proposed_text, answers=()):
+    """Concrete claims an answer explicitly denies.
+
+    Answers are supporting evidence, but the presence of a word is not affirmation: "I did not
+    use Redis" contains Redis. This deliberately recognizes only direct negation and literal
+    quantities. Broader semantic disagreement belongs in review, not a deterministic hard block.
+    """
+    contradictions = []
+    proposed_skills = set(named_skills(proposed_text))
+    aliases = {
+        skill: sorted(
+            {term for term in vocabulary() if normalize_skill(term) == skill},
+            key=len,
+            reverse=True,
+        )
+        for skill in proposed_skills
+    }
+    for answer in answers:
+        lowered = (answer or "").lower()
+        for skill, terms in aliases.items():
+            for term in terms:
+                phrase = re.escape(term).replace(r"\ ", r"[\s/-]+")
+                denied = re.compile(
+                    r"\b(?:did\s+not|didn't|never)\s+"
+                    r"(?:(?:personally|actually)\s+)?"
+                    r"(?:use|used|work(?:ed)?\s+with)\s+"
+                    r"(?:(?:a|an|the)\s+)?" + phrase + r"\b",
+                    re.IGNORECASE,
+                )
+                if denied.search(lowered):
+                    contradictions.append(skill)
+                    break
+
+        for raw in NUMBER.findall(proposed_text or ""):
+            token = raw.strip()
+            if not token:
+                continue
+            denied_number = re.compile(
+                r"\b(?:not|wasn't|was\s+not)\s+"
+                r"(?:(?:about|approximately)\s+)?" + re.escape(token) + r"(?![A-Za-z0-9])",
+                re.IGNORECASE,
+            )
+            if denied_number.search(answer or ""):
+                contradictions.append(token)
+    return list(dict.fromkeys(contradictions))
+
+
 def _words(text):
     return index(text)["whole"]
 
@@ -585,22 +632,79 @@ def rewrite_quality_issue(original_text, proposed_text, surfacing=None, entry_is
     `answers` are the user's own answers this rewrite may draw on; only they can license a
     result clause the bullet did not have.
     """
+    findings = rewrite_validation_findings(
+        original_text, proposed_text, surfacing=surfacing,
+        entry_is_ongoing=entry_is_ongoing, answers=answers,
+    )
+    repairs = findings["repair_requests"]
+    return repairs[0]["message"] if repairs else None
+
+
+def _repair(code, message, evidence):
+    """A concrete concern, not a verdict that the proposal is false.
+
+    These checks are deliberately represented as data. The strict legacy path may still refuse
+    the first one, while the review path can ask for one repair and then show every unresolved
+    concern to the user. Keeping the evidence next to the message prevents a vague warning such
+    as "this might be inaccurate" from masquerading as useful review.
+    """
+    return {"code": code, "message": message, "evidence": evidence}
+
+
+def rewrite_validation_findings(original_text, proposed_text, surfacing=None,
+                                entry_is_ongoing=False, answers=(), unsupported=(),
+                                contradictions=()):
+    """Return every deterministic rewrite finding, classified by certainty.
+
+    The functions below detect useful warning signals, but their regexes do not prove semantic
+    falsity. For example, dropping a technology can be a good relevance edit, and changing tense
+    can be correct even when an entry has no end date. They therefore request one repair and may
+    later become user-visible warnings. Concrete unsupported technologies and quantities are
+    checked by ``unsupported_claims`` at the tool boundary and remain hard blocks there.
+    """
+    findings = {"hard_blocks": [], "repair_requests": [], "review_warnings": []}
+    for claim in unsupported:
+        findings["hard_blocks"].append({
+            "code": "unsupported_concrete_claim",
+            "message": f"{claim} does not appear in the evidence you cited",
+            "evidence": "Checked against the cited bullet, current-run answers, and approved rewrites.",
+        })
+    for claim in contradictions:
+        findings["hard_blocks"].append({
+            "code": "explicit_answer_contradiction",
+            "message": f"{claim} is explicitly denied by an answer for this bullet",
+            "evidence": "A current-run answer directly says this technology was not used or this quantity is incorrect.",
+        })
+    repairs = findings["repair_requests"]
     original_words = _words(original_text)
     proposed_words = _words(proposed_text)
     if original_words == proposed_words:
-        return "the proposed edit is the same as the current bullet"
+        repairs.append(_repair(
+            "unchanged",
+            "the proposed edit is the same as the current bullet",
+            "The normalized words in the source bullet and proposal are identical.",
+        ))
 
     inflated = ownership_inflation(original_text, proposed_text, answers)
     if inflated:
-        return inflated
+        repairs.append(_repair(
+            "ownership_change", inflated,
+            "The source uses shared-credit language that the proposal may strengthen.",
+        ))
 
     regressed = tense_regression(original_text, proposed_text, entry_is_ongoing)
     if regressed:
-        return regressed
+        repairs.append(_repair(
+            "tense_change", regressed,
+            "The resume entry has no finished date and the source reads as ongoing work.",
+        ))
 
     padded = abstraction_padding(original_text, proposed_text)
     if padded:
-        return padded
+        repairs.append(_repair(
+            "abstract_language", padded,
+            "The proposal adds an abstract engineering noun without a concrete referent.",
+        ))
 
     # There was a word-count floor here, refusing any rewrite under 80% of the original's
     # length. It was a proxy for evidence loss, and the two checks below measure evidence loss
@@ -613,43 +717,54 @@ def rewrite_quality_issue(original_text, proposed_text, surfacing=None, entry_is
         # Naming what is missing is not the same as saying what to do about it. The model was
         # told "removes too much detail" three times in one run and kept shortening, because
         # nothing in that sentence says the job is additive.
-        return (
+        repairs.append(_repair(
+            "possible_skill_omission",
             f"the rewrite removes supported detail: {', '.join(sorted(removed_skills))}. "
             f"Keep all of: {', '.join(sorted(original_skills))}. A rewrite may be shorter, but "
-            "not by dropping a technology the bullet had earned"
-        )
+            "not by dropping a technology the bullet had earned",
+            f"The source names {', '.join(sorted(removed_skills))}; the proposal does not.",
+        ))
 
     lost_names = dropped_names(original_text, proposed_text)
     if lost_names:
-        return (
+        repairs.append(_repair(
+            "possible_name_omission",
             f"the rewrite drops names the bullet had: {', '.join(lost_names)}. Keep every "
-            "product, program and tool the bullet names"
-        )
+            "product, program and tool the bullet names",
+            f"The source contains {', '.join(lost_names)}; the proposal does not.",
+        ))
 
     original_numbers = numeric_claims(original_text)
     proposed_numbers = numeric_claims(proposed_text)
     missing_numbers = original_numbers - proposed_numbers
     if missing_numbers:
-        return (
+        formatted = ', '.join(f'{value:g}{suffix}' for value, suffix in sorted(missing_numbers))
+        repairs.append(_repair(
+            "possible_quantity_omission",
             "the rewrite drops a measurable result the bullet already had "
-            f"({', '.join(f'{value:g}{suffix}' for value, suffix in sorted(missing_numbers))}). "
-            "Numbers are the strongest thing on a resume — keep every one of them"
-        )
+            f"({formatted}). Numbers are the strongest thing on a resume — keep every one of them",
+            f"The source contains {formatted}; the proposal does not.",
+        ))
 
     invented_result = added_result_language([original_text], proposed_text, answers)
     if invented_result:
-        return invented_result
+        repairs.append(_repair(
+            "unclear_outcome_support", invented_result,
+            "Result language appears in the proposal but not in the source bullet or answers.",
+        ))
 
     # Reaching here means nothing measurable was lost, so saying it in fewer words counts as
     # an improvement in its own right. It is the weakest of the five and the only one that is
     # not evidence of something added, which is why `compression_only` marks it for the user.
     if not any(improvements(original_text, proposed_text, surfacing).values()):
-        return (
+        repairs.append(_repair(
+            "weak_improvement",
             "the rewrite only changes phrasing; strengthen the action, surface new supported "
             "evidence, or say the same thing in meaningfully fewer words — otherwise leave the "
-            "bullet unchanged"
-        )
-    return None
+            "bullet unchanged",
+            "No stronger action, supported skill, quantity, surfaced fact, or meaningful compression was detected.",
+        ))
+    return findings
 
 
 def merge_quality_issue(original_texts, proposed_text, answers=()):

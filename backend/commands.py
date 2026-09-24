@@ -130,6 +130,22 @@ def register_grounding_report(app):
                 click.echo(f"  refused:  {row['error']}")
 
 
+def register_tailoring_rollout_report(app):
+    import json
+    import click
+
+    @app.cli.command("tailoring-rollout-report")
+    @click.option("--days", default=7, help="How far back to compare pinned V1 and V2 runs.")
+    def tailoring_rollout_report(days):
+        """Compare rollout behavior for the pinned tailoring contracts."""
+        from db import get_cursor
+        from services.tailoring_rollout_report import report
+
+        with get_cursor() as cur:
+            data = report(cur, days)
+        click.echo(json.dumps(data, indent=2, sort_keys=True))
+
+
 def register_tailoring_worker(app):
     import click
 

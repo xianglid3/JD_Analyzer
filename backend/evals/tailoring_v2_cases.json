@@ -1,0 +1,208 @@
+{
+  "_about": "Complete-resume V2 evaluation. Each bullet has a stable key and executable expectations. Paid model calls are owner-run; the fixture never runs in CI.",
+  "resumes": [
+    {
+      "id": "jobmatcha_backend",
+      "job": {
+        "title": "Backend Software Engineer",
+        "company": "Globex",
+        "summary": "Build reliable APIs, PostgreSQL-backed services, background workers, and AI-assisted products.",
+        "requirements": ["python", "api", "postgresql", "background processing", "llm"]
+      },
+      "entries": [
+        {
+          "kind": "project",
+          "organization": "JobMatcha",
+          "title": "Evidence-Grounded Resume Tailoring Platform",
+          "bullets": [
+            {
+              "key": "ai_platform_strong",
+              "text": "Built an LLM-powered job analysis and resume tailoring platform with server-enforced grounding: proposed edits are rejected unless their cited evidence belongs to the user and was retrieved during the same agent run.",
+              "expected": {"actions": ["keep"], "questions": {"min": 0, "max": 0}, "strong_control": true}
+            },
+            {
+              "key": "fastapi_strong",
+              "text": "Designed a FastAPI backend with Supabase and REST APIs for event creation, updates, and geocoded location storage; integrated it with a React/TypeScript calendar and Mapbox interface.",
+              "expected": {"actions": ["keep"], "questions": {"min": 0, "max": 0}, "strong_control": true}
+            },
+            {
+              "key": "postgres_vague",
+              "text": "Worked on the PostgreSQL backend and database functionality using psycopg2, full-text search, locking, and indexes to support application data and resume matching.",
+              "answers": ["Built PostgreSQL-backed storage and queries with psycopg2 for resume, job, and tailoring data. Added normalized skill lookups, full-text search, composite indexes, and database-backed claim and lease fields."],
+              "expected": {"actions": ["ask"], "questions": {"min": 1, "max": 3}, "vague_relevant": true, "edit_after_answer": true, "required_question_concepts": [["personally", "yourself", "build", "change"]], "required_edit_terms": ["postgresql", "psycopg2"], "forbidden_edit_terms": ["50%", "millions"]}
+            },
+            {
+              "key": "worker_vague",
+              "text": "Improved background processing for longer tailoring tasks so they could run more reliably and recover when something went wrong.",
+              "answers": ["Moved long-running tailoring work out of the Flask web process into a separate worker service. Added database-backed job claiming, lease expiration, retry and recovery handling, and idempotency so interrupted jobs can be reclaimed without duplicate LLM work."],
+              "expected": {"actions": ["ask"], "questions": {"min": 1, "max": 3}, "vague_relevant": true, "edit_after_answer": true, "required_question_concepts": [["changes", "did you", "personally"]], "required_edit_terms": ["worker", "flask"], "forbidden_edit_terms": ["50%", "zero failures"]}
+            },
+            {
+              "key": "idempotency_strong",
+              "text": "Implemented reserve-before-spend idempotency for job-draft creation so duplicate requests cannot trigger duplicate LLM calls, with stored-response replay after completion.",
+              "expected": {"actions": ["keep"], "questions": {"min": 0, "max": 0}, "strong_control": true}
+            },
+            {
+              "key": "retail_irrelevant",
+              "text": "Helped customers choose running shoes and handled weekend register closeout.",
+              "expected": {"actions": ["keep"], "questions": {"min": 0, "max": 0}, "irrelevant_control": true}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "robotics_cpp",
+      "job": {
+        "title": "Robotics Software Engineer",
+        "company": "Autonomy Labs",
+        "summary": "Develop C++ perception and controls software for autonomous vehicles using ROS 2 and LiDAR.",
+        "requirements": ["c++", "ros 2", "lidar", "computer vision"]
+      },
+      "entries": [
+        {
+          "kind": "experience",
+          "organization": "Panther Racing Formula SAE",
+          "title": "Software Team Member",
+          "bullets": [
+            {
+              "key": "ros_vague",
+              "text": "Contributing to a work-in-progress ROS 2 autonomous-driving stack in C++ for Pitt's FSAE EV driverless program, focused on cone-perception software.",
+              "answers": ["Worked on the ROS 2 cone-perception pipeline in C++, including LiDAR point-cloud processing, ground removal, Euclidean clustering, cone validation and centroid estimation, plus LiDAR-to-camera projection for camera-based cone color classification."],
+              "expected": {"actions": ["ask"], "questions": {"min": 1, "max": 3}, "vague_relevant": true, "edit_after_answer": true, "required_question_concepts": [["personally", "yourself", "build", "change"]], "required_edit_terms": ["ros 2", "c++", "lidar"]}
+            },
+            {
+              "key": "point_cloud_vague",
+              "text": "Working on Velodyne VLP-16 point-cloud filtering, ground removal, Euclidean clustering, cone validation and centroid estimation, and LiDAR-to-camera projection with camera-based cone-color classification.",
+              "answers": ["Implemented the VLP-16 processing stages that remove ground points, cluster remaining points with Euclidean clustering, filter candidate clusters, and estimate cone centroids."],
+              "expected": {"actions": ["ask"], "questions": {"min": 1, "max": 3}, "vague_relevant": true, "edit_after_answer": true, "required_question_concepts": [["personally", "yourself", "implement"]], "required_edit_terms": ["vlp-16", "euclidean clustering"]}
+            },
+            {
+              "key": "motor_control_strong",
+              "text": "Implemented a C++ steering controller that converts planned curvature into rack commands and clamps output against the vehicle's measured steering limits.",
+              "expected": {"actions": ["keep"], "questions": {"min": 0, "max": 0}, "strong_control": true}
+            },
+            {
+              "key": "sensor_calibration_strong",
+              "text": "Calibrated LiDAR-to-camera transforms and verified projection error against labelled cone images before track testing.",
+              "expected": {"actions": ["keep"], "questions": {"min": 0, "max": 0}, "strong_control": true}
+            },
+            {
+              "key": "helped_vehicle_vague",
+              "text": "Helped develop software for an autonomous vehicle using C++ and ROS 2.",
+              "answers": ["Implemented the ROS 2 node that validates cone clusters and publishes centroid detections to the planning stack."],
+              "expected": {"actions": ["ask"], "questions": {"min": 1, "max": 3}, "vague_relevant": true, "edit_after_answer": true, "required_question_concepts": [["personally", "yourself", "what did you"]], "required_edit_terms": ["ros 2", "cone"]}
+            },
+            {
+              "key": "sales_irrelevant",
+              "text": "Sold team merchandise at race events and tracked cash totals in a spreadsheet.",
+              "expected": {"actions": ["keep"], "questions": {"min": 0, "max": 0}, "irrelevant_control": true}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "web_backend",
+      "job": {
+        "title": "New Grad Backend Engineer",
+        "company": "ShopCo",
+        "summary": "Build Python services, REST APIs, PostgreSQL data models, and reliable checkout systems.",
+        "requirements": ["python", "rest api", "postgresql", "backend", "testing"]
+      },
+      "entries": [
+        {
+          "kind": "experience",
+          "organization": "Initech",
+          "title": "Backend Intern",
+          "bullets": [
+            {
+              "key": "verbose_rest_rewrite",
+              "text": "Was responsible for the creation of REST API endpoints in Python Flask that were used for the purpose of managing user accounts and also handling authentication.",
+              "expected": {"actions": ["rewrite"], "questions": {"min": 0, "max": 0}, "required_edit_terms": ["rest api", "python", "flask", "authentication"]}
+            },
+            {
+              "key": "checkout_vague",
+              "text": "Helped improve the checkout flow for the web store backend.",
+              "answers": ["Rewrote the address-validation step and its API endpoint in Python."],
+              "expected": {"actions": ["ask"], "questions": {"min": 1, "max": 3}, "vague_relevant": true, "edit_after_answer": true, "required_question_concepts": [["personally", "yourself", "which part", "what did"]], "required_edit_terms": ["checkout", "address-validation", "python"], "forbidden_edit_terms": ["conversion", "revenue"]}
+            },
+            {
+              "key": "chatroom_vague",
+              "text": "Created backend functionality to manage users, messages, and channels for ChatRoom.",
+              "answers": ["Built the Flask routes and PostgreSQL queries for creating channels, posting messages, and listing channel history."],
+              "expected": {"actions": ["ask"], "questions": {"min": 1, "max": 3}, "vague_relevant": true, "edit_after_answer": true, "required_question_concepts": [["personally", "yourself", "what did"]], "required_edit_terms": ["flask", "postgresql"]}
+            },
+            {
+              "key": "postgres_ownership_strong",
+              "text": "Designed the PostgreSQL schema for jobs, resumes, and tailoring runs, including composite indexes for owner-scoped lookups.",
+              "expected": {"actions": ["keep"], "questions": {"min": 0, "max": 0}, "strong_control": true}
+            },
+            {
+              "key": "testing_strong",
+              "text": "Added integration tests for lease expiry and worker recovery, including a killed-worker case that proves interrupted jobs can be reclaimed.",
+              "expected": {"actions": ["keep"], "questions": {"min": 0, "max": 0}, "strong_control": true}
+            },
+            {
+              "key": "frontend_irrelevant",
+              "text": "Adjusted CSS spacing and colors on a marketing landing page.",
+              "expected": {"actions": ["keep"], "questions": {"min": 0, "max": 0}, "irrelevant_control": true}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "fit_edges",
+      "job": {
+        "title": "Software Engineer",
+        "company": "Globex",
+        "summary": "Build full-stack systems using backend services, task queues, and modern frontend frameworks.",
+        "requirements": [{"any_of": ["data structures", "storage systems", "cloud infrastructure", "front-end frameworks"]}, "task queues", "backend"]
+      },
+      "learned": [["react", "front end frameworks"], ["celery", "task queues"]],
+      "entries": [
+        {
+          "kind": "project",
+          "organization": "Cipher Chat",
+          "title": "Developer",
+          "bullets": [
+            {
+              "key": "react_inferred_strong",
+              "text": "Built an end-to-end encrypted messaging platform with React and Flask, keeping cryptographic operations in the browser so the backend stores only ciphertext.",
+              "expected": {"actions": ["keep"], "questions": {"min": 0, "max": 0}, "strong_control": true, "forbidden_question_terms": ["data structures", "front-end frameworks"]}
+            },
+            {
+              "key": "celery_inferred_strong",
+              "text": "Built report generation with Celery workers in a Flask app, retrying failed exports with bounded backoff.",
+              "expected": {"actions": ["keep"], "questions": {"min": 0, "max": 0}, "strong_control": true, "forbidden_question_terms": ["did you use task queues"]}
+            },
+            {
+              "key": "pipeline_vague",
+              "text": "Worked on a Python data pipeline for the analytics team.",
+              "answers": ["Built the daily ingestion job that validates order exports, loads them into PostgreSQL, and records rejected rows for replay."],
+              "expected": {"actions": ["ask"], "questions": {"min": 1, "max": 3}, "vague_relevant": true, "edit_after_answer": true, "required_question_concepts": [["personally", "yourself", "what did", "which part"]], "required_edit_terms": ["python", "postgresql"]}
+            },
+            {
+              "key": "payments_sibling_vague",
+              "text": "Worked on the payments backend.",
+              "answers": ["Built the payout ledger and nightly reconciliation job."],
+              "expected": {"actions": ["ask"], "questions": {"min": 1, "max": 3}, "vague_relevant": true, "edit_after_answer": true, "required_question_concepts": [["personally", "yourself", "which part", "what did"]], "required_edit_terms": ["payout ledger", "reconciliation"]}
+            },
+            {
+              "key": "refund_sibling_strong",
+              "text": "Built the refund service in Go that retries failed payouts through a PostgreSQL-backed queue.",
+              "expected": {"actions": ["keep"], "questions": {"min": 0, "max": 0}, "strong_control": true}
+            },
+            {
+              "key": "dont_remember",
+              "text": "Helped with backend reliability work for the platform.",
+              "answers": ["I don't remember enough to make a specific claim."],
+              "expected": {"actions": ["ask"], "questions": {"min": 1, "max": 3}, "vague_relevant": true, "edit_after_answer": false, "no_edit_after_answer": true}
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

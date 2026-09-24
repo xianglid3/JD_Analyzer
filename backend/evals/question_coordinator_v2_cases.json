@@ -1,0 +1,389 @@
+{
+  "_about": "Isolated Question Coordinator cases. Questions are immutable inputs: the coordinator selects ids or rejects them with a closed reason. Executable expectations catch invention, silent drops, bad deduplication and priority-following; a human still reads whether the selected set is the smallest useful set.",
+  "jobs": {
+    "backend": {
+      "title": "Backend Software Engineer",
+      "company": "Globex",
+      "summary": "Own APIs, data storage, background jobs and reliable order processing.",
+      "requirements": ["python", "api", "postgresql", "backend", "testing"]
+    },
+    "robotics": {
+      "title": "Perception Engineer",
+      "company": "Globex",
+      "summary": "Build autonomous-vehicle perception software in C++ and ROS 2.",
+      "requirements": ["c++", "ros 2", "computer vision"]
+    }
+  },
+  "cases": [
+    {
+      "id": "exact_duplicate",
+      "job": "backend",
+      "expect": "Keep exactly one copy of an identical question and identify the other as a duplicate.",
+      "bullets": [{
+        "bullet_id": "postgres",
+        "entry": "JobMatcha — Developer",
+        "text": "Worked with PostgreSQL to store and manage application data.",
+        "siblings": [],
+        "answers": [],
+        "question_candidates": [
+          {
+            "id": "c1",
+            "question": "What did you personally build to store and manage application data?",
+            "missing_fact": "the database work personally built",
+            "recruiter_doubt_type": "contribution",
+            "why_it_matters_for_this_job": "The role owns backend data storage.",
+            "expected_resume_change": "The bullet could name the storage or query work personally built.",
+            "priority": "high",
+            "requirement_reference": "r2"
+          },
+          {
+            "id": "c2",
+            "question": "What did you personally build to store and manage application data?",
+            "missing_fact": "the database work personally built",
+            "recruiter_doubt_type": "contribution",
+            "why_it_matters_for_this_job": "The role owns backend data storage.",
+            "expected_resume_change": "The bullet could name the storage or query work personally built.",
+            "priority": "medium",
+            "requirement_reference": "r2"
+          }
+        ]
+      }],
+      "expected": {
+        "selected": {"min": 1, "max": 1},
+        "required_selected_groups": [["postgres:c1", "postgres:c2"]],
+        "rejection_reason_counts": {"duplicate": {"min": 1, "max": 1}}
+      }
+    },
+    {
+      "id": "paraphrase_same_gap",
+      "job": "backend",
+      "expect": "Recognize two contribution questions as the same missing fact even though the wording differs.",
+      "bullets": [{
+        "bullet_id": "database",
+        "entry": "JobMatcha — Developer",
+        "text": "Worked on PostgreSQL backend and database functionality.",
+        "siblings": [],
+        "answers": [],
+        "question_candidates": [
+          {
+            "id": "c1",
+            "question": "What specific database functionality did you personally build or change?",
+            "missing_fact": "the database functionality personally implemented",
+            "recruiter_doubt_type": "contribution",
+            "why_it_matters_for_this_job": "The role requires ownership of backend data systems.",
+            "expected_resume_change": "The bullet could name the storage, queries or coordination work implemented.",
+            "priority": "high",
+            "requirement_reference": "r2"
+          },
+          {
+            "id": "c2",
+            "question": "Which parts of the PostgreSQL backend and database functionality were yours?",
+            "missing_fact": "the candidate's personal database contribution",
+            "recruiter_doubt_type": "contribution",
+            "why_it_matters_for_this_job": "The role requires ownership of backend data systems.",
+            "expected_resume_change": "The bullet could identify the exact database contribution.",
+            "priority": "high",
+            "requirement_reference": "r2"
+          }
+        ]
+      }],
+      "expected": {
+        "selected": {"min": 1, "max": 1},
+        "required_selected_groups": [["database:c1", "database:c2"]],
+        "required_rejection_groups": [{
+          "ids": ["database:c1", "database:c2"],
+          "reasons": ["duplicate", "lower_priority_same_gap"]
+        }]
+      }
+    },
+    {
+      "id": "distinct_same_bullet",
+      "job": "backend",
+      "expect": "Keep a contribution question and a separate result-validation question because their answers add different facts.",
+      "bullets": [{
+        "bullet_id": "checkout",
+        "entry": "Web Store — Developer",
+        "text": "Helped improve checkout and payment processing for the web store backend.",
+        "siblings": [],
+        "answers": [],
+        "question_candidates": [
+          {
+            "id": "c1",
+            "question": "Which part of checkout and payment processing did you personally build or change?",
+            "missing_fact": "the candidate's personal contribution",
+            "recruiter_doubt_type": "contribution",
+            "why_it_matters_for_this_job": "The employer needs evidence of backend ownership.",
+            "expected_resume_change": "The bullet could name the component or behavior changed.",
+            "priority": "high",
+            "requirement_reference": "r3"
+          },
+          {
+            "id": "c2",
+            "question": "What did you observe that showed checkout and payment processing improved?",
+            "missing_fact": "the evidence supporting the claimed improvement",
+            "recruiter_doubt_type": "result_validation",
+            "why_it_matters_for_this_job": "The employer needs credible evidence behind a claimed result.",
+            "expected_resume_change": "The bullet could replace the unsupported improvement claim with an observed result.",
+            "priority": "high",
+            "requirement_reference": "r3"
+          }
+        ]
+      }],
+      "expected": {
+        "selected": {"min": 2, "max": 2},
+        "required_selected_ids": ["checkout:c1", "checkout:c2"]
+      }
+    },
+    {
+      "id": "same_shape_different_work",
+      "job": "backend",
+      "expect": "Do not collapse contribution questions about two different systems merely because their grammar matches.",
+      "bullets": [
+        {
+          "bullet_id": "database",
+          "entry": "JobMatcha — Developer",
+          "text": "Worked on PostgreSQL backend and database functionality.",
+          "siblings": [],
+          "answers": [],
+          "question_candidates": [{
+            "id": "c1",
+            "question": "What did you personally build in the PostgreSQL backend and database functionality?",
+            "missing_fact": "the database contribution",
+            "recruiter_doubt_type": "contribution",
+            "why_it_matters_for_this_job": "The role owns data storage.",
+            "expected_resume_change": "The bullet could name the database work.",
+            "priority": "high",
+            "requirement_reference": "r2"
+          }]
+        },
+        {
+          "bullet_id": "worker",
+          "entry": "JobMatcha — Developer",
+          "text": "Worked on background processing for longer tailoring tasks.",
+          "siblings": [],
+          "answers": [],
+          "question_candidates": [{
+            "id": "c1",
+            "question": "What did you personally build in the background processing for longer tailoring tasks?",
+            "missing_fact": "the background-processing contribution",
+            "recruiter_doubt_type": "contribution",
+            "why_it_matters_for_this_job": "The role owns reliable background jobs.",
+            "expected_resume_change": "The bullet could name the worker or coordination work.",
+            "priority": "high",
+            "requirement_reference": "r3"
+          }]
+        }
+      ],
+      "expected": {
+        "selected": {"min": 2, "max": 2},
+        "required_selected_ids": ["database:c1", "worker:c1"]
+      }
+    },
+    {
+      "id": "sibling_same_work",
+      "job": "backend",
+      "expect": "Ask once when two sibling bullets describe the same payment work and would receive the same ownership answer.",
+      "bullets": [
+        {
+          "bullet_id": "payments-a",
+          "entry": "Store — Developer",
+          "text": "Helped with the payment processing backend.",
+          "siblings": ["Worked on payment processing for checkout."],
+          "answers": [],
+          "question_candidates": [{
+            "id": "c1",
+            "question": "Which part of the payment processing backend did you personally build or change?",
+            "missing_fact": "the personal payment-processing contribution",
+            "recruiter_doubt_type": "contribution",
+            "why_it_matters_for_this_job": "The role requires backend ownership.",
+            "expected_resume_change": "The bullet could name the payment component built.",
+            "priority": "high",
+            "requirement_reference": "r3"
+          }]
+        },
+        {
+          "bullet_id": "payments-b",
+          "entry": "Store — Developer",
+          "text": "Worked on payment processing for checkout.",
+          "siblings": ["Helped with the payment processing backend."],
+          "answers": [],
+          "question_candidates": [{
+            "id": "c1",
+            "question": "What payment processing work for checkout did you personally build or change?",
+            "missing_fact": "the personal payment-processing contribution",
+            "recruiter_doubt_type": "contribution",
+            "why_it_matters_for_this_job": "The role requires backend ownership.",
+            "expected_resume_change": "The bullet could name the payment component built.",
+            "priority": "high",
+            "requirement_reference": "r3"
+          }]
+        }
+      ],
+      "expected": {
+        "selected": {"min": 1, "max": 1},
+        "required_selected_groups": [["payments-a:c1", "payments-b:c1"]],
+        "required_rejection_groups": [{
+          "ids": ["payments-a:c1", "payments-b:c1"],
+          "reasons": ["duplicate", "lower_priority_same_gap"]
+        }]
+      }
+    },
+    {
+      "id": "already_answered",
+      "job": "backend",
+      "expect": "Reject the contribution question because the answer already names the database work.",
+      "bullets": [{
+        "bullet_id": "database",
+        "entry": "JobMatcha — Developer",
+        "text": "Worked on PostgreSQL backend and database functionality.",
+        "siblings": [],
+        "answers": ["Built storage and queries for jobs, resumes and tailoring runs, plus normalized skill lookups and composite indexes."],
+        "question_candidates": [{
+          "id": "c1",
+          "question": "What specific database functionality did you personally build or change?",
+          "missing_fact": "the database functionality personally implemented",
+          "recruiter_doubt_type": "contribution",
+          "why_it_matters_for_this_job": "The role owns backend data storage.",
+          "expected_resume_change": "The bullet could name the storage and query work.",
+          "priority": "high",
+          "requirement_reference": "r2"
+        }]
+      }],
+      "expected": {
+        "selected": {"min": 0, "max": 0},
+        "required_rejections": {"database:c1": "already_answered"}
+      }
+    },
+    {
+      "id": "priority_does_not_rescue_noise",
+      "job": "backend",
+      "expect": "Keep the medium-priority concrete ownership question and reject the high-priority generic challenge question.",
+      "bullets": [{
+        "bullet_id": "worker",
+        "entry": "JobMatcha — Developer",
+        "text": "Improved background processing for longer tailoring tasks.",
+        "siblings": [],
+        "answers": [],
+        "question_candidates": [
+          {
+            "id": "c1",
+            "question": "What challenges did you face while improving background processing?",
+            "missing_fact": "challenges encountered",
+            "recruiter_doubt_type": "clarification",
+            "why_it_matters_for_this_job": "Challenges can demonstrate problem solving.",
+            "expected_resume_change": "The bullet could mention a challenge.",
+            "priority": "high",
+            "requirement_reference": "r3"
+          },
+          {
+            "id": "c2",
+            "question": "What specific changes did you make to improve background processing for longer tailoring tasks?",
+            "missing_fact": "the reliability mechanism implemented",
+            "recruiter_doubt_type": "implementation",
+            "why_it_matters_for_this_job": "The role owns reliable background jobs.",
+            "expected_resume_change": "The bullet could name the worker or recovery mechanism implemented.",
+            "priority": "medium",
+            "requirement_reference": "r3"
+          }
+        ]
+      }],
+      "expected": {
+        "selected": {"min": 1, "max": 1},
+        "required_selected_ids": ["worker:c2"],
+        "required_rejections": {"worker:c1": "low_value"}
+      }
+    },
+    {
+      "id": "ownership_boundary_from_complete_run",
+      "job": "backend",
+      "expect": "Reject broad personal-contribution follow-ups on concrete owned work while keeping the same question shape for a tool-list bullet with no owned action.",
+      "bullets": [
+        {
+          "bullet_id": "ai-platform",
+          "entry": "JobMatcha — Developer",
+          "text": "Built an LLM-powered job analysis and resume tailoring platform with server-enforced grounding: proposed edits are rejected unless their cited evidence belongs to the user and was retrieved during the same agent run.",
+          "siblings": [],
+          "answers": [],
+          "question_candidates": [{
+            "id": "c1",
+            "question": "What specific features or components did you personally implement for the LLM-powered platform?",
+            "missing_fact": "specific features or components implemented",
+            "recruiter_doubt_type": "contribution",
+            "why_it_matters_for_this_job": "The role values ownership of AI-assisted backend products.",
+            "expected_resume_change": "The bullet could specify more individual contributions.",
+            "priority": "high",
+            "requirement_reference": "r4"
+          }]
+        },
+        {
+          "bullet_id": "idempotency",
+          "entry": "JobMatcha — Developer",
+          "text": "Implemented reserve-before-spend idempotency for job-draft creation so duplicate requests cannot trigger duplicate LLM calls, with stored-response replay after completion.",
+          "siblings": [],
+          "answers": [],
+          "question_candidates": [{
+            "id": "c1",
+            "question": "What specific part of the reserve-before-spend idempotency did you personally implement?",
+            "missing_fact": "the specific part personally implemented",
+            "recruiter_doubt_type": "contribution",
+            "why_it_matters_for_this_job": "The role values reliable backend ownership.",
+            "expected_resume_change": "The bullet could clarify the candidate's individual role.",
+            "priority": "high",
+            "requirement_reference": "r4"
+          }]
+        },
+        {
+          "bullet_id": "postgres",
+          "entry": "JobMatcha — Developer",
+          "text": "Worked on the PostgreSQL backend and database functionality using psycopg2, full-text search, locking, and indexes to support application data and resume matching.",
+          "siblings": [],
+          "answers": [],
+          "question_candidates": [{
+            "id": "c1",
+            "question": "What specific database functionality did you personally implement using PostgreSQL and psycopg2?",
+            "missing_fact": "the database functionality personally implemented",
+            "recruiter_doubt_type": "contribution",
+            "why_it_matters_for_this_job": "The role owns PostgreSQL-backed services.",
+            "expected_resume_change": "The bullet could name the storage, query or coordination work implemented.",
+            "priority": "high",
+            "requirement_reference": "r2"
+          }]
+        }
+      ],
+      "expected": {
+        "selected": {"min": 1, "max": 1},
+        "required_selected_ids": ["postgres:c1"],
+        "required_rejections": {
+          "ai-platform:c1": "low_value",
+          "idempotency:c1": "low_value"
+        }
+      }
+    },
+    {
+      "id": "unsupported_premise",
+      "job": "backend",
+      "expect": "Reject a Redis question about a React messaging bullet rather than preserving it for job relevance.",
+      "bullets": [{
+        "bullet_id": "messaging",
+        "entry": "ChatRoom — Developer",
+        "text": "Built an encrypted messaging interface with React.",
+        "siblings": [],
+        "answers": [],
+        "question_candidates": [{
+          "id": "c1",
+          "question": "How did Redis improve the encrypted messaging interface?",
+          "missing_fact": "the Redis caching design",
+          "recruiter_doubt_type": "implementation",
+          "why_it_matters_for_this_job": "The posting requests backend data systems.",
+          "expected_resume_change": "The bullet could claim Redis experience.",
+          "priority": "high",
+          "requirement_reference": null
+        }]
+      }],
+      "expected": {
+        "selected": {"min": 0, "max": 0},
+        "required_rejections": {"messaging:c1": "unsupported_premise"}
+      }
+    }
+  ]
+}

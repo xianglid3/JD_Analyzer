@@ -148,6 +148,27 @@ describe('TailoringRunPage', () => {
     expect(screen.getByText(/Cited 1 bullet from your resume/)).toBeInTheDocument()
   })
 
+  it('shows specific validator concerns without hiding the proposal', async () => {
+    apiFetch.mockResolvedValueOnce({
+      ...finished,
+      edits: [{
+        ...finished.edits[0],
+        validation_warnings: [{
+          code: 'possible_skill_omission',
+          message: 'The rewrite may omit PostgreSQL.',
+          evidence: 'The source names PostgreSQL; the proposal does not.',
+        }],
+      }],
+    })
+
+    renderWithProviders(<TailoringRunPage />)
+
+    expect(await screen.findByText('Check before accepting')).toBeInTheDocument()
+    expect(screen.getByText(/may omit PostgreSQL/)).toBeInTheDocument()
+    expect(screen.getByText('Operated multi-region Kubernetes services')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Accept' })).toBeInTheDocument()
+  })
+
   it('shows every source bullet when a proposal combines them', async () => {
     apiFetch.mockResolvedValueOnce({
       ...finished,
@@ -205,6 +226,44 @@ describe('TailoringRunPage', () => {
         action: 'answer', answer: 'Reduced deployment time by 40%.',
       })
     })
+  })
+
+  it('groups multiple questions for one bullet and shows partial progress', async () => {
+    const waiting = {
+      ...finished,
+      status: 'waiting_for_user',
+      composition: null,
+      edits: [],
+      detail_requests: [
+        {
+          id: 'question-1', bullet_id: 'bullet-1', requirement: 'Platform Intern — Acme',
+          question: 'Which deployments did you configure?', answer: 'The production cluster.',
+          status: 'answered', bullet_text: 'Worked on Kubernetes deployments',
+        },
+        {
+          id: 'question-2', bullet_id: 'bullet-1', requirement: 'Platform Intern — Acme',
+          question: 'What failure did the deployments need to withstand?', answer: null,
+          status: 'pending', bullet_text: 'Worked on Kubernetes deployments',
+        },
+        {
+          id: 'question-3', bullet_id: 'bullet-2', requirement: 'Backend Intern — Acme',
+          question: 'Which ingestion jobs did you build?', answer: null,
+          status: 'pending', bullet_text: 'Worked on Python ingestion jobs',
+        },
+      ],
+    }
+    apiFetch.mockResolvedValueOnce(waiting)
+
+    renderWithProviders(<TailoringRunPage />)
+
+    expect(await screen.findByRole('heading', { name: '2 questions before we continue' })).toBeInTheDocument()
+    expect(screen.getByText('1 of 2 answered or skipped')).toBeInTheDocument()
+    expect(screen.getByText('0 of 1 answered or skipped')).toBeInTheDocument()
+    expect(screen.getAllByText(/Worked on Kubernetes deployments/)).toHaveLength(1)
+    expect(screen.getAllByText('Platform Intern — Acme')).toHaveLength(1)
+    expect(screen.queryByText('Which deployments did you configure?')).not.toBeInTheDocument()
+    expect(screen.getByText('What failure did the deployments need to withstand?')).toBeInTheDocument()
+    expect(screen.getByText('Which ingestion jobs did you build?')).toBeInTheDocument()
   })
 
   it('separates gaps from suggestions', async () => {

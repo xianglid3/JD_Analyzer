@@ -18,6 +18,7 @@ import re
 # the report stops describing the thing it exists to measure. `test_every_rejection_is_classified`
 # pins that coupling.
 REASONS = [
+    ("quality_repair", re.compile(r"^rewrite needs one repair before it can be shown:")),
     ("uncited_bullet", re.compile(
         r"(was not returned by a search in this run|call search_resume first|"
         r"did not reach this run)")),

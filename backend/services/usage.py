@@ -242,18 +242,10 @@ def _settle(cur, reservation, cost):
     """Move money from reserved to spent, on both ledgers.
 
     Clamped at zero: a reservation released twice must not drive a total negative and hand out
-    free calls.
+    free calls. Every transaction that touches both ledgers locks global first, then user. Reserve
+    already uses that order; doing the reverse here deadlocked concurrent reviewer calls when one
+    call finished while another was reserving.
     """
-    cur.execute(
-        """
-        UPDATE llm_daily_budgets
-           SET reserved_usd = GREATEST(reserved_usd - %s, 0),
-               spent_usd = spent_usd + %s,
-               updated_at = now()
-         WHERE user_id = %s AND budget_date = current_date
-        """,
-        (reservation["reserved"], cost, reservation["user_id"]),
-    )
     cur.execute(
         """
         UPDATE llm_global_budget
@@ -263,6 +255,16 @@ def _settle(cur, reservation, cost):
          WHERE budget_date = current_date
         """,
         (reservation["reserved"], cost),
+    )
+    cur.execute(
+        """
+        UPDATE llm_daily_budgets
+           SET reserved_usd = GREATEST(reserved_usd - %s, 0),
+               spent_usd = spent_usd + %s,
+               updated_at = now()
+         WHERE user_id = %s AND budget_date = current_date
+        """,
+        (reservation["reserved"], cost, reservation["user_id"]),
     )
 
 
@@ -361,7 +363,17 @@ def record(user_id, kind, model, prompt_tokens, completion_tokens, latency_ms,
 
 def charge(cur, user_id, cost):
     """Add to today's spend. The ledger is what the cap is read from, so every path that
-    spends has to pass through here."""
+    spends has to pass through here. Global is locked before user, matching reserve/finalize."""
+    cur.execute(
+        """
+        INSERT INTO llm_global_budget (budget_date, reserved_usd, spent_usd)
+        VALUES (current_date, 0, %s)
+        ON CONFLICT (budget_date) DO UPDATE
+           SET spent_usd = llm_global_budget.spent_usd + EXCLUDED.spent_usd,
+               updated_at = now()
+        """,
+        (cost,),
+    )
     cur.execute(
         """
         INSERT INTO llm_daily_budgets (user_id, budget_date, reserved_usd, spent_usd)

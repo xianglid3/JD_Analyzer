@@ -4,7 +4,14 @@ import pytest
 
 from db import get_cursor
 from services import usage
-from services.usage import QuotaExceeded, check_quota, record, report, spent_today
+from services.usage import (
+    QuotaExceeded,
+    check_quota,
+    record,
+    report,
+    spent_today,
+    spent_today_globally,
+)
 
 
 USER = {"username": "usageuser", "password": "pw123456"}
@@ -27,6 +34,9 @@ def test_a_call_is_recorded_with_its_cost(_db, user_id):
     assert kind == "job_analysis"
     assert float(cost) == 0.15
     assert latency == 1200
+
+    with _db.cursor() as cur:
+        assert spent_today_globally(cur) == pytest.approx(0.15)
 
 
 def test_spend_accumulates_across_calls(_db, user_id):
@@ -139,6 +149,23 @@ def test_finalizing_releases_what_the_call_did_not_use(_db, user_id):
         cur.execute("SELECT outcome, cost_usd FROM llm_calls WHERE id = %s", (reservation["id"],))
         outcome, cost = cur.fetchone()
     assert outcome == "ok" and float(cost) == pytest.approx(0.15)
+
+
+def test_settlement_locks_global_before_user_to_match_reservation_order():
+    statements = []
+
+    class Cursor:
+        def execute(self, sql, _params):
+            statements.append(" ".join(sql.split()))
+
+    usage._settle(
+        Cursor(),
+        {"reserved": 0.1, "user_id": "00000000-0000-0000-0000-000000000001"},
+        0.01,
+    )
+
+    assert "UPDATE llm_global_budget" in statements[0]
+    assert "UPDATE llm_daily_budgets" in statements[1]
 
 
 def test_two_concurrent_reservations_cannot_both_fit(_db, user_id, monkeypatch):

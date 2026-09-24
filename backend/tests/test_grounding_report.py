@@ -44,6 +44,7 @@ def script(monkeypatch, *responses):
     ("proposed_text must be 500 characters or fewer", "too_long"),
     ("arguments were not valid JSON", "bad_arguments"),
     ("unknown tool delete_everything", "unknown_tool"),
+    ("rewrite needs one repair before it can be shown: 1. possible omission", "quality_repair"),
     ("something nobody has seen before", "other"),
     (None, "none"),
 ])
@@ -201,6 +202,8 @@ EVERY_REJECTION = [
     ("a search for CSS in this run returned 2 bullet(s) — propose an edit citing them, "
      "or search again with different wording", "contradicted_gap"),
     # quality
+    ("rewrite needs one repair before it can be shown: 1. the rewrite removes supported detail",
+     "quality_repair"),
     ("the rewrite only changes phrasing; strengthen the action or surface new supported "
      "evidence, otherwise leave the bullet unchanged", "cosmetic_rewrite"),
     ("the rewrite removes too much of the bullet's existing detail", "detail_loss"),

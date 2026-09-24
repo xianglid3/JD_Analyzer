@@ -21,10 +21,12 @@ from services.tailoring_agent import (
     job_brief,
     load_run,
     replay_messages,
+    record_supplied_evidence,
     resolve_detail_request,
     resume_run,
     run_tailoring,
     start_run,
+    tool_propose_edit,
     verify_citation,
 )
 
@@ -1407,6 +1409,108 @@ def test_an_answer_cannot_support_a_different_requirement(fixtures, k8s_bullet, 
     assert "About 10 customers" not in other     # and to nothing else
 
 
+def test_review_validation_repairs_once_then_shows_specific_warnings(
+    fixtures, k8s_bullet, _db,
+):
+    """A heuristic may ask the editor to try once; it cannot delete grounded work forever."""
+    arguments = {
+        "bullet_id": k8s_bullet,
+        "proposed_text": "Deployed services across three regions.",
+        "evidence_bullet_ids": [k8s_bullet],
+        "reason": "Leads with the concrete action.",
+    }
+    with get_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            INSERT INTO tailoring_runs (user_id, job_id, model, max_steps)
+            VALUES (%s, %s, 'gpt-4o-mini', 12) RETURNING id
+            """,
+            (fixtures["user_id"], fixtures["job_id"]),
+        )
+        run_id = cur.fetchone()[0]
+        tailoring_agent._record_review_contract(cur, run_id, "v2")
+        record_supplied_evidence(cur, run_id, [{"targets": [{
+            "bullet_id": k8s_bullet,
+            "text": "Worked on Kubernetes deployments across three regions",
+        }]}])
+
+        with pytest.raises(GroundingError) as first:
+            tool_propose_edit(
+                cur, fixtures["user_id"], run_id, arguments,
+                validation_mode=tailoring_agent.VALIDATION_REVIEW,
+            )
+        assert str(first.value).startswith(tailoring_agent.QUALITY_REPAIR_PREFIX)
+        assert any(
+            item["code"] == "possible_skill_omission"
+            for item in first.value.validation["repair_requests"]
+        )
+        cur.execute(
+            """
+            INSERT INTO tool_calls (
+                run_id, step_number, call_id, tool_name, arguments, result, status, error_message
+            ) VALUES (%s, 1, 'repair-1', 'propose_edit', %s, %s, 'failed', %s)
+            """,
+            (run_id, json.dumps(arguments), json.dumps({"validation": first.value.validation}),
+             str(first.value)),
+        )
+
+        result = tool_propose_edit(
+            cur, fixtures["user_id"], run_id, arguments,
+            validation_mode=tailoring_agent.VALIDATION_REVIEW,
+        )
+        cur.execute(
+            """
+            INSERT INTO tool_calls (
+                run_id, step_number, call_id, tool_name, arguments, result, status
+            ) VALUES (%s, 2, 'repair-2', 'propose_edit', %s, %s, 'completed')
+            """,
+            (run_id, json.dumps(arguments), json.dumps(result)),
+        )
+
+    assert result["status"] == "recorded"
+    assert result["validation_mode"] == tailoring_agent.VALIDATION_REVIEW
+    assert any(
+        warning["code"] == "possible_skill_omission"
+        for warning in result["validation_warnings"]
+    )
+    with get_cursor() as cur:
+        run = load_run(cur, fixtures["user_id"], run_id)
+    assert run["validation_mode"] == tailoring_agent.VALIDATION_REVIEW
+    assert run["edits"][0]["validation_warnings"] == result["validation_warnings"]
+
+
+def test_review_validation_never_relaxes_an_unsupported_concrete_claim(
+    fixtures, k8s_bullet,
+):
+    arguments = {
+        "bullet_id": k8s_bullet,
+        "proposed_text": "Built Redis-backed Kubernetes deployments across three regions.",
+        "evidence_bullet_ids": [k8s_bullet],
+    }
+    with get_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            INSERT INTO tailoring_runs (user_id, job_id, model, max_steps)
+            VALUES (%s, %s, 'gpt-4o-mini', 12) RETURNING id
+            """,
+            (fixtures["user_id"], fixtures["job_id"]),
+        )
+        run_id = cur.fetchone()[0]
+        record_supplied_evidence(cur, run_id, [{"targets": [{
+            "bullet_id": k8s_bullet,
+            "text": "Worked on Kubernetes deployments across three regions",
+        }]}])
+
+        for _ in range(2):
+            with pytest.raises(GroundingError) as blocked:
+                tool_propose_edit(
+                    cur, fixtures["user_id"], run_id, arguments,
+                    validation_mode=tailoring_agent.VALIDATION_REVIEW,
+                )
+            assert blocked.value.validation["hard_blocks"]
+            assert "unsupported concrete claims" in str(blocked.value)
+
+
 # ── AE-01: an accepted edit is only valid while its evidence still says the same ──
 # Bullet ids deliberately survive a reword, which is what keeps citations stable across
 # re-extraction. It also meant an old accepted rewrite could be pasted onto a bullet that had
@@ -2540,7 +2644,10 @@ def _editor_calls(cur, run_id):
     cur.execute(
         """
         SELECT count(*) FROM tool_calls
-        WHERE run_id = %s AND tool_name NOT IN ('bullet_review', 'evidence_supplied')
+        WHERE run_id = %s AND tool_name NOT IN (
+            'bullet_review', 'evidence_supplied',
+            'tailoring_review_contract', 'question_coordinator'
+        )
         """,
         (run_id,),
     )
@@ -2877,3 +2984,299 @@ def test_merging_is_unreachable_while_every_sibling_is_owned_or_kept(monkeypatch
         cur.execute("SELECT count(*) FROM proposed_edits WHERE run_id = %s AND edit_type = 'merge'",
                     (result["run_id"],))
         assert cur.fetchone()[0] == 0, "re-enabling merges means rewriting this test, not deleting it"
+
+
+# ── V2 reviewer + question coordinator production boundary ──────────────────
+
+
+def test_v2_rollout_prefers_override_then_owner_then_stable_percentage(monkeypatch):
+    user = "owner-123"
+    monkeypatch.delenv("TAILORING_REVIEW_V2_ENABLED", raising=False)
+    monkeypatch.delenv("TAILORING_REVIEW_V2_USERS", raising=False)
+    monkeypatch.delenv("TAILORING_REVIEW_V2_PERCENT", raising=False)
+    assert tailoring_agent._configured_review_contract(user) == "v1"
+
+    monkeypatch.setenv("TAILORING_REVIEW_V2_USERS", f"someone-else, {user}")
+    assert tailoring_agent._configured_review_contract(user) == "v2"
+
+    monkeypatch.setenv("TAILORING_REVIEW_V2_USERS", "")
+    bucket = tailoring_agent._review_rollout_bucket(user)
+    monkeypatch.setenv("TAILORING_REVIEW_V2_PERCENT", str(bucket))
+    assert tailoring_agent._configured_review_contract(user) == "v1"
+    monkeypatch.setenv("TAILORING_REVIEW_V2_PERCENT", str(bucket + 1))
+    assert tailoring_agent._configured_review_contract(user) == "v2"
+
+    monkeypatch.setenv("TAILORING_REVIEW_V2_PERCENT", "not-a-number")
+    assert tailoring_agent._configured_review_contract(user) == "v1"
+    monkeypatch.setenv("TAILORING_REVIEW_V2_ENABLED", "true")
+    assert tailoring_agent._configured_review_contract(user) == "v2"
+
+V2_QUESTIONS = (
+    {
+        "id": "ownership",
+        "question": "Which Kubernetes deployments did you configure yourself?",
+        "missing_fact": "the deployments the candidate personally configured",
+        "recruiter_doubt_type": "contribution",
+        "why_it_matters_for_this_job": "The role expects ownership of deployed systems.",
+        "expected_resume_change": "Name the deployment work the candidate owned.",
+        "priority": "high",
+        "requirement_reference": None,
+    },
+    {
+        "id": "reliability",
+        "question": "What failure did the Kubernetes deployments need to withstand?",
+        "missing_fact": "the concrete failure the deployments handled",
+        "recruiter_doubt_type": "implementation",
+        "why_it_matters_for_this_job": "The role values reliable platform operation.",
+        "expected_resume_change": "Add the supported reliability mechanism or failure mode.",
+        "priority": "medium",
+        "requirement_reference": None,
+    },
+)
+
+
+def plan_v2_questions(monkeypatch, *, selected=True):
+    """Enable V2 with two immutable questions on the Kubernetes bullet and KEEP elsewhere."""
+    from services import bullet_review_v2, question_coordinator_v2
+
+    monkeypatch.setenv("TAILORING_REVIEW_V2_ENABLED", "1")
+    calls = {"review": 0, "coordinator": 0}
+
+    def review(_job, tasks, **_kwargs):
+        calls["review"] += 1
+        assert len(tasks) == 1, "production V2 reviews one bullet per model call"
+        task = tasks[0]
+        asking = "Kubernetes deployments" in task["text"]
+        return [{
+            "bullet": "b1",
+            "decision": "ASK" if asking else "KEEP",
+            "decision_reason": (
+                "The bullet does not distinguish the candidate's deployment work."
+                if asking else "The pipeline contribution and scale are already clear."
+            ),
+            "established_facts": [task["text"]],
+            "strength_assessment": "The technologies and scope are explicit.",
+            "rewrite_from_existing_evidence": None,
+            "question_candidates": [dict(item) for item in V2_QUESTIONS] if asking else [],
+        }]
+
+    def coordinate(_job, candidates, **_kwargs):
+        calls["coordinator"] += 1
+        selected_ids = [item["id"] for item in candidates] if selected else []
+        return {
+            "selected_ids": selected_ids,
+            "rejected": [] if selected else [
+                {"id": item["id"], "reason": "low_value", "duplicate_of": None}
+                for item in candidates
+            ],
+        }
+
+    monkeypatch.setattr(bullet_review_v2, "request_review", review)
+    monkeypatch.setattr(question_coordinator_v2, "request_selection", coordinate)
+    return calls
+
+
+def test_v2_files_all_selected_questions_and_waits_for_every_resolution(
+        monkeypatch, fixtures, k8s_bullet, _db):
+    calls = plan_v2_questions(monkeypatch)
+    script(monkeypatch)  # unanswered questions cost no editor step
+
+    started = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
+
+    assert started["status"] == "waiting_for_user"
+    assert started["steps_used"] == 0
+    with _db.cursor() as cur:
+        run = load_run(cur, fixtures["user_id"], started["run_id"])
+        questions = [q for q in run["detail_requests"] if q["bullet_id"] == k8s_bullet]
+        assert [q["question"] for q in questions] == [
+            item["question"] for item in V2_QUESTIONS
+        ]
+        assert run["review_contract"] == "v2"
+        assert not {
+            step["tool"] for step in run["trace"]
+        } & {"tailoring_review_contract", "question_coordinator"}, \
+            "server phases are not presented as editor tool calls"
+        cur.execute(
+            "SELECT status FROM tailoring_candidates WHERE run_id = %s AND bullet_id = %s",
+            (started["run_id"], k8s_bullet),
+        )
+        assert cur.fetchone()[0] == "waiting"
+
+    first = resolve_detail_request(
+        get_cursor, fixtures["user_id"], questions[0]["id"],
+        answer="Configured rolling updates for the Kubernetes deployments.",
+    )
+    assert first["resume"] is False
+    with _db.cursor() as cur:
+        cur.execute(
+            "SELECT status FROM tailoring_candidates WHERE run_id = %s AND bullet_id = %s",
+            (started["run_id"], k8s_bullet),
+        )
+        assert cur.fetchone()[0] == "waiting", "one answer cannot unlock sibling questions"
+
+    final = resolve_detail_request(
+        get_cursor, fixtures["user_id"], questions[1]["id"], dismiss=True,
+    )
+    assert final["resume"] is True
+
+    # A deploy changes the default, but the stored run contract wins on resume.
+    monkeypatch.delenv("TAILORING_REVIEW_V2_ENABLED")
+    sent = script(monkeypatch, response([call("keep_original", {
+        "requirement": "", "bullet_id": k8s_bullet,
+        "reason": "The answer does not justify a clearer faithful rewrite.",
+    })]))
+    resumed = execute_run(
+        get_cursor, fixtures["user_id"], fixtures["job_id"], started["run_id"],
+        resume_from=final["steps_used"],
+    )
+
+    assert resumed["status"] == "completed"
+    assert len(sent) == 1, "all answers for one bullet use one editor call"
+    brief = sent[0][1]["content"]
+    assert "Configured rolling updates" in brief
+    assert "Skipped by the candidate" in brief
+    assert calls == {"review": 2, "coordinator": 1}, \
+        "stored reviews and selection are reused on resume"
+
+
+def test_v2_all_dismissed_keeps_bullet_without_editor_call(
+        monkeypatch, fixtures, k8s_bullet, _db):
+    plan_v2_questions(monkeypatch)
+    script(monkeypatch)
+    started = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
+    with _db.cursor() as cur:
+        run = load_run(cur, fixtures["user_id"], started["run_id"])
+    questions = [q for q in run["detail_requests"] if q["bullet_id"] == k8s_bullet]
+
+    first = resolve_detail_request(
+        get_cursor, fixtures["user_id"], questions[0]["id"], dismiss=True,
+    )
+    assert first["resume"] is False
+    final = resolve_detail_request(
+        get_cursor, fixtures["user_id"], questions[1]["id"], dismiss=True,
+    )
+    assert final["resume"] is True
+
+    script(monkeypatch)
+    resumed = execute_run(
+        get_cursor, fixtures["user_id"], fixtures["job_id"], started["run_id"],
+        resume_from=final["steps_used"],
+    )
+    assert resumed["status"] == "completed"
+    assert resumed["steps_used"] == 0
+    with _db.cursor() as cur:
+        cur.execute(
+            "SELECT status, outcome FROM tailoring_candidates "
+            "WHERE run_id = %s AND bullet_id = %s",
+            (started["run_id"], k8s_bullet),
+        )
+        assert cur.fetchone() == (
+            "kept", "you chose not to answer, so the bullet is unchanged",
+        )
+
+
+def test_v2_coordinator_can_choose_no_questions(monkeypatch, fixtures, _db):
+    plan_v2_questions(monkeypatch, selected=False)
+    script(monkeypatch)
+
+    result = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
+
+    assert result["status"] == "completed"
+    with _db.cursor() as cur:
+        cur.execute("SELECT count(*) FROM tailoring_detail_requests WHERE run_id = %s",
+                    (result["run_id"],))
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT count(*) FROM tailoring_candidates WHERE run_id = %s",
+                    (result["run_id"],))
+        assert cur.fetchone()[0] == 0
+
+
+def test_v2_unavailable_review_fails_honestly_instead_of_becoming_keep(
+        monkeypatch, fixtures, _db):
+    from services import bullet_review_v2
+
+    monkeypatch.setenv("TAILORING_REVIEW_V2_ENABLED", "1")
+    monkeypatch.setattr(
+        bullet_review_v2, "request_review", lambda *_args, **_kwargs: [],
+    )
+    script(monkeypatch)
+
+    result = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
+
+    assert result["status"] == "failed"
+    with _db.cursor() as cur:
+        loaded = load_run(cur, fixtures["user_id"], result["run_id"])
+        assert loaded["error_code"] == "review_unavailable"
+        cur.execute(
+            "SELECT count(*) FROM tailoring_candidates WHERE run_id = %s",
+            (result["run_id"],),
+        )
+        assert cur.fetchone()[0] == 0
+
+
+def test_v2_rewrite_reaches_editor_without_question_coordinator(
+        monkeypatch, fixtures, k8s_bullet, _db):
+    from services import bullet_review_v2, question_coordinator_v2
+
+    monkeypatch.setenv("TAILORING_REVIEW_V2_ENABLED", "1")
+
+    def review(_job, tasks, **_kwargs):
+        task = tasks[0]
+        rewriting = "Kubernetes deployments" in task["text"]
+        return [{
+            "bullet": "b1",
+            "decision": "REWRITE" if rewriting else "KEEP",
+            "decision_reason": (
+                "The contribution is supported but buried by weak wording."
+                if rewriting else "The contribution and scale are already clear."
+            ),
+            "established_facts": [task["text"]],
+            "strength_assessment": "The deployment scope is explicit.",
+            "rewrite_from_existing_evidence": (
+                "Lead with the Kubernetes deployment work and preserve three regions."
+                if rewriting else None
+            ),
+            "question_candidates": [],
+        }]
+
+    monkeypatch.setattr(bullet_review_v2, "request_review", review)
+    monkeypatch.setattr(
+        question_coordinator_v2, "request_selection",
+        lambda *_a, **_k: pytest.fail("a REWRITE-only review has no coordinator work"),
+    )
+    script(monkeypatch, response([call("propose_edit", {
+        "requirement": "", "bullet_id": k8s_bullet,
+        "proposed_text": "Deployed Kubernetes workloads across three regions",
+        "evidence_bullet_ids": [k8s_bullet],
+        "reason": "The action now leads the sentence.",
+    })]))
+
+    result = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
+
+    assert result["status"] == "completed"
+    with _db.cursor() as cur:
+        cur.execute("SELECT proposed_text FROM proposed_edits WHERE run_id = %s",
+                    (result["run_id"],))
+        assert cur.fetchone()[0] == "Deployed Kubernetes workloads across three regions"
+
+
+def test_v2_coordinator_storage_is_fenced(monkeypatch, fixtures, _db):
+    import uuid
+
+    run_id = start_run(get_cursor, fixtures["user_id"], fixtures["job_id"])["run_id"]
+    candidate = {
+        "id": f"{k8s_bullet}:ownership", "bullet_id": k8s_bullet,
+        "question": V2_QUESTIONS[0]["question"],
+    }
+    result = {"selected_ids": [candidate["id"]], "selected": [candidate], "rejected": []}
+    with pytest.raises(tailoring_agent.LeaseLost):
+        with get_cursor(commit=True) as cur:
+            tailoring_agent._record_coordinator_selection(
+                cur, run_id, [candidate], result, token=str(uuid.uuid4()),
+            )
+    with _db.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM tool_calls WHERE run_id = %s AND tool_name = 'question_coordinator'",
+            (run_id,),
+        )
+        assert cur.fetchone()[0] == 0

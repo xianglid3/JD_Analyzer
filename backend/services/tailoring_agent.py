@@ -20,9 +20,11 @@ from openai import OpenAI
 from psycopg2.errors import UniqueViolation
 from services.claim_check import (
     compression_only,
+    explicit_answer_contradictions,
     merge_quality_issue,
     named_skills,
     rewrite_quality_issue,
+    rewrite_validation_findings,
     unsupported_claims,
 )
 from services.match import normalize_skill
@@ -53,7 +55,7 @@ from services.tailoring_plan import (
 )
 from services.usage import QuotaExceeded, check_quota, finalize, reserve
 from services.usage import budget as usage_budget
-from services import bullet_review
+from services import bullet_review, bullet_review_v2, question_coordinator_v2
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +234,10 @@ TOOLS = [
 class GroundingError(Exception):
     """A check the model failed. Goes back to it as a tool result, never to the user."""
 
+    def __init__(self, message, validation=None):
+        super().__init__(message)
+        self.validation = validation
+
 
 # everything between these came from the posting; the model is told to read it as data
 POSTING_OPEN = "<untrusted_posting>"
@@ -323,15 +329,22 @@ def _attach_answers(cur, user_id, run_id, candidates):
         return candidates
     cur.execute(
         """
-        SELECT bullet_id, answer FROM tailoring_detail_requests
-        WHERE run_id = %s AND user_id = %s AND status = 'answered' AND answer IS NOT NULL
+        SELECT bullet_id, question, answer, status FROM tailoring_detail_requests
+        WHERE run_id = %s AND user_id = %s AND status IN ('answered', 'dismissed')
           AND bullet_id = ANY(%s::uuid[])
         ORDER BY created_at
         """,
         (run_id, user_id, list(targets)),
     )
-    for bullet_id, answer in cur.fetchall():
-        targets[str(bullet_id)].setdefault("answers", []).append(answer)
+    for bullet_id, question, answer, status in cur.fetchall():
+        target = targets[str(bullet_id)]
+        detail = {
+            "question": question, "answer": answer, "status": status,
+        }
+        target.setdefault("resolved_details", []).append(detail)
+        if status == "answered" and answer is not None:
+            target.setdefault("answers", []).append(answer)
+            target.setdefault("answered_details", []).append(detail)
     return candidates
 
 
@@ -362,20 +375,40 @@ def _target_instruction(target):
     if target.get("decision") == bullet_review.ASK:
         answered = " ".join(target.get("answers") or [])
         if not answered:
+            planned = target.get("questions") or [{"question": line("question")}]
+            question_text = "; ".join(
+                str(item.get("question") or "").strip() for item in planned
+                if isinstance(item, dict) and str(item.get("question") or "").strip()
+            )
             # It is here only for the record; the loop does not hand this target out until
             # the answer is in, because there is nothing it could honestly do with it yet.
             return (f"Decision: ask ({kind}) — {problem} The server has asked: "
-                    f"\"{line('question')}\". Nothing to do until the answer arrives.")
+                    f"\"{question_text}\". Nothing to do until the answers arrive.")
         # The answer itself, not just the fact that one exists. Each candidate gets a fresh
         # conversation now, so there is no tool result carrying it in from an earlier turn —
         # without this the editor is told to use an answer it has never seen. Fenced, because
         # unlike our decisions it is prose somebody typed.
-        return (f"Decision: rewrite from the answer ({kind}) — {problem} They were asked "
-                f"\"{line('question')}\" and answered:\n  {RESUME_OPEN}\n"
-                f"  {strip_fence_markers(answered)}\n  {RESUME_CLOSE}\n"
+        details = target.get("resolved_details") or target.get("answered_details") or []
+        if details:
+            answer_lines = []
+            for detail in details:
+                answer_lines.append(
+                    f"Question: {strip_fence_markers(detail.get('question') or '')}"
+                )
+                if detail.get("status") == "dismissed":
+                    answer_lines.append("Skipped by the candidate; do not supply this fact.")
+                else:
+                    answer_lines.append(
+                        f"Answer: {strip_fence_markers(detail.get('answer') or '')}"
+                    )
+            answer_block = "\n  ".join(answer_lines)
+        else:
+            answer_block = f"Question: {line('question')}\n  Answer: {strip_fence_markers(answered)}"
+        return (f"Decision: rewrite from the answers ({kind}) — {problem} They supplied:\n"
+                f"  {RESUME_OPEN}\n  {answer_block}\n  {RESUME_CLOSE}\n"
                 f"  propose_edit so that: "
                 f"{line('expected_improvement') or 'the bullet states what the answer says'}."
-                f" Use only the bullet and the answer; add no result the answer does not give."
+                f" Use only the bullet and these answers; add no result the answers do not give."
                 + keep_line)
     if target.get("decision") == bullet_review.REWRITE:
         return (f"Decision: rewrite — {line('rewrite_instruction') or problem} Use only what this "
@@ -644,7 +677,40 @@ def entry_is_ongoing(end_date):
     return str(end_date).strip().lower() in {"present", "current", "ongoing", "now", "to date"}
 
 
-def tool_propose_edit(cur, user_id, run_id, arguments, surfacing=None):
+VALIDATION_STRICT = "strict_truth"
+VALIDATION_REVIEW = "repair_then_review"
+QUALITY_REPAIR_PREFIX = "rewrite needs one repair before it can be shown:"
+
+
+def _quality_repair_already_requested(cur, run_id, bullet_id):
+    """Whether this bullet's editor has already seen the complete quality-repair brief.
+
+    The failed tool call is durable run state. Reading it here means a worker restart does not
+    reset the one-repair allowance, and no process-local counter can drift from the audit trail.
+    """
+    cur.execute(
+        """
+        SELECT EXISTS (
+          SELECT 1 FROM tool_calls
+          WHERE run_id = %s AND tool_name = 'propose_edit' AND status = 'failed'
+            AND arguments ->> 'bullet_id' = %s
+            AND error_message LIKE %s
+        )
+        """,
+        (run_id, bullet_id, QUALITY_REPAIR_PREFIX + "%"),
+    )
+    return bool(cur.fetchone()[0])
+
+
+def _validation_message(findings):
+    return " | ".join(
+        f"{index}. {item['message']} Evidence: {item['evidence']}"
+        for index, item in enumerate(findings, start=1)
+    )
+
+
+def tool_propose_edit(cur, user_id, run_id, arguments, surfacing=None,
+                      validation_mode=VALIDATION_STRICT):
     # None when the bullet owns this work; see `tailoring_candidates` for why that is not
     # given a stand-in. The tool boundary has already resolved which candidate this is.
     requirement = (arguments.get("requirement") or "").strip() or None
@@ -684,11 +750,7 @@ def tool_propose_edit(cur, user_id, run_id, arguments, surfacing=None):
     invented = unsupported_claims(
         proposed_text, evidence_texts, approved_rewrites(cur, user_id),
     )
-    if invented:
-        raise GroundingError(
-            f"{', '.join(invented)} does not appear in the evidence you cited — "
-            "rewrite using only what those bullets say, or cite a bullet that supports it"
-        )
+    contradictions = explicit_answer_contradictions(proposed_text, answers)
 
     # end_date comes along for the tense check: an entry with no end date is live work, and
     # a rewrite may not quietly put it in the past. It is a stored fact, which is why the
@@ -703,14 +765,38 @@ def tool_propose_edit(cur, user_id, run_id, arguments, surfacing=None):
         (bullet_id, user_id),
     )
     original = cur.fetchone()
-    quality_issue = (
-        rewrite_quality_issue(
+    validation = (
+        rewrite_validation_findings(
             original[0], proposed_text, surfacing=surfacing,
             entry_is_ongoing=entry_is_ongoing(original[1]), answers=answers,
+            unsupported=invented,
+            contradictions=contradictions,
         ) if original else None
     )
-    if quality_issue:
-        raise GroundingError(quality_issue)
+    validation = validation or {"hard_blocks": [], "repair_requests": [], "review_warnings": []}
+    if validation["hard_blocks"]:
+        raise GroundingError(
+            "rewrite blocked by unsupported concrete claims: "
+            + _validation_message(validation["hard_blocks"]),
+            validation=validation,
+        )
+
+    repairs = validation["repair_requests"]
+    warnings = []
+    if repairs:
+        if validation_mode == VALIDATION_STRICT:
+            # Legacy runs retain the old contract: the first quality concern refuses the edit.
+            raise GroundingError(repairs[0]["message"], validation=validation)
+        if not _quality_repair_already_requested(cur, run_id, bullet_id):
+            raise GroundingError(
+                QUALITY_REPAIR_PREFIX + " " + _validation_message(repairs),
+                validation=validation,
+            )
+        # The proposal has been revalidated after one repair request. A regex concern is not
+        # enough to delete grounded work permanently; put the uncertainty in front of the user.
+        warnings = repairs
+        validation["review_warnings"] = warnings
+        validation["repair_requests"] = []
 
     _refuse_if_already_consumed(cur, run_id, [bullet_id])
     edit_id = _record_edit(
@@ -718,7 +804,12 @@ def tool_propose_edit(cur, user_id, run_id, arguments, surfacing=None):
         reason=arguments.get("reason"),
     )
 
-    return {"edit_id": str(edit_id), "cited_bullets": len(links), "status": "recorded"}
+    return {
+        "edit_id": str(edit_id), "cited_bullets": len(links), "status": "recorded",
+        "validation_mode": validation_mode,
+        "validation": validation,
+        "validation_warnings": warnings,
+    }
 
 
 def tool_merge_bullets(cur, user_id, run_id, arguments):
@@ -802,8 +893,8 @@ def tool_merge_bullets(cur, user_id, run_id, arguments):
 ESTABLISH_USE = "establish_use"
 
 
-def tool_request_detail(cur, user_id, run_id, arguments, question=None):
-    """File the one question the review planned for this bullet.
+def tool_request_detail(cur, user_id, run_id, arguments, question=None, allow_multiple=False):
+    """File a question the review and, for V2, coordinator selected for this bullet.
 
     `question` is the server's: the reviewer wrote it, the server validated that it quotes the
     bullet and names no evidence nobody gave, and whatever the model drafted is discarded. A
@@ -825,14 +916,13 @@ def tool_request_detail(cur, user_id, run_id, arguments, question=None):
         )
     verify_citation(cur, user_id, run_id, bullet_id)
 
-    # One question per bullet per run. The unique constraint below dedupes on the exact text,
-    # which is no dedup at all against a model that rewords — and rewording used to file a
-    # second pending request, parking the run in waiting_for_user again. An answer already
-    # given is handed back here so the next move is the rewrite.
+    # V1 plans one question, and still refuses a differently worded second one. V2 is allowed
+    # several only because the coordinator selected immutable ids before this function runs.
+    # The unique constraint keeps retries idempotent in both paths.
     cur.execute(
         """
         SELECT status, answer, question FROM tailoring_detail_requests
-        WHERE run_id = %s AND bullet_id = %s AND status <> 'dismissed'
+        WHERE run_id = %s AND bullet_id = %s
         ORDER BY created_at
         """,
         (run_id, bullet_id),
@@ -840,6 +930,8 @@ def tool_request_detail(cur, user_id, run_id, arguments, question=None):
     for status, answer, asked in cur.fetchall():
         if asked == question:
             continue                       # the insert below hands the same row back
+        if allow_multiple:
+            continue
         if status == 'answered':
             raise GroundingError(
                 f'you already asked about this bullet ("{asked}") and the answer was '
@@ -996,6 +1088,7 @@ def _verify_approved_target(cur, user_id, requirement, bullet_ids, allowed_targe
 def execute_tool(
     cur, user_id, run_id, step, call, allowed_requirements, allowed_targets, allowed_actions,
     allowed_labels=None, resolved=None, candidate_ids=None,
+    validation_mode=VALIDATION_STRICT,
 ):
     """Run one tool call and record it. A rejection is a failed call handed back to the
     model, not an error the user sees.
@@ -1005,12 +1098,14 @@ def execute_tool(
     call actually addressed rather than re-deriving it from the raw arguments.
     """
     name = call.function.name
+    validation_result = None
     try:
         arguments = json.loads(call.function.arguments or "{}")
         if not isinstance(arguments, dict):
             raise GroundingError("tool arguments must be an object")
     except (json.JSONDecodeError, GroundingError) as exc:
         arguments = {}
+        validation_result = getattr(exc, "validation", None)
         result, error = None, (
             "arguments were not valid JSON" if isinstance(exc, json.JSONDecodeError) else str(exc)
         )
@@ -1117,15 +1212,27 @@ def execute_tool(
                             cur, user_id, requirement, _tool_bullet_ids(name, arguments),
                             allowed_targets, merging=name == "merge_bullets",
                         )
-                        result = implementation(cur, user_id, run_id, arguments)
+                        result = (
+                            implementation(
+                                cur, user_id, run_id, arguments,
+                                validation_mode=validation_mode,
+                            ) if name == "propose_edit" else
+                            implementation(cur, user_id, run_id, arguments)
+                        )
                         error = None
                     except GroundingError as exc:
+                        validation_result = exc.validation
                         result, error = None, str(exc)
         else:
             try:
                 result, error = implementation(cur, user_id, run_id, arguments), None
             except GroundingError as exc:
+                validation_result = exc.validation
                 result, error = None, str(exc)
+
+    stored_result = result
+    if error is not None and validation_result is not None:
+        stored_result = {"validation": validation_result}
 
     cur.execute(
         """
@@ -1135,13 +1242,18 @@ def execute_tool(
         """,
         (
             run_id, step, call.id, name, json.dumps(arguments),
-            json.dumps(result) if result is not None else None,
+            json.dumps(stored_result) if stored_result is not None else None,
             "completed" if error is None else "failed",
             error,
         ),
     )
 
-    return result if error is None else {"error": error}
+    if error is None:
+        return result
+    outcome = {"error": error}
+    if validation_result is not None:
+        outcome["validation"] = validation_result
+    return outcome
 
 
 def searches_found_nothing(cur, run_id, requirement, supplied=frozenset()):
@@ -1256,9 +1368,8 @@ def failure_key(tool_name, raw_arguments, error):
 def replay_messages(cur, run_id):
     """Rebuild the conversation from `tool_calls`, minus the rows the model never called.
 
-    `evidence_supplied` and `bullet_review` are records of something the server did, not
-    tools the model invoked. Replaying it would hand the model an assistant message calling a tool that is
-    not in its schema.
+    Review, coordinator, contract and evidence rows record server work, not model tools.
+    Replaying them would hand the model tool results for calls that are not in its schema.
 
     Every step was already written down for the audit trail — the assistant's tool call with
     its arguments, and what the tool answered. That is exactly the shape the API wants back,
@@ -1271,10 +1382,11 @@ def replay_messages(cur, run_id):
         """
         SELECT step_number, call_id, tool_name, arguments, result, status, error_message
         FROM tool_calls
-        WHERE run_id = %s AND tool_name NOT IN (%s, %s)
+        WHERE run_id = %s AND tool_name NOT IN (%s, %s, %s, %s)
         ORDER BY step_number, created_at
         """,
-        (run_id, SUPPLIED, bullet_review.REVIEW),
+        (run_id, SUPPLIED, bullet_review.REVIEW,
+         REVIEW_CONTRACT_TOOL, QUESTION_COORDINATOR_TOOL),
     )
 
     messages, current_step, pending = [], None, []
@@ -1588,6 +1700,168 @@ def beat(get_cursor, run_id, steps_used=None):
 
 KEPT_OUTCOME = "Read in context, the bullet is already clear for this job."
 
+# V2 is wired behind a run-pinned flag. The marker matters as much as the flag: a run that pauses
+# for answers must resume under the same reviewer contract even if a deploy changes the default.
+REVIEW_CONTRACT_TOOL = "tailoring_review_contract"
+REVIEW_CONTRACT_CALL = "tailoring_review_contract"
+QUESTION_COORDINATOR_TOOL = "question_coordinator"
+QUESTION_COORDINATOR_CALL = "question_coordinator:v2"
+
+
+def _review_rollout_bucket(user_id):
+    """Stable 0–99 cohort bucket; it never changes between a user's fresh runs."""
+    digest = hashlib.sha256(str(user_id or "").encode()).digest()
+    return int.from_bytes(digest[:4], "big") % 100
+
+
+def _configured_review_contract(user_id=None):
+    """Choose V2 for fresh runs only; the stored marker owns every resume.
+
+    Rollout order is explicit override, owner allowlist, then deterministic percentage. An
+    invalid percentage fails closed to V1. Lowering the percentage is the rollback for new runs;
+    existing runs remain pinned so a question answered under one contract is never edited under
+    another.
+    """
+    if os.environ.get("TAILORING_REVIEW_V2_ENABLED", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }:
+        return "v2"
+    owners = {
+        value.strip() for value in os.environ.get("TAILORING_REVIEW_V2_USERS", "").split(",")
+        if value.strip()
+    }
+    if user_id is not None and str(user_id) in owners:
+        return "v2"
+    try:
+        percentage = int(os.environ.get("TAILORING_REVIEW_V2_PERCENT", "0").strip() or "0")
+    except ValueError:
+        percentage = 0
+    percentage = max(0, min(percentage, 100))
+    if user_id is not None and _review_rollout_bucket(user_id) < percentage:
+        return "v2"
+    return "v1"
+
+
+def _stored_review_contract(cur, run_id):
+    cur.execute(
+        "SELECT arguments ->> 'version' FROM tool_calls "
+        "WHERE run_id = %s AND call_id = %s",
+        (run_id, REVIEW_CONTRACT_CALL),
+    )
+    row = cur.fetchone()
+    return row[0] if row and row[0] in ("v1", "v2") else None
+
+
+def _record_review_contract(cur, run_id, version):
+    cur.execute(
+        """
+        INSERT INTO tool_calls (run_id, step_number, call_id, tool_name, arguments, result, status)
+        VALUES (%s, 1, %s, %s, %s, '{}'::jsonb, 'completed')
+        ON CONFLICT (run_id, call_id) DO NOTHING
+        """,
+        (run_id, REVIEW_CONTRACT_CALL, REVIEW_CONTRACT_TOOL,
+         json.dumps({"version": version})),
+    )
+
+
+def _load_coordinator_selection(cur, run_id):
+    cur.execute(
+        "SELECT result FROM tool_calls WHERE run_id = %s AND call_id = %s",
+        (run_id, QUESTION_COORDINATOR_CALL),
+    )
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
+def _record_coordinator_selection(cur, run_id, candidates, result, token=None):
+    """Persist ids and reasons, never a second copy of question text.
+
+    The immutable text remains in the stored bullet reviews. Rebuilding the selection validates
+    these ids against those reviews, so stale or invented ids cannot become questions on resume.
+    """
+    stored = {
+        "selected_ids": result.get("selected_ids") or [],
+        "rejected": result.get("rejected") or [],
+    }
+    if token is not None:
+        cur.execute(
+            "SELECT 1 FROM tailoring_runs WHERE id = %s AND claim_token = %s FOR UPDATE",
+            (run_id, token),
+        )
+        if cur.fetchone() is None:
+            raise LeaseLost(f"run {run_id} was claimed by another worker")
+    cur.execute(
+        """
+        INSERT INTO tool_calls (run_id, step_number, call_id, tool_name, arguments, result, status)
+        VALUES (%s, 1, %s, %s, %s, %s, 'completed')
+        ON CONFLICT (run_id, call_id) DO NOTHING
+        """,
+        (
+            run_id, QUESTION_COORDINATOR_CALL, QUESTION_COORDINATOR_TOOL,
+            json.dumps({"candidate_ids": [item["id"] for item in candidates]}),
+            json.dumps(stored),
+        ),
+    )
+
+
+def _coordinator_bullets(tasks, reviews):
+    """The coordinator boundary: validated V2 candidates plus their exact bullet context."""
+    by_id = {task["bullet_id"]: task for task in tasks}
+    bullets = []
+    for bullet_id, review in (reviews or {}).items():
+        if (review or {}).get("decision_claimed") != "ASK":
+            continue
+        task = by_id.get(bullet_id)
+        if task is None:
+            continue
+        bullets.append({
+            "bullet_id": bullet_id,
+            "entry": task.get("entry") or "",
+            "text": task.get("text") or "",
+            "siblings": task.get("siblings") or [],
+            "answers": task.get("answers") or [],
+            "question_candidates": review.get("question_candidates") or [],
+        })
+    return bullets
+
+
+def _v2_reviews_for_editor(reviews, selection):
+    """Translate measured V2 output into the existing bullet-owned candidate boundary."""
+    selected_by_bullet = {}
+    for candidate in (selection or {}).get("selected") or []:
+        selected_by_bullet.setdefault(str(candidate.get("bullet_id")), []).append(candidate)
+
+    effective = {}
+    priority_rank = {"high": 0, "medium": 1, "low": 2}
+    for bullet_id, review in (reviews or {}).items():
+        review = review or {}
+        decision = review.get("decision_claimed")
+        selected = selected_by_bullet.get(str(bullet_id), [])
+        if decision == "ASK" and not selected:
+            # The coordinator found no question worth the person's time. That means no work,
+            # not permission for the editor to invent a rewrite.
+            decision = bullet_review.KEEP
+        levels = [item.get("priority") for item in selected if item.get("priority")]
+        effective[bullet_id] = {
+            "decision": decision or review.get("decision"),
+            "decision_reason": review.get("decision_reason"),
+            "specific_problem": review.get("decision_reason") or "",
+            "doubt_type": selected[0].get("recruiter_doubt_type") if selected else None,
+            "question": selected[0].get("question") if selected else None,
+            "questions": selected,
+            "rewrite_instruction": review.get("rewrite_from_existing_evidence"),
+            "expected_resume_improvement": "; ".join(
+                item.get("expected_resume_change") or "" for item in selected
+                if item.get("expected_resume_change")
+            ) or None,
+            "improvement_level": (
+                min(levels, key=lambda level: priority_rank.get(level, 3)) if levels else None
+            ),
+            "facts_to_preserve": review.get("established_facts") or [],
+            "established_facts": review.get("established_facts") or [],
+        }
+    return effective
+
 # `show_in_bullet` is the user's own claim — they said the skill belongs to that entry — so it
 # keeps its target whatever the review says. Everything else the review decides now belongs to
 # the BULLET: a requirement is context and priority, never an owner.
@@ -1635,6 +1909,7 @@ def _decision_targets(decision, bullet_id, text):
         # what the editor needs to act rather than guess: the reviewer's own question,
         # what it would change, the instruction, and the facts that must survive it
         "question": decision.get("question"),
+        "questions": decision.get("questions"),
         "doubt_type": decision.get("doubt_type"),
         "rewrite_instruction": decision.get("rewrite_instruction"),
         "expected_improvement": decision.get("expected_resume_improvement"),
@@ -1930,20 +2205,30 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
         # review could disagree with the first about a question the user already answered.
         # A run that never had one — older, or started with the step off — keeps its rules.
         state = bullet_review.progress(cur, run_id)
+        review_contract = _stored_review_contract(cur, run_id)
         omitted = []
-        if bullet_review.ENABLED and not state["pool"] and not resume_from:
+        if not state["pool"] and not resume_from:
+            review_contract = review_contract or _configured_review_contract(user_id)
+            _record_review_contract(cur, run_id, review_contract)
+        review_contract = review_contract or "v1"  # old stored runs keep their original rules
+        review_enabled = bullet_review.ENABLED or review_contract == "v2"
+        if review_enabled and not state["pool"] and not resume_from:
             found = bullets_for_review(cur, user_id)
             omitted = found["omitted"]
             bullet_review.record_pool(cur, run_id, found["bullet_ids"])
             state = bullet_review.progress(cur, run_id)
         # Built for the whole pool, not only the part still owed a review: a resumed run needs
         # every bullet's text and entry to rebuild its candidates, and this costs one query.
-        all_tasks = bullet_review.build_tasks(
-            cur, user_id, run_id, assessment, state["pool"],
+        all_tasks = (
+            bullet_review_v2.build_v2_tasks(
+                cur, user_id, run_id, assessment, plan, state["pool"],
+            ) if review_contract == "v2" else
+            bullet_review.build_tasks(cur, user_id, run_id, assessment, state["pool"])
         ) if state["pool"] else []
         owed = set(state["missing"])
         tasks = [task for task in all_tasks if task["bullet_id"] in owed]
         reviews = dict(state["reviews"])
+        stored_selection = _load_coordinator_selection(cur, run_id)
 
     review_error = None
     if tasks:
@@ -1965,7 +2250,8 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
 
         # no connection held across the calls
         try:
-            bullet_review.review_bullets(
+            review_service = bullet_review_v2 if review_contract == "v2" else bullet_review
+            review_service.review_bullets(
                 job, tasks, budget=usage_budget(user_id, "tailoring_review", run_id=run_id),
                 on_chunk=store,
             )
@@ -1975,10 +2261,70 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
             logger.exception("bullet review failed run_id=%s", run_id)
             review_error = "model_call_failed"
 
+    if review_contract == "v2" and not review_error:
+        unavailable_reviews = [
+            bullet_id for bullet_id, review in reviews.items()
+            if (review or {}).get("decision") == bullet_review.REVIEW_UNAVAILABLE
+        ]
+        if unavailable_reviews:
+            # An unread bullet is not a KEEP decision. Continuing would silently turn a model
+            # contract failure into "your resume needs no work", which is exactly what the
+            # complete-resume eval exposed. The stored per-bullet reason remains available for
+            # diagnosis; a fresh run can try the review again.
+            logger.warning(
+                "v2 review unavailable run_id=%s bullets=%s",
+                run_id, ",".join(map(str, unavailable_reviews)),
+            )
+            review_error = "review_unavailable"
+
+    coordinator_result = None
+    if review_contract == "v2" and not review_error:
+        coordinator_bullets = _coordinator_bullets(all_tasks, reviews)
+        coordinator_candidates = question_coordinator_v2.collect_candidates(coordinator_bullets)
+        if coordinator_candidates:
+            try:
+                if stored_selection is None:
+                    raw_selection = question_coordinator_v2.request_selection(
+                        job,
+                        coordinator_candidates,
+                        budget=usage_budget(user_id, "tailoring_review", run_id=run_id),
+                    )
+                    coordinator_result = question_coordinator_v2.validate(
+                        raw_selection, coordinator_candidates,
+                    )
+                    if token:
+                        renew(get_cursor, run_id, token)
+                    with get_cursor(commit=True) as cur:
+                        _record_coordinator_selection(
+                            cur, run_id, coordinator_candidates, coordinator_result, token=token,
+                        )
+                else:
+                    coordinator_result = question_coordinator_v2.validate(
+                        stored_selection, coordinator_candidates,
+                    )
+            except LeaseLost:
+                logger.warning("lease lost while coordinating questions run_id=%s", run_id)
+                return {"run_id": str(run_id), "status": "lease_lost",
+                        "steps_used": resume_from, "summary": None}
+            except QuotaExceeded:
+                review_error = "quota_exceeded"
+            except Exception:
+                logger.exception("question coordination failed run_id=%s", run_id)
+                review_error = "model_call_failed"
+        else:
+            coordinator_result = {"selected_ids": [], "selected": [], "rejected": []}
+
+    effective_reviews = (
+        _v2_reviews_for_editor(reviews, coordinator_result)
+        if review_contract == "v2" and coordinator_result is not None else reviews
+    )
+
     with get_cursor(commit=True) as cur:
         # Requirement-owned work first, keeping the plan's positions; the review's own
         # candidates follow. One bullet has one candidate either way.
-        candidates = requirement_candidates(plan) + review_candidates(plan, reviews, all_tasks)
+        candidates = requirement_candidates(plan) + review_candidates(
+            plan, effective_reviews, all_tasks,
+        )
         candidates_state.create(cur, user_id, run_id, candidates)
         # this run's answers, on the target they were given about: the brief names what the
         # editor may add because of them, and `_claim_evidence` is what allows it
@@ -1986,10 +2332,9 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
         # written before the brief is built, and the brief is built from these candidates —
         # so the record and what the model was told cannot disagree
         record_supplied_evidence(cur, run_id, candidates)
-        stored_ids = {
-            candidates_state.key(row): row["id"]
-            for row in candidates_state.load(cur, run_id)
-        }
+        stored_candidates = candidates_state.load(cur, run_id)
+        stored_by_key = {candidates_state.key(row): row for row in stored_candidates}
+        stored_ids = {key: row["id"] for key, row in stored_by_key.items()}
         supplied = supplied_bullet_ids(cur, run_id)
         # the opening two messages are rebuilt, not stored: they are derived from rows we
         # still have, and storing them would mean a stale brief after the resume is edited
@@ -2021,8 +2366,13 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
             target.get("answers") for target in item.get("targets") or []
         )
     }
-    asking = [item for item in candidates
-              if item["action"] == "ask" and _candidate_key(item) not in answered]
+    asking = [
+        item for item in candidates
+        if item["action"] == "ask"
+        and _candidate_key(item) not in answered
+        and (stored_by_key.get(_candidate_key(item)) or {}).get("status")
+            not in candidates_state.TERMINAL
+    ]
     editable = [item for item in candidates if item not in asking]
 
     # Each candidate gets its own conversation, built when it is claimed, so there is no
@@ -2066,7 +2416,7 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
         if target.get("bullet_id")
     }
     kept_by_review = {
-        bullet_id for bullet_id, decision in (reviews or {}).items()
+        bullet_id for bullet_id, decision in (effective_reviews or {}).items()
         if (decision or {}).get("decision") == bullet_review.KEEP
     }
     allowed_targets = {}
@@ -2104,7 +2454,7 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
         allowed_requirements = set()
         status, error_code = (
             ("limit_reached", "quota_exceeded") if review_error == "quota_exceeded"
-            else ("failed", "model_call_failed")
+            else ("failed", review_error)
         )
         summary = None
     steps_used = resume_from
@@ -2255,6 +2605,10 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
                                 allowed_labels=scope_labels,
                                 candidate_ids=candidate_ids,
                                 resolved=resolved,
+                                validation_mode=(
+                                    VALIDATION_REVIEW if review_contract == "v2"
+                                    else VALIDATION_STRICT
+                                ),
                             )
                             if call.function.name in ACTION_TOOLS:
                                 # what the tool matched, falling back to what the model typed —
@@ -2497,29 +2851,43 @@ def file_planned_questions(cur, user_id, run_id, candidates, candidate_ids=None)
     asked = 0
     for item in question_order(candidates):
         target = (item.get("targets") or [{}])[0]
-        question, bullet_id = target.get("question"), target.get("bullet_id")
+        bullet_id = target.get("bullet_id")
+        planned = target.get("questions")
+        multi = isinstance(planned, list)
+        questions = [
+            entry.get("question") for entry in (planned or [])
+            if isinstance(entry, dict) and entry.get("question")
+        ] if multi else [target.get("question")]
         candidate_id = (candidate_ids or {}).get(_candidate_key(item))
-        if not question or not bullet_id:
+        if not questions or not bullet_id:
             continue
-        if asked >= QUESTION_CAP:
+        if not multi and asked >= QUESTION_CAP:
             # Named, not silently dropped: the work is still owed and a later run can ask it.
             candidates_state.resolve(
                 cur, run_id, candidate_id, candidates_state.NEEDS_REVIEW,
                 outcome="more questions than one round should ask; left for a later run",
             )
             continue
-        try:
-            tool_request_detail(
-                cur, user_id, run_id,
-                {"requirement": item.get("requirement") or "", "bullet_id": bullet_id},
-                question=question,
-            )
-        except GroundingError as exc:
-            # already asked and answered in this run, or the bullet is gone from under us
-            logger.info("question not filed run_id=%s bullet=%s: %s", run_id, bullet_id, exc)
-            continue
-        candidates_state.await_answer(cur, run_id, candidate_id)
-        asked += 1
+        filed_for_candidate = 0
+        for question in questions:
+            try:
+                outcome = tool_request_detail(
+                    cur, user_id, run_id,
+                    {"requirement": item.get("requirement") or "", "bullet_id": bullet_id},
+                    question=question,
+                    allow_multiple=multi,
+                )
+            except GroundingError as exc:
+                # already asked and answered in this run, or the bullet is gone from under us
+                logger.info("question not filed run_id=%s bullet=%s: %s", run_id, bullet_id, exc)
+                continue
+            if outcome.get("status") == "awaiting_user":
+                asked += 1
+                filed_for_candidate += 1
+        if filed_for_candidate:
+            # One candidate owns all of the bullet's questions and becomes editable only after
+            # none of them remains pending.
+            candidates_state.await_answer(cur, run_id, candidate_id)
     return asked
 
 
@@ -2613,6 +2981,10 @@ def load_run(cur, user_id, run_id):
     }
 
     _job, assessment, requirements = load_job_context(cur, user_id, run["job_id"])
+    run["review_contract"] = _stored_review_contract(cur, run_id) or "v1"
+    run["validation_mode"] = (
+        VALIDATION_REVIEW if run["review_contract"] == "v2" else VALIDATION_STRICT
+    )
     run["reviews"] = bullet_review.load(cur, run_id)
     # Two phases, counted separately. The review is one model call per bullet and can be most of
     # a run's wall clock, and while it runs `steps_used` is 0 — so a step counter is not just
@@ -2634,7 +3006,8 @@ def load_run(cur, user_id, run_id):
     # `rewrite` and this counted those; with the work bullet-owned, the plan is a statement
     # about fit and says nothing about what the review found.
     decisions = Counter(
-        (item or {}).get("decision") for item in (run["reviews"] or {}).values()
+        ((item or {}).get("decision_claimed") or (item or {}).get("decision"))
+        for item in (run["reviews"] or {}).values()
     )
     run["review_counts"] = {
         "reviewed": sum(decisions.values()),
@@ -2696,7 +3069,16 @@ def load_run(cur, user_id, run_id):
                -- against a bullet that has since changed would describe a comparison that
                -- never happened.
                (SELECT l.bullet_text FROM evidence_links AS l
-                 WHERE l.edit_id = e.id AND l.bullet_id = e.bullet_id LIMIT 1)
+                 WHERE l.edit_id = e.id AND l.bullet_id = e.bullet_id LIMIT 1),
+               COALESCE((
+                   SELECT tc.result -> 'validation_warnings'
+                   FROM tool_calls AS tc
+                   WHERE tc.run_id = e.run_id AND tc.tool_name = 'propose_edit'
+                     AND tc.status = 'completed'
+                     AND tc.result ->> 'edit_id' = e.id::text
+                   ORDER BY tc.created_at DESC
+                   LIMIT 1
+               ), '[]'::jsonb)
         FROM proposed_edits AS e
         LEFT JOIN resume_bullets AS b ON b.id = e.bullet_id
         LEFT JOIN resume_entries AS en ON en.id = b.entry_id
@@ -2719,6 +3101,7 @@ def load_run(cur, user_id, run_id):
             # means no technology and no number was lost — but those are not every fact, so
             # this says plainly that the judgement is the user's.
             "compression_only": compression_only(r[11], r[3]) if r[11] else False,
+            "validation_warnings": r[12] or [],
             "source_bullets": ([{
                 "bullet_id": str(r[1]), "text": r[6],
             }] if r[1] and r[6] else []) + [
@@ -2783,7 +3166,10 @@ def load_run(cur, user_id, run_id):
         -- agent's actions, and the supplied targets are already on screen with each candidate.
         SELECT step_number, tool_name, arguments, status, error_message
         FROM tool_calls
-        WHERE run_id = %s AND tool_name NOT IN ('evidence_supplied', 'bullet_review')
+        WHERE run_id = %s AND tool_name NOT IN (
+            'evidence_supplied', 'bullet_review',
+            'tailoring_review_contract', 'question_coordinator'
+        )
         ORDER BY step_number, created_at
         """,
         (run_id,),

@@ -223,6 +223,11 @@ def make_answerable(cur, run_id):
             WHERE q.run_id = c.run_id AND q.bullet_id = c.bullet_id
               AND q.status = 'answered' AND q.answer IS NOT NULL
           )
+          AND NOT EXISTS (
+            SELECT 1 FROM tailoring_detail_requests AS q
+            WHERE q.run_id = c.run_id AND q.bullet_id = c.bullet_id
+              AND q.status = 'pending'
+          )
         RETURNING id
         """,
         (run_id,),
@@ -237,6 +242,11 @@ def make_answerable(cur, run_id):
           AND NOT EXISTS (
             SELECT 1 FROM tailoring_detail_requests AS q
             WHERE q.run_id = c.run_id AND q.bullet_id = c.bullet_id AND q.status = 'pending'
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM tailoring_detail_requests AS q
+            WHERE q.run_id = c.run_id AND q.bullet_id = c.bullet_id
+              AND q.status = 'answered' AND q.answer IS NOT NULL
           )
         """,
         (run_id,),

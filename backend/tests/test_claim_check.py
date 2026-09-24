@@ -6,6 +6,7 @@
 from services.claim_check import (
     abstraction_padding,
     compression_only,
+    explicit_answer_contradictions,
     improvements,
     bullet_is_already_strong,
     bullet_quality_gaps,
@@ -13,6 +14,7 @@ from services.claim_check import (
     ownership_inflation,
     recruiter_doubt,
     rewrite_quality_issue,
+    rewrite_validation_findings,
     tense_regression,
 )
 
@@ -320,3 +322,74 @@ def test_an_answer_that_says_they_built_it_licenses_saying_so():
     assert rewrite_quality_issue(
         original, proposed, answers=["I built the order-status service in Python."],
     ) is None
+
+
+# ── certainty-aware validation ───────────────────────────────────────────────
+
+def test_validation_returns_every_quality_concern_instead_of_the_first():
+    original = (
+        "Contributing to a work-in-progress ROS 2 stack in C++ for Pitt's FSAE EV program, "
+        "focused on cone-perception software."
+    )
+    findings = rewrite_validation_findings(
+        original,
+        "Developed software for a robotics pipeline, improving reliability.",
+        entry_is_ongoing=True,
+    )
+
+    codes = {item["code"] for item in findings["repair_requests"]}
+    assert {"ownership_change", "tense_change", "possible_skill_omission",
+            "possible_name_omission", "unclear_outcome_support"} <= codes
+    assert findings["hard_blocks"] == []
+    assert all(item["message"] and item["evidence"] for item in findings["repair_requests"])
+
+
+def test_unsupported_concrete_claim_is_a_hard_block():
+    findings = rewrite_validation_findings(
+        "Built a Python API.",
+        "Built a Python and Redis API.",
+        unsupported=["redis"],
+    )
+
+    assert findings["hard_blocks"] == [{
+        "code": "unsupported_concrete_claim",
+        "message": "redis does not appear in the evidence you cited",
+        "evidence": "Checked against the cited bullet, current-run answers, and approved rewrites.",
+    }]
+
+
+def test_answer_backed_ownership_change_has_no_ownership_warning():
+    findings = rewrite_validation_findings(
+        "Worked on the order-status service.",
+        "Built the order-status service in Python.",
+        answers=["I built the order-status service in Python."],
+    )
+
+    assert "ownership_change" not in {
+        item["code"] for item in findings["repair_requests"]
+    }
+
+
+def test_an_explicit_negative_answer_is_a_hard_contradiction():
+    contradictions = explicit_answer_contradictions(
+        "Built a Redis cache that handled 10 requests.",
+        ["I did not use Redis, and it was not 10 requests; it was 5."],
+    )
+    findings = rewrite_validation_findings(
+        "Worked on caching.",
+        "Built a Redis cache that handled 10 requests.",
+        answers=["I did not use Redis, and it was not 10 requests; it was 5."],
+        contradictions=contradictions,
+    )
+
+    assert set(contradictions) == {"redis", "10"}
+    assert {item["code"] for item in findings["hard_blocks"]} == {
+        "explicit_answer_contradiction"
+    }
+
+
+def test_hard_contradiction_does_not_guess_from_ordinary_negative_language():
+    assert explicit_answer_contradictions(
+        "Built a Redis cache.",
+        ["Redis was not only used for caching; it also backed rate limits."],
+    ) == []

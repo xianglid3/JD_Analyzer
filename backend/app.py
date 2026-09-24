@@ -13,6 +13,7 @@ from commands import (
     register_run_sweep,
     register_relation_maintenance,
     register_tailoring_worker,
+    register_tailoring_rollout_report,
     register_rewrite_approvals,
     register_skill_relations,
     register_usage_report,
@@ -79,6 +80,7 @@ register_skill_relations(app)
 register_rewrite_approvals(app)
 register_relation_maintenance(app)
 register_grounding_report(app)
+register_tailoring_rollout_report(app)
 
 check_schema()
 
