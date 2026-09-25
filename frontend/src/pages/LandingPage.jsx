@@ -78,8 +78,26 @@ export default function LandingPage() {
           </div>
         </section>
 
+        <section className="landing-video landing-width" aria-labelledby="demo-video-heading">
+          <div className="landing-section-label"><h2 id="demo-video-heading" className="eyebrow">02 / See it in action</h2><span className="eyebrow">Real tailoring run</span></div>
+          <div className="landing-video-heading">
+            <h2>Watch JobMatcha work<br /><span>from job post to suggested edits.</span></h2>
+            <p>See how JobMatcha reviews a resume, asks for missing details, and turns those answers into edits you can approve.</p>
+          </div>
+          <div className="landing-video-frame">
+            <iframe
+              src="https://www.youtube-nocookie.com/embed/RoPAPT4rQGw?rel=0"
+              title="JobMatcha example resume tailoring run"
+              loading="lazy"
+              referrerPolicy="strict-origin-when-cross-origin"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+              allowFullScreen
+            />
+          </div>
+        </section>
+
         <section className="landing-engineering landing-width" aria-labelledby="engineering-heading">
-          <p className="eyebrow">02 / Under the hood</p>
+          <p className="eyebrow">03 / Under the hood</p>
           <div className="landing-section-heading"><h2 id="engineering-heading">Thoughtful on the surface.<br /><span>Deliberate underneath.</span></h2><p>A full-stack project exploring a practical question: how do you make model-assisted resume editing inspectable and reliable?</p></div>
           <div className="landing-features">
             <article><span className="eyebrow">01 — Traceability</span><h3>Evidence behind the edit.</h3><p>Proposed edits link to resume evidence. Backend checks validate citations and reject specific unsupported claims, including added technologies and numbers.</p></article>
