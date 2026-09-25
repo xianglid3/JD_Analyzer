@@ -1,0 +1,100 @@
+{
+  "_about": "Development examples derived from owner-confirmed question-to-edit history. These are prompt-development evidence, not held-out evaluation cases.",
+  "resumes": [
+    {
+      "id": "confirmed_question_to_edit",
+      "skills": ["Python", "PostgreSQL", "Flask", "Docker", "cryptography"],
+      "job": {
+        "title": "Backend Software Engineer",
+        "company": "Development Evidence",
+        "summary": "Build reliable backend services, data systems, and security boundaries.",
+        "skills": ["python", "postgresql", "distributed systems", "security"],
+        "requirements": ["python", "postgresql", "distributed systems", "security"]
+      },
+      "entries": [
+        {
+          "kind": "project",
+          "title": "JobMatcha",
+          "bullets": [
+            {
+              "key": "database_invariant",
+              "text": "Added PostgreSQL locking and indexes to enforce database-level invariants for tailoring runs and edits.",
+              "answers": ["Used row-level locking and partial unique indexes to enforce one active tailoring run per job and one accepted edit per bullet per run."],
+              "expected": {
+                "actions": ["ask"],
+                "questions": {"min": 1, "max": 10},
+                "vague_relevant": true,
+                "edit_after_answer": true,
+                "required_question_concepts": [["invariant", "locking", "index"], ["affect", "run", "edit"]],
+                "required_edit_terms": ["one active", "one accepted edit"],
+                "forbidden_edit_terms": ["millions", "50%"]
+              }
+            },
+            {
+              "key": "worker_recovery",
+              "text": "Improved background processing so long tailoring runs recover reliably after failures.",
+              "answers": ["Moved execution from web-process daemon threads to a separate worker service with expiring leases, fencing tokens, and per-step checkpoints. Verified recovery by killing a worker mid-run and resuming without duplicating completed work."],
+              "expected": {
+                "actions": ["ask"],
+                "questions": {"min": 1, "max": 10},
+                "vague_relevant": true,
+                "edit_after_answer": true,
+                "required_question_concepts": [["improvement", "worker", "processing"], ["recover", "failure", "verify"]],
+                "required_edit_terms": ["worker", "lease", "checkpoint"],
+                "forbidden_edit_terms": ["zero failures"]
+              }
+            },
+            {
+              "key": "idempotent_request",
+              "text": "Added idempotency to avoid duplicate processing and repeated API calls.",
+              "answers": ["Implemented reserve-before-spend idempotency for job-draft creation so duplicate requests cannot trigger duplicate LLM calls, with stored-response replay after completion."],
+              "expected": {
+                "actions": ["ask"],
+                "questions": {"min": 1, "max": 10},
+                "vague_relevant": true,
+                "edit_after_answer": true,
+                "required_question_concepts": [["request", "api", "process", "operation"], ["duplicate", "idempotent", "behavior"]],
+                "required_edit_terms": ["reserve-before-spend", "job-draft", "duplicate llm"],
+                "forbidden_edit_terms": ["100%"]
+              }
+            }
+          ]
+        },
+        {
+          "kind": "project",
+          "title": "Encrypted Chat",
+          "bullets": [
+            {
+              "key": "backend_boundary",
+              "text": "Built a Flask backend for an encrypted chat application with authentication and message persistence.",
+              "answers": ["The Flask backend issues JWTs, stores users, channels, ciphertext messages, and timestamps in SQLite, and enforces channel membership and roles on server routes."],
+              "expected": {
+                "actions": ["ask"],
+                "questions": {"min": 1, "max": 10},
+                "vague_relevant": true,
+                "edit_after_answer": true,
+                "required_question_concepts": [["authentication", "jwt"], ["store", "persist", "data", "sqlite", "ciphertext", "authorization"]],
+                "required_edit_terms": ["jwt", "sqlite", "ciphertext"],
+                "forbidden_edit_terms": ["websocket"]
+              }
+            },
+            {
+              "key": "crypto_boundary",
+              "text": "Kept cryptographic operations in the browser so the backend only handles encrypted data.",
+              "answers": ["The server stores ciphertext and wrapped group-key metadata, but never plaintext or unwrapped keys."],
+              "expected": {
+                "actions": ["ask"],
+                "questions": {"min": 1, "max": 10},
+                "vague_relevant": true,
+                "edit_after_answer": true,
+                "required_question_concepts": [["cryptographic", "browser", "operation"], ["server", "backend", "store", "encrypted data", "ciphertext", "key", "plaintext"]],
+                "required_edit_terms": ["wrapped", "plaintext", "unwrapped"],
+                "forbidden_edit_terms": ["websocket"]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

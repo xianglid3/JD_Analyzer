@@ -47,7 +47,8 @@ def main():
     ]
     model = args.model or coordinator.MODEL
     print(f"coordinator model: {model}   cases: {len(cases)}   repeat: {args.repeat}")
-    print(f"calls: {len(cases) * args.repeat}\n")
+    print(f"evaluation attempts: {len(cases) * args.repeat} "
+          "(an attempt may call overlap review, selection, and a corrective retry)\n")
 
     stable, flaky, failed = [], [], []
     totals = Counter()

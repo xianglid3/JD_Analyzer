@@ -450,6 +450,7 @@ def test_a_sustained_rate_limit_ends_that_bullet_not_the_pool(monkeypatch):
 def test_a_rate_limit_is_told_apart_from_a_bad_response():
     assert bullet_review.is_rate_limit(_Limited())
     assert bullet_review.is_rate_limit(RuntimeError("Service Unavailable"))
+    assert bullet_review.is_rate_limit(RuntimeError("service_unavailable_error"))
     assert not bullet_review.is_rate_limit(ReviewUnavailable("the response was not valid JSON"))
 
 

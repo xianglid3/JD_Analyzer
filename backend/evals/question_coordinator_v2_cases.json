@@ -229,6 +229,67 @@
       }
     },
     {
+      "id": "project_overlap_with_replacement",
+      "job": "robotics",
+      "expect": "Keep the specific point-cloud ownership question, reject the broader sibling ownership question, and use the ROS system-role candidate as the distinct replacement.",
+      "bullets": [
+        {
+          "bullet_id": "ros-stack",
+          "entry": "Panther Racing Formula SAE — Software Team Member",
+          "text": "Contributing to a work-in-progress ROS 2 autonomous-driving stack in C++ for Pitt's FSAE EV driverless program, focused on cone-perception software.",
+          "siblings": ["Working on Velodyne VLP-16 point-cloud filtering, ground removal, Euclidean clustering, cone validation and centroid estimation."],
+          "answers": [],
+          "question_candidates": [
+            {
+              "id": "c1",
+              "question": "What specific contributions did you make to the ROS 2 autonomous-driving stack?",
+              "missing_fact": "the candidate's personal ROS 2 contribution",
+              "recruiter_doubt_type": "contribution",
+              "why_it_matters_for_this_job": "The role requires ownership of autonomous-vehicle software.",
+              "expected_resume_change": "The bullet could name the perception work personally implemented.",
+              "priority": "medium",
+              "requirement_reference": "r1"
+            },
+            {
+              "id": "c2",
+              "question": "What role did the cone-perception software play in the ROS 2 autonomous-driving stack?",
+              "missing_fact": "the cone-perception software's role in the ROS 2 stack",
+              "recruiter_doubt_type": "scope",
+              "why_it_matters_for_this_job": "The role values understanding how perception components fit into a larger autonomous system.",
+              "expected_resume_change": "The bullet could explain the perception component's place in the autonomous-driving stack.",
+              "priority": "high",
+              "requirement_reference": "r1"
+            }
+          ]
+        },
+        {
+          "bullet_id": "point-cloud",
+          "entry": "Panther Racing Formula SAE — Software Team Member",
+          "text": "Working on Velodyne VLP-16 point-cloud filtering, ground removal, Euclidean clustering, cone validation and centroid estimation.",
+          "siblings": ["Contributing to a work-in-progress ROS 2 autonomous-driving stack in C++ focused on cone-perception software."],
+          "answers": [],
+          "question_candidates": [{
+            "id": "c1",
+            "question": "What specific contributions did you make to point-cloud filtering and ground removal?",
+            "missing_fact": "the point-cloud work personally implemented",
+            "recruiter_doubt_type": "contribution",
+            "why_it_matters_for_this_job": "The role needs evidence of hands-on perception implementation.",
+            "expected_resume_change": "The bullet could name the point-cloud processing stages personally implemented.",
+            "priority": "high",
+            "requirement_reference": "r2"
+          }]
+        }
+      ],
+      "expected": {
+        "selected": {"min": 2, "max": 2},
+        "required_selected_ids": ["ros-stack:c2", "point-cloud:c1"],
+        "required_rejection_groups": [{
+          "ids": ["ros-stack:c1"],
+          "reasons": ["duplicate", "lower_priority_same_gap"]
+        }]
+      }
+    },
+    {
       "id": "already_answered",
       "job": "backend",
       "expect": "Reject the contribution question because the answer already names the database work.",
@@ -374,6 +435,118 @@
           "ai-platform:c1": "low_value",
           "idempotency:c1": "low_value",
           "crypto-pipeline:c1": "low_value"
+        }
+      }
+    },
+    {
+      "id": "generated_pool_filters_padding",
+      "job": "backend",
+      "expect": "Keep migration ownership and dashboard changes; a database-name question may also survive because it adds a distinct job-relevant technology without assuming which product was used. Drop generic impact padding.",
+      "bullets": [{
+        "bullet_id": "reporting",
+        "entry": "ShopCo — Software Engineering Intern",
+        "text": "Migrated the reporting service to a new database and updated the dashboards that read from it.",
+        "siblings": [],
+        "answers": [],
+        "question_candidates": [
+          {
+            "id": "c1",
+            "question": "What did you personally do to migrate the reporting service to a new database?",
+            "missing_fact": "the candidate's migration contribution",
+            "recruiter_doubt_type": "contribution",
+            "why_it_matters_for_this_job": "The role owns backend migrations.",
+            "expected_resume_change": "The bullet could name the migration work personally completed.",
+            "priority": "high",
+            "requirement_reference": null
+          },
+          {
+            "id": "c2",
+            "question": "What specific database did you migrate the reporting service to?",
+            "missing_fact": "the database product used",
+            "recruiter_doubt_type": "implementation",
+            "why_it_matters_for_this_job": "The role uses relational databases.",
+            "expected_resume_change": "The bullet could name the database product.",
+            "priority": "high",
+            "requirement_reference": null
+          },
+          {
+            "id": "c3",
+            "question": "What changes were made to the dashboards after the migration?",
+            "missing_fact": "the dashboard changes",
+            "recruiter_doubt_type": "implementation",
+            "why_it_matters_for_this_job": "The answer would clarify the second claimed workstream.",
+            "expected_resume_change": "The bullet could name the dashboard changes.",
+            "priority": "medium",
+            "requirement_reference": null
+          },
+          {
+            "id": "c4",
+            "question": "What was the impact of the migration on performance or reliability?",
+            "missing_fact": "an unclaimed performance or reliability result",
+            "recruiter_doubt_type": "result_validation",
+            "why_it_matters_for_this_job": "A result could strengthen the bullet.",
+            "expected_resume_change": "The bullet could add a performance or reliability result.",
+            "priority": "medium",
+            "requirement_reference": null
+          }
+        ]
+      }],
+      "expected": {
+        "selected": {"min": 2, "max": 3},
+        "required_selected_ids": ["reporting:c1", "reporting:c3"],
+        "required_rejections": {
+          "reporting:c4": ["low_value", "unsupported_premise"]
+        }
+      }
+    },
+    {
+      "id": "generated_pool_preserves_result_validation",
+      "job": "backend",
+      "expect": "Keep ownership plus a concrete validation question for a claimed improvement; reject an invented architecture-scope question.",
+      "bullets": [{
+        "bullet_id": "payments",
+        "entry": "ShopCo — Software Engineering Intern",
+        "text": "Helped improve the checkout and payments flow for the web store backend.",
+        "siblings": [],
+        "answers": [],
+        "question_candidates": [
+          {
+            "id": "c1",
+            "question": "What specific improvements did you personally make to the checkout and payments flow?",
+            "missing_fact": "the candidate's contribution",
+            "recruiter_doubt_type": "contribution",
+            "why_it_matters_for_this_job": "The role owns backend product flows.",
+            "expected_resume_change": "The bullet could name the work personally completed.",
+            "priority": "high",
+            "requirement_reference": null
+          },
+          {
+            "id": "c2",
+            "question": "What role did you play in the overall architecture of the checkout and payments flow?",
+            "missing_fact": "an architecture role the bullet does not claim",
+            "recruiter_doubt_type": "scope",
+            "why_it_matters_for_this_job": "Architecture ownership could strengthen the bullet.",
+            "expected_resume_change": "The bullet could claim an architecture role.",
+            "priority": "medium",
+            "requirement_reference": null
+          },
+          {
+            "id": "c3",
+            "question": "What did you observe that showed the checkout and payments flow improved?",
+            "missing_fact": "the observation supporting the claimed improvement",
+            "recruiter_doubt_type": "result_validation",
+            "why_it_matters_for_this_job": "The answer would support the improvement already claimed.",
+            "expected_resume_change": "The bullet could state the observed result without inventing a metric.",
+            "priority": "medium",
+            "requirement_reference": null
+          }
+        ]
+      }],
+      "expected": {
+        "selected": {"min": 2, "max": 2},
+        "required_selected_ids": ["payments:c1", "payments:c3"],
+        "required_rejections": {
+          "payments:c2": ["low_value", "unsupported_premise"]
         }
       }
     },

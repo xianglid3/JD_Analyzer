@@ -292,7 +292,7 @@ _HANDS_ON = STRONG_ACTION_VERBS | STRONG_ACTION_GERUNDS | {
 # "…, improving the checkout flow" was refused for adding a result the bullet already claimed,
 # because `improved|improving` matched the rewrite and not the original.
 _OUTCOME = re.compile(
-    r"\b(cut|cutting|reduc\w*|improv\w*|increas\w*|eliminat\w*|"
+    r"\b(cut|cutting|reduc\w*|improv\w*|increas\w*|eliminat\w*|avoid\w*|"
     r"saved|saving|so that|enabl\w*|unblock\w*|from .* to )\b",
     re.IGNORECASE,
 )
@@ -575,7 +575,56 @@ def abstraction_padding(original_text, proposed_text):
 COMPRESSION_RATIO = 0.8          # a rewrite must be at least a fifth shorter to count as concise
 
 
-def improvements(original_text, proposed_text, surfacing=None):
+_ANSWER_DETAIL_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "been", "being", "by", "for", "from",
+    "had", "has", "have", "i", "in", "into", "is", "it", "its", "of", "on", "or", "so",
+    "that", "the", "their", "them", "they", "this", "to", "was", "were", "with", "without",
+    # Resume grammar is not the detail an answer contributed. Requiring two non-generic new
+    # terms prevents an answer from licensing a synonym swap merely because both use "built".
+    "add", "added", "build", "built", "change", "changed", "create", "created", "design",
+    "designed", "develop", "developed", "enhance", "enhanced", "implement", "implemented",
+    "improve", "improved", "include", "included", "made", "move", "moved", "use", "used",
+    "using", "work", "worked",
+}
+
+
+def answer_detail_terms(original_text, proposed_text, answers=()):
+    """Meaningful answer words newly surfaced by a proposal.
+
+    Answers are evidence, but their mere presence must not make every rewrite useful. A term
+    counts only when the answer and proposal both contain it, the original does not, and it is
+    not ordinary resume grammar. Two such terms are required by ``improvements``; a single new
+    technology or quantity is already covered by the stricter skill/number checks.
+    """
+    original = set(_words(original_text))
+    proposed = set(_words(proposed_text))
+    supported = set().union(*(set(_words(answer)) for answer in answers)) if answers else set()
+    return sorted((proposed - original) & supported - _ANSWER_DETAIL_STOPWORDS)
+
+
+_ANSWER_COMPOUND = re.compile(r"\b[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+\b")
+
+
+def omitted_answer_compounds(original_text, proposed_text, answers=()):
+    """Distinctive compound terms supplied by an answer but lost in the rewrite.
+
+    These are useful repair signals rather than truth gates. A phrase such as
+    ``reserve-before-spend`` names the mechanism; replacing it with generic ``idempotency``
+    preserves the outcome but discards the detail the user supplied. The review contract asks
+    for one repair, then may still show a grounded proposal with a warning. Legacy strict runs do
+    not enable this check.
+    """
+    original = (original_text or "").lower()
+    proposed = (proposed_text or "").lower()
+    terms = {
+        match.group(0).lower()
+        for answer in answers or ()
+        for match in _ANSWER_COMPOUND.finditer(answer or "")
+    }
+    return sorted(term for term in terms if term not in original and term not in proposed)
+
+
+def improvements(original_text, proposed_text, surfacing=None, answers=()):
     """Every reason this rewrite might be an improvement, as a dict of flags.
 
     One function because two callers need the same answer and a subset is a wrong answer:
@@ -588,6 +637,7 @@ def improvements(original_text, proposed_text, surfacing=None):
     original_skills = set(named_skills(original_text))
     proposed_skills = set(named_skills(proposed_text))
     named = (surfacing or "").strip().lower()
+    answer_terms = answer_detail_terms(original_text, proposed_text, answers)
     return {
         "stronger_action": opens_with_action(proposed_words) and not opens_with_action(original_words),
         "added_skills": bool(proposed_skills - original_skills),
@@ -595,12 +645,13 @@ def improvements(original_text, proposed_text, surfacing=None):
         "surfaced": bool(named)
                     and named in (proposed_text or "").lower()
                     and named not in (original_text or "").lower(),
+        "answer_detail": len(answer_terms) >= 2,
         "compressed": bool(original_words)
                       and len(proposed_words) <= len(original_words) * COMPRESSION_RATIO,
     }
 
 
-def compression_only(original_text, proposed_text, surfacing=None):
+def compression_only(original_text, proposed_text, surfacing=None, answers=()):
     """True when being shorter is the only thing this rewrite has going for it.
 
     Such an edit passed the factual checks, which means it dropped no technology and no
@@ -608,9 +659,11 @@ def compression_only(original_text, proposed_text, surfacing=None):
     a rewrite may delete it and still arrive here. The flag exists so the user is told that
     plainly, rather than the system implying a guarantee it does not provide.
     """
-    signals = improvements(original_text, proposed_text, surfacing)
+    signals = improvements(original_text, proposed_text, surfacing, answers)
     return signals["compressed"] and not any(
-        signals[name] for name in ("stronger_action", "added_skills", "added_numbers", "surfaced")
+        signals[name] for name in (
+            "stronger_action", "added_skills", "added_numbers", "surfaced", "answer_detail",
+        )
     )
 
 
@@ -653,7 +706,7 @@ def _repair(code, message, evidence):
 
 def rewrite_validation_findings(original_text, proposed_text, surfacing=None,
                                 entry_is_ongoing=False, answers=(), unsupported=(),
-                                contradictions=()):
+                                contradictions=(), preserve_answer_compounds=False):
     """Return every deterministic rewrite finding, classified by certainty.
 
     The functions below detect useful warning signals, but their regexes do not prove semantic
@@ -746,6 +799,19 @@ def rewrite_validation_findings(original_text, proposed_text, surfacing=None,
             f"The source contains {formatted}; the proposal does not.",
         ))
 
+    omitted_compounds = (
+        omitted_answer_compounds(original_text, proposed_text, answers)
+        if preserve_answer_compounds else []
+    )
+    if omitted_compounds:
+        repairs.append(_repair(
+            "possible_answer_detail_omission",
+            "the rewrite drops a named detail supplied in the answer: "
+            f"{', '.join(omitted_compounds)}. Preserve the exact mechanism or boundary term; "
+            "do not replace it with only a generic outcome",
+            f"The current-run answer names {', '.join(omitted_compounds)}; the proposal does not.",
+        ))
+
     invented_result = added_result_language([original_text], proposed_text, answers)
     if invented_result:
         repairs.append(_repair(
@@ -756,13 +822,14 @@ def rewrite_validation_findings(original_text, proposed_text, surfacing=None,
     # Reaching here means nothing measurable was lost, so saying it in fewer words counts as
     # an improvement in its own right. It is the weakest of the five and the only one that is
     # not evidence of something added, which is why `compression_only` marks it for the user.
-    if not any(improvements(original_text, proposed_text, surfacing).values()):
+    if not any(improvements(original_text, proposed_text, surfacing, answers).values()):
         repairs.append(_repair(
             "weak_improvement",
             "the rewrite only changes phrasing; strengthen the action, surface new supported "
             "evidence, or say the same thing in meaningfully fewer words — otherwise leave the "
             "bullet unchanged",
-            "No stronger action, supported skill, quantity, surfaced fact, or meaningful compression was detected.",
+            "No stronger action, supported skill, quantity, answer-derived detail, surfaced fact, "
+            "or meaningful compression was detected.",
         ))
     return findings
 

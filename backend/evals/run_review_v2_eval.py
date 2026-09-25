@@ -79,6 +79,10 @@ def show(result, indent="      "):
         return [f"{indent}NOT REVIEWED: {result['unavailable_reason']}"]
     if result.get("decision_claimed"):
         lines.append(f"{indent}decision: {result['decision_claimed']} — {result.get('decision_reason')}")
+    if result.get("gap_scan"):
+        lines.append(f"{indent}gap scan: " + ", ".join(
+            f"{key}={value}" for key, value in result["gap_scan"].items()
+        ))
     lines.append(f"{indent}strength: {result.get('strength_assessment')}")
     for fact in result.get("established_facts") or []:
         lines.append(f"{indent}  established: {fact}")
@@ -126,8 +130,10 @@ def main():
     variant = "silent (no decision)" if args.no_decision else "decision contract"
     print(f"review model: {model}   cases: {len(cases)}   repeat: {args.repeat}   "
           f"candidate ceiling: {args.ceiling} (validator accepts {v2.MAX_QUESTION_CANDIDATES})")
-    print(f"contract: {variant}")
-    print(f"calls: {len(cases) * args.repeat}\n")
+    print(f"contract: {variant}"
+          + (" + separate question generation" if not args.no_decision else ""))
+    print(f"evaluation attempts: {len(cases) * args.repeat} "
+          "(an ASK gets one separate question-generation call)\n")
 
     runs = {}
     stable, flaky, failed = [], [], []
@@ -152,7 +158,8 @@ def main():
         for attempt in range(args.repeat):
             try:
                 raw = (v2.request_review(job, [task], model=model, ceiling=args.ceiling,
-                                         decision=not args.no_decision) or [{}])[0]
+                                         decision=not args.no_decision,
+                                         triage_only=not args.no_decision) or [{}])[0]
             except v2.ReviewUnavailable as exc:
                 print(f"      {attempt + 1}. ERROR: {exc}")
                 results.append(None)
@@ -162,13 +169,17 @@ def main():
             # validator is deleting good questions" and "the model only wrote one" are different
             # diagnoses and the survivor count alone cannot tell them apart.
             offered = [c for c in (raw.get("question_candidates") or []) if isinstance(c, dict)]
-            print(f"      {attempt + 1}. raw: {len(offered)} candidate(s) from the model"
-                  + ("" if args.no_decision else f" · decision {raw.get('decision')}"))
+            print(f"      {attempt + 1}. triage: decision {raw.get('decision')}"
+                  + (f" · {len(offered)} candidate(s)" if args.no_decision else " · no question text"))
             for entry in offered:
                 print(f"         raw[{entry.get('id')}] missing={entry.get('missing_fact')!r}")
                 print(f"              {entry.get('question')}")
             try:
-                result = v2.validate(raw, task, require_decision=not args.no_decision)
+                result = v2.validate(
+                    raw, task,
+                    require_decision=not args.no_decision,
+                    triage_only=not args.no_decision,
+                )
             except v2.ContractViolation as exc:
                 # The one thing that is not a bad candidate but two incompatible claims. In a run
                 # this retries and then abandons the bullet; here it is printed, because a reviewer
@@ -177,6 +188,17 @@ def main():
                 results.append(None)
                 judged.append([str(exc)])
                 continue
+            primary_count = len(result.get("question_candidates") or [])
+            if result.get("decision_claimed") == "ASK" and primary_count < 2:
+                try:
+                    result = v2.expand_review(job, task, result, model=model, limit=args.ceiling)
+                except v2.ReviewUnavailable as exc:
+                    print(f"      {attempt + 1}. ALTERNATIVE ERROR: {exc}")
+                    results.append(None)
+                    judged.append([str(exc)])
+                    continue
+                added = len(result.get("question_candidates") or []) - primary_count
+                print(f"      {attempt + 1}. question generation added {added} candidate(s)")
             results.append(result)
             problems = v2.evaluation_problems(result, case.get("expected"))
             judged.append(problems)

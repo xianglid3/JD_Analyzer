@@ -596,6 +596,70 @@ def test_prompt_states_the_positive_target_and_rejects_synonym_swaps():
     assert "use that one" in tailoring_agent.SYSTEM_PROMPT
     assert "wastes a step" in tailoring_agent.SYSTEM_PROMPT
     assert "positions such as 1, 2, or 3" in tailoring_agent.SYSTEM_PROMPT
+    assert "read the entire answer" in tailoring_agent.SYSTEM_PROMPT
+    assert "Preserve every useful named mechanism" in tailoring_agent.SYSTEM_PROMPT
+    assert "Do not replace a named mechanism" in tailoring_agent.SYSTEM_PROMPT
+    assert "with only its outcome" in tailoring_agent.SYSTEM_PROMPT
+    assert "Treat a complete, resume-ready answer as the primary draft" in tailoring_agent.SYSTEM_PROMPT
+    assert "Keep each qualifier, number, and result attached" in tailoring_agent.SYSTEM_PROMPT
+    assert "Use them only to avoid repetition" in tailoring_agent.SYSTEM_PROMPT
+    assert "they are not evidence" in tailoring_agent.SYSTEM_PROMPT
+
+
+def test_answered_target_instruction_preserves_complete_answer_facts():
+    instruction = tailoring_agent._target_instruction({
+        "decision": tailoring_agent.bullet_review.ASK,
+        "doubt_type": "clarification",
+        "text": "Added idempotency to avoid duplicate processing.",
+        "expected_improvement": "Name the protected operation and mechanism.",
+        "answers": [
+            "Implemented reserve-before-spend idempotency for job drafts with response replay."
+        ],
+        "resolved_details": [{
+            "question": "What operation was protected?",
+            "answer": "Implemented reserve-before-spend idempotency for job drafts with response replay.",
+            "status": "answered",
+        }],
+        "sibling_context": [{
+            "bullet_id": "sibling-id",
+            "text": "Already describes response replay in the same project.",
+        }],
+    })
+
+    assert "Treat the complete answer block as approved resume evidence" in instruction
+    assert "Preserve every relevant named mechanism" in instruction
+    assert "reserve-before-spend" in instruction
+    assert "never plaintext or unwrapped keys" in instruction
+    assert "Preserve these exact named answer details" in instruction
+    assert "Start from the answer when it already reads like a resume bullet" in instruction
+    assert "do not splice its vague scaffolding" in instruction
+    assert "Same-entry sibling bullets (context only" in instruction
+    assert "Already describes response replay" in instruction
+    assert "use keep_original if no distinct improvement remains" in instruction
+    assert "only source of new facts" in instruction
+    assert "never use the omitted question, review note, or job posting" in instruction
+    assert "What operation was protected?" not in instruction
+    assert "Name the protected operation and mechanism" not in instruction
+
+
+def test_review_candidate_carries_siblings_to_the_editor_as_context():
+    task = {
+        "bullet_id": "target-id",
+        "text": "Worked on background processing.",
+        "entry": "Project",
+        "sibling_bullets": [{"bullet_id": "sibling-id", "text": "Built the API."}],
+    }
+    reviews = {
+        "target-id": {
+            "decision": tailoring_agent.bullet_review.ASK,
+            "specific_problem": "The implementation is vague.",
+            "question": "What did you change?",
+        },
+    }
+
+    candidates = tailoring_agent.review_candidates([], reviews, [task])
+
+    assert candidates[0]["targets"][0]["sibling_context"] == task["sibling_bullets"]
 
 
 def test_action_tool_ids_are_declared_as_uuids():
@@ -2991,6 +3055,9 @@ def test_merging_is_unreachable_while_every_sibling_is_owned_or_kept(monkeypatch
 
 def test_v2_rollout_prefers_override_then_owner_then_stable_percentage(monkeypatch):
     user = "owner-123"
+    monkeypatch.delenv("TAILORING_FOCUSED_REVIEW_ENABLED", raising=False)
+    monkeypatch.delenv("TAILORING_FOCUSED_REVIEW_USERS", raising=False)
+    monkeypatch.delenv("TAILORING_FOCUSED_REVIEW_PERCENT", raising=False)
     monkeypatch.delenv("TAILORING_REVIEW_V2_ENABLED", raising=False)
     monkeypatch.delenv("TAILORING_REVIEW_V2_USERS", raising=False)
     monkeypatch.delenv("TAILORING_REVIEW_V2_PERCENT", raising=False)
@@ -3010,6 +3077,47 @@ def test_v2_rollout_prefers_override_then_owner_then_stable_percentage(monkeypat
     assert tailoring_agent._configured_review_contract(user) == "v1"
     monkeypatch.setenv("TAILORING_REVIEW_V2_ENABLED", "true")
     assert tailoring_agent._configured_review_contract(user) == "v2"
+
+
+def test_focused_rollout_is_separate_and_takes_precedence_for_fresh_runs(monkeypatch):
+    user = "focused-owner"
+    monkeypatch.delenv("TAILORING_REVIEW_V2_ENABLED", raising=False)
+    monkeypatch.delenv("TAILORING_REVIEW_V2_USERS", raising=False)
+    monkeypatch.delenv("TAILORING_REVIEW_V2_PERCENT", raising=False)
+    monkeypatch.delenv("TAILORING_FOCUSED_REVIEW_ENABLED", raising=False)
+    monkeypatch.delenv("TAILORING_FOCUSED_REVIEW_USERS", raising=False)
+    monkeypatch.delenv("TAILORING_FOCUSED_REVIEW_PERCENT", raising=False)
+
+    monkeypatch.setenv("TAILORING_FOCUSED_REVIEW_USERS", user)
+    assert tailoring_agent._configured_review_contract(user) == "focused_v1"
+
+    monkeypatch.setenv("TAILORING_FOCUSED_REVIEW_USERS", "")
+    bucket = tailoring_agent._review_rollout_bucket(user)
+    monkeypatch.setenv("TAILORING_FOCUSED_REVIEW_PERCENT", str(bucket + 1))
+    assert tailoring_agent._configured_review_contract(user) == "focused_v1"
+
+    monkeypatch.setenv("TAILORING_FOCUSED_REVIEW_PERCENT", "0")
+    monkeypatch.setenv("TAILORING_REVIEW_V2_ENABLED", "1")
+    assert tailoring_agent._configured_review_contract(user) == "v2"
+    monkeypatch.setenv("TAILORING_FOCUSED_REVIEW_ENABLED", "1")
+    assert tailoring_agent._configured_review_contract(user) == "focused_v1"
+
+
+def test_focused_existing_evidence_survives_when_coordinator_rejects_every_question():
+    reviews = {"b1": {
+        "decision": "ASK", "decision_claimed": "ASK",
+        "decision_reason": "One unknown and one supported wording improvement were found.",
+        "review_contract": "focused_v1",
+        "rewrite_from_existing_evidence": "Clarify the supported database invariant.",
+        "established_facts": ["Used a partial unique index."],
+    }}
+    effective = tailoring_agent._v2_reviews_for_editor(
+        reviews, {"selected_ids": [], "selected": [], "rejected": []},
+    )
+    assert effective["b1"]["decision"] == "REWRITE"
+    assert effective["b1"]["rewrite_instruction"] == (
+        "Clarify the supported database invariant."
+    )
 
 V2_QUESTIONS = (
     {
@@ -3035,6 +3143,14 @@ V2_QUESTIONS = (
 )
 
 
+def v2_gap_scan(*asked):
+    return {
+        name: "ask" if name in asked else "settled"
+        for name in ("contribution", "implementation", "scope", "result_validation",
+                     "clarification")
+    }
+
+
 def plan_v2_questions(monkeypatch, *, selected=True):
     """Enable V2 with two immutable questions on the Kubernetes bullet and KEEP elsewhere."""
     from services import bullet_review_v2, question_coordinator_v2
@@ -3057,6 +3173,10 @@ def plan_v2_questions(monkeypatch, *, selected=True):
             "established_facts": [task["text"]],
             "strength_assessment": "The technologies and scope are explicit.",
             "rewrite_from_existing_evidence": None,
+            "gap_scan": (
+                v2_gap_scan("contribution", "implementation")
+                if asking else v2_gap_scan()
+            ),
             "question_candidates": [dict(item) for item in V2_QUESTIONS] if asking else [],
         }]
 
@@ -3139,6 +3259,94 @@ def test_v2_files_all_selected_questions_and_waits_for_every_resolution(
         "stored reviews and selection are reused on resume"
 
 
+def test_focused_contract_persists_stage_trace_and_files_selected_questions(
+        monkeypatch, fixtures, k8s_bullet, _db):
+    from services import focused_review, question_coordinator_v2
+
+    monkeypatch.setenv("TAILORING_FOCUSED_REVIEW_ENABLED", "1")
+    monkeypatch.delenv("TAILORING_REVIEW_V2_ENABLED", raising=False)
+
+    def stage_event(stage, scope, normalized):
+        return {
+            "contract": "focused_v1", "prompt_version": "test", "stage": stage,
+            "scope_id": scope, "attempt": 1, "model": "test",
+            "input": {"scope": scope}, "messages": [], "raw_response": "{}",
+            "normalized": normalized, "validation": {"valid": True},
+            "status": "completed", "elapsed_ms": 1,
+        }
+
+    def review(_job, tasks, on_chunk=None, on_stage=None, **_kwargs):
+        reviews = {}
+        for task in tasks:
+            asking = str(task["bullet_id"]) == str(k8s_bullet)
+            reviews[task["bullet_id"]] = {
+                "decision": "ASK" if asking else "KEEP",
+                "decision_claimed": "ASK" if asking else "KEEP",
+                "decision_reason": "A specific deployment fact is missing." if asking else "Clear.",
+                "established_facts": [task["text"]],
+                "strength_assessment": {}, "rewrite_from_existing_evidence": None,
+                "question_candidates": ([{
+                    "id": "q1", "focused_candidate_id": "source:q1",
+                    "finding_ids": ["clarity:f1"], "evidence_ids": [f"bullet:{k8s_bullet}"],
+                    "question": "Which Kubernetes deployment behavior did you implement?",
+                    "missing_fact": "the deployment behavior implemented",
+                    "recruiter_doubt_type": "clarification",
+                    "why_it_matters_for_this_job": "It makes the contribution concrete.",
+                    "expected_resume_change": "Name the supported deployment behavior.",
+                    "priority": "high", "requirement_reference": None,
+                }] if asking else []),
+                "review_contract": "focused_v1", "hard_rejected": [],
+            }
+        if on_stage:
+            on_stage(stage_event("clarity", "entry-test", {
+                "check": "clarity", "bullets": [],
+            }))
+        if on_chunk:
+            on_chunk(1, tasks, reviews)
+        return reviews
+
+    def coordinate(_job, candidates, trace_callback=None, **_kwargs):
+        selected = candidates[0]["id"]
+        normalized = {"selected_ids": [selected], "selected": [candidates[0]], "rejected": []}
+        if trace_callback:
+            trace_callback(stage_event("coordinator_selection", "resume", normalized))
+        return {"selected_ids": [selected], "rejected": []}
+
+    monkeypatch.setattr(focused_review, "review_bullets", review)
+    monkeypatch.setattr(question_coordinator_v2, "request_selection", coordinate)
+    script(monkeypatch)
+
+    started = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
+    assert started["status"] == "waiting_for_user"
+    with _db.cursor() as cur:
+        loaded = load_run(cur, fixtures["user_id"], started["run_id"])
+        assert loaded["review_contract"] == "focused_v1"
+        assert [item["stage"] for item in loaded["review_stage_trace"]] == [
+            "clarity", "coordinator_selection",
+        ]
+        assert all(item["tool"] != "tailoring_review_stage" for item in loaded["trace"])
+        questions = [q for q in loaded["detail_requests"] if q["bullet_id"] == k8s_bullet]
+        assert [q["question"] for q in questions] == [
+            "Which Kubernetes deployment behavior did you implement?",
+        ]
+
+    resolution = resolve_detail_request(
+        get_cursor, fixtures["user_id"], questions[0]["id"], dismiss=True,
+    )
+    assert resolution["resume"] is True
+    monkeypatch.delenv("TAILORING_FOCUSED_REVIEW_ENABLED")
+    script(monkeypatch)
+    completed = execute_run(
+        get_cursor, fixtures["user_id"], fixtures["job_id"], started["run_id"],
+        resume_from=resolution["steps_used"],
+    )
+    assert completed["status"] == "completed"
+    with _db.cursor() as cur:
+        assert load_run(cur, fixtures["user_id"], started["run_id"])[
+            "review_contract"
+        ] == "focused_v1"
+
+
 def test_v2_all_dismissed_keeps_bullet_without_editor_call(
         monkeypatch, fixtures, k8s_bullet, _db):
     plan_v2_questions(monkeypatch)
@@ -3214,6 +3422,43 @@ def test_v2_unavailable_review_fails_honestly_instead_of_becoming_keep(
         assert cur.fetchone()[0] == 0
 
 
+def test_v2_safely_rejected_question_pool_does_not_abort_other_bullets(
+        monkeypatch, fixtures, _db):
+    from services import bullet_review, bullet_review_v2
+
+    monkeypatch.setenv("TAILORING_REVIEW_V2_ENABLED", "1")
+
+    def reviewed_but_rejected(_job, tasks, on_chunk=None, **_kwargs):
+        reviews = {
+            task["bullet_id"]: {
+                **bullet_review_v2.unavailable(
+                    "all generated questions had unsupported premises",
+                    kind="question_candidates_rejected",
+                ),
+                "offered": 1,
+                "hard_rejected": [{"id": "c1", "why": "unsupported premise"}],
+            }
+            for task in tasks
+        }
+        if on_chunk:
+            on_chunk(tasks, reviews)
+        return reviews
+
+    monkeypatch.setattr(bullet_review_v2, "review_bullets", reviewed_but_rejected)
+    script(monkeypatch)
+
+    result = run_tailoring(get_cursor, fixtures["user_id"], fixtures["job_id"])
+
+    assert result["status"] == "completed"
+    with _db.cursor() as cur:
+        loaded = load_run(cur, fixtures["user_id"], result["run_id"])
+        assert loaded["error_code"] is None
+        assert all(
+            review["decision"] == bullet_review.REVIEW_UNAVAILABLE
+            for review in loaded["reviews"].values()
+        )
+
+
 def test_v2_rewrite_reaches_editor_without_question_coordinator(
         monkeypatch, fixtures, k8s_bullet, _db):
     from services import bullet_review_v2, question_coordinator_v2
@@ -3232,6 +3477,7 @@ def test_v2_rewrite_reaches_editor_without_question_coordinator(
             ),
             "established_facts": [task["text"]],
             "strength_assessment": "The deployment scope is explicit.",
+            "gap_scan": v2_gap_scan(),
             "rewrite_from_existing_evidence": (
                 "Lead with the Kubernetes deployment work and preserve three regions."
                 if rewriting else None

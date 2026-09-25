@@ -40,7 +40,8 @@ import psycopg2
 
 from db import get_cursor
 from evals.tailoring_v2_scoring import aggregate, evaluate_bullet
-from services import bullet_review_v2, question_coordinator_v2, skill_relations, tailoring_agent
+from services import (bullet_review_v2, focused_review, question_coordinator_v2,
+                      skill_relations, tailoring_agent)
 from services.openai_services import ResumeEntryExtraction, ResumeStructure
 from services.resume_evidence import save_resume_evidence
 from services.tailoring_agent import execute_run, load_run, resolve_detail_request, run_tailoring
@@ -96,10 +97,13 @@ def build_resume_case(case):
     entries = [
         ResumeEntryExtraction(
             kind=entry["kind"], organization=entry.get("organization"),
-            title=entry.get("title"), bullets=[bullet["text"] for bullet in entry["bullets"]],
+            title=entry.get("title"), location=entry.get("location"),
+            start_date=entry.get("start_date"), end_date=entry.get("end_date"),
+            bullets=[bullet["text"] for bullet in entry["bullets"]],
         )
         for entry in case["entries"]
     ]
+    stored_requirements = job.get("stored_requirements")
     with get_cursor(commit=True) as cur:
         cur.execute(
             "INSERT INTO users (username, password_hash) VALUES (%s, 'x') RETURNING id",
@@ -110,22 +114,29 @@ def build_resume_case(case):
             """
             INSERT INTO jobs (
                 user_id, raw_description, title, company_name, summary, skills, requirements
-            ) VALUES (%s, 'v2 eval', %s, %s, %s, %s::jsonb, %s::jsonb)
+            ) VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)
             RETURNING id
             """,
             (
-                user_id, job["title"], job["company"], job["summary"],
-                json.dumps(skill_names(job)), json.dumps(requirement_rows(job)),
+                user_id, job.get("raw_description") or "v2 eval",
+                job["title"], job["company"], job["summary"],
+                json.dumps(job.get("skills") or skill_names(job)),
+                json.dumps(stored_requirements if stored_requirements is not None
+                           else requirement_rows(job)),
             ),
         )
         job_id = cur.fetchone()[0]
-        save_resume_evidence(cur, user_id, ResumeStructure(entries=entries))
+        save_resume_evidence(
+            cur, user_id,
+            ResumeStructure(entries=entries, skills=case.get("skills") or []),
+        )
         cur.execute(
             """
             SELECT b.id, b.text
             FROM resume_bullets AS b
             JOIN resume_entries AS e ON e.id = b.entry_id
             WHERE b.user_id = %s
+              AND e.kind IN ('experience', 'project')
             ORDER BY e.sort_order, b.sort_order
             """,
             (user_id,),
@@ -294,8 +305,13 @@ def print_observation(observation):
         print(f"  coordinator rejected {item.get('id')}: {item.get('reason')}{suffix}")
     for record in observation["records"]:
         actual, review = record["actual"], record["actual"]["review"]
+        label = actual["action"].upper()
+        if review.get("unavailable_reason"):
+            label = "UNAVAILABLE"
+        elif observation["run"]["status"] == "failed" and label == "KEEP":
+            label = "NO WORK"
         print(
-            f"  [{actual['action'].upper():7}] {record['key']} "
+            f"  [{label:7}] {record['key']} "
             f"(review {review.get('decision_claimed') or review.get('decision') or '-'})"
         )
         print(f"           reason: {review.get('decision_reason') or '-'}")
@@ -322,21 +338,45 @@ def print_observation(observation):
     for refusal in observation["refusals"]:
         print(f"  validator refusal: {refusal[:240]}")
     print("  validation:", json.dumps(observation["validation"], sort_keys=True))
+    stage_trace = observation["run"].get("review_stage_trace") or []
+    if stage_trace:
+        print("  focused stages:")
+        for item in stage_trace:
+            counts = " ".join(f"{key}={value}" for key, value in item.get("counts", {}).items())
+            print(
+                f"    {item.get('stage')} scope={item.get('scope_id')} "
+                f"attempt={item.get('attempt')} {item.get('status')} {counts}".rstrip()
+            )
+
+
+def configure_contract(contract):
+    os.environ["TAILORING_FOCUSED_REVIEW_ENABLED"] = "1" if contract == "focused_v1" else "0"
+    os.environ["TAILORING_FOCUSED_REVIEW_USERS"] = ""
+    os.environ["TAILORING_FOCUSED_REVIEW_PERCENT"] = "0"
+    os.environ["TAILORING_REVIEW_V2_ENABLED"] = "1" if contract == "v2" else "0"
+    os.environ["TAILORING_REVIEW_V2_USERS"] = ""
+    os.environ["TAILORING_REVIEW_V2_PERCENT"] = "0"
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--only", help="substring of a complete-resume case id")
+    parser.add_argument("--cases", type=pathlib.Path, default=CASES,
+                        help="case JSON; use focused_review_development_cases.json for known examples")
     parser.add_argument("--model", help="override reviewer, coordinator, and editor model")
+    parser.add_argument("--contract", choices=("v2", "focused_v1"), default="v2",
+                        help="fresh-run reviewer contract; defaults to current V2")
     args = parser.parse_args()
+    configure_contract(args.contract)
     refuse_unless_test_database(EVAL_DSN)
     if args.model:
         bullet_review_v2.MODEL = args.model
+        focused_review.MODEL = args.model
         question_coordinator_v2.MODEL = args.model
         tailoring_agent.MODEL = args.model
 
-    data = json.loads(CASES.read_text())
+    data = json.loads(args.cases.read_text())
     cases = [
         case for case in data["resumes"]
         if not args.only or args.only in case["id"]
@@ -349,8 +389,12 @@ def main():
 
     for case in cases:
         signatures, case_failed = [], False
-        print(f"\n## {case['id']}")
+        print(f"\n## {case['id']}", flush=True)
         for attempt in range(args.repeat):
+            print(
+                f"  running attempt {attempt + 1}: review → coordinate → answer → edit...",
+                flush=True,
+            )
             observation = observe(case)
             print(f"\n attempt {attempt + 1}: {observation['run']['status']}")
             print_observation(observation)

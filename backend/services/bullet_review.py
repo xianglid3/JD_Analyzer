@@ -649,11 +649,17 @@ def build_tasks(cur, user_id, run_id, assessment, bullet_ids):
         if row is None:
             continue
         _id, text, entry_id, organization, title = row
+        sibling_rows = by_entry.get(str(entry_id), [])
         tasks.append({
             "bullet_id": bullet_id,
+            "entry_id": str(entry_id) if entry_id else None,
             "text": text,
             "entry": " — ".join(part for part in (title, organization) if part),
-            "siblings": [t for sid, t in by_entry.get(str(entry_id), []) if sid != bullet_id],
+            "siblings": [t for sid, t in sibling_rows if sid != bullet_id],
+            "sibling_bullets": [
+                {"bullet_id": sid, "text": sibling_text}
+                for sid, sibling_text in sibling_rows if sid != bullet_id
+            ],
             "answers": answers.get(bullet_id, []),
             "requirements": [
                 {"requirement": label, "match": state, "importance": importance}
@@ -751,7 +757,8 @@ RATE_LIMIT_BACKOFF = 2.0       # seconds, doubled per attempt
 
 
 def is_rate_limit(exc):
-    name = f"{type(exc).__name__}{exc}".lower().replace(" ", "").replace("-", "")
+    name = (f"{type(exc).__name__}{exc}".lower()
+            .replace(" ", "").replace("-", "").replace("_", ""))
     return any(sign in name for sign in _RATE_LIMIT_SIGNS)
 
 

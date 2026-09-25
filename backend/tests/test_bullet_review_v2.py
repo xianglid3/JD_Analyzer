@@ -28,6 +28,7 @@ from services.bullet_review_v2 import (
     prompt_for,
     referenceable,
     related_to_bullet,
+    request_payload,
     review,
     validate,
 )
@@ -60,6 +61,19 @@ CANDIDATE = {
     "requirement_reference": "r2",
 }
 
+GAP_SCAN = {
+    "contribution": "ask",
+    "implementation": "settled",
+    "scope": "settled",
+    "result_validation": "not_material",
+    "clarification": "settled",
+}
+
+GAP = {"id": "g1", "recruiter_doubt_type": "contribution",
+       "missing_fact": "the storage work personally implemented",
+       "evidence_quote": "Worked with PostgreSQL", "why_unanswered": "Worked with does not identify the change.",
+       "expected_resume_change": "Name the storage operation implemented."}
+
 GOOD = {
     "bullet": "b1",
     "decision": "ASK",
@@ -67,15 +81,77 @@ GOOD = {
     "established_facts": ["They used PostgreSQL for application data"],
     "strength_assessment": "A recruiter can tell they touched a PostgreSQL data layer.",
     "rewrite_from_existing_evidence": None,
+    "gap_scan": GAP_SCAN,
     "question_candidates": [CANDIDATE],
 }
 
 
-def test_prompt_distinguishes_a_tool_list_from_a_concrete_contribution():
+def test_prompt_has_no_ownership_word_definitions():
     prompt = prompt_for()
-    assert "A list of technologies proves exposure, not contribution" in prompt
     assert "Do not choose KEEP merely because the technologies align" in prompt
-    assert all(phrase in prompt for phrase in ('"Worked on"', '"helped with"', '"contributed to"'))
+    assert "without assigning ownership from a verb list" in prompt
+    assert "Strong ownership verbs count" not in prompt
+    assert "Read the grammatical subject as the candidate" not in prompt
+
+
+def test_prompt_requests_distinct_alternatives_without_turning_the_ceiling_into_a_target():
+    prompt = prompt_for()
+    assert "do not stop after finding the first question" in prompt
+    assert "Two to four candidates are reasonable" in prompt
+    assert "Do not create paraphrases" in prompt
+    assert "A strong or irrelevant bullet should still produce zero" in prompt
+    assert "complete `gap_scan` for all five recruiter-doubt lenses" in prompt
+    assert all(name in prompt for name in GAP_SCAN)
+    assert "database?\" is not a substitute" in prompt
+
+
+def test_alternative_prompt_requests_json_and_excludes_the_primary_question():
+    prompt = reviewer.ALTERNATIVE_PROMPT
+    assert "JSON object" in prompt
+    assert "missing facts are exclusions" in prompt
+    assert "Return an empty list" in prompt
+
+
+def test_triage_prompt_separates_the_strength_decision_from_question_generation():
+    prompt = prompt_for(triage_only=True)
+    assert "TRIAGE ONLY" in prompt
+    assert "does not write question text" in prompt
+    assert '"question_candidates": []' in prompt
+    assert "Two to four candidates are reasonable" not in prompt
+    assert "A claimed improvement is not automatically a concrete contribution" in prompt
+    assert "Improved the reliability of" in prompt
+    assert "Implemented reserve-before-spend idempotency" in prompt
+
+    triage = {**GOOD, "question_candidates": [], "uncertainties": [GAP]}
+    result = validate(triage, TASK, triage_only=True)
+    assert result["decision_claimed"] == "ASK"
+    assert result["question_candidates"] == []
+
+    with pytest.raises(ContractViolation, match="triage must not generate"):
+        validate(GOOD, TASK, triage_only=True)
+
+
+def test_single_target_contract_has_no_list_or_model_owned_target_key():
+    prompt = prompt_for(triage_only=True, single_target=True)
+    request = request_payload(("Backend", "Acme", "", ["postgresql"]), [TASK])
+
+    assert "exactly one top-level `target` object" in prompt
+    assert "without a reviews array or bullet key" in prompt
+    assert '"reviews"' not in prompt.split("OUTPUT", 1)[-1]
+    assert set(request) == {"job_description", "target"}
+    assert "bullet" not in request["target"]
+    assert request["target"]["target_bullet"] == BULLET
+
+
+def test_prompt_pins_the_human_labelled_failure_classes():
+    prompt = prompt_for(triage_only=True, single_target=True)
+    alternatives = reviewer.ALTERNATIVE_PROMPT
+
+    assert "without assigning ownership from a verb list" in prompt
+    assert "Never convert a job requirement into a bullet weakness" in prompt
+    assert "not merely useful interview preparation" in reviewer.prompt_for(single_target=True)
+    assert "would only make an interview story" in alternatives
+    assert "for algorithms, data structures, distributed systems, scalability" in alternatives
 
 
 def test_a_justified_candidate_survives():
@@ -92,8 +168,68 @@ def test_several_distinct_candidates_all_survive():
               "question": "Which application data went through PostgreSQL — all of it, or one feature's?",
               "missing_fact": "how much of the data lived there",
               "expected_resume_change": "The bullet could say what the store actually held."}
-    result = validate({**GOOD, "question_candidates": [CANDIDATE, second]}, TASK)
+    result = validate({
+        **GOOD,
+        "gap_scan": {**GAP_SCAN, "scope": "ask"},
+        "question_candidates": [CANDIDATE, second],
+    }, TASK)
     assert [c["id"] for c in result["question_candidates"]] == ["c1", "c2"]
+
+
+def test_second_pass_adds_a_distinct_candidate_with_a_server_assigned_id(monkeypatch):
+    alternative = {
+        "question": "Which application data did PostgreSQL store for this work?",
+        "missing_fact": "the data stored in PostgreSQL",
+        "recruiter_doubt_type": "scope",
+        "why_it_matters_for_this_job": "The role owns backend data boundaries.",
+        "expected_resume_change": "The bullet could name the records the database stored.",
+        "priority": "medium",
+        "requirement_reference": "r2",
+    }
+    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        content=json.dumps({"question_candidates": [alternative]})
+    ))])
+    monkeypatch.setattr("services.openai_services.complete_json", lambda *a, **k: response)
+
+    result = reviewer.expand_review(
+        ("Backend Engineer", "Acme", "", ["postgresql"]), TASK,
+        validate({**GOOD, "gap_scan": {**GAP_SCAN, "scope": "ask"}}, TASK),
+    )
+
+    assert [item["id"] for item in result["question_candidates"]] == ["c1", "c2"]
+    assert result["question_candidates"][1]["question"] == alternative["question"]
+    assert result["gap_scan"]["scope"] == "ask"
+
+
+def test_second_pass_cannot_add_an_exact_duplicate(monkeypatch):
+    duplicate = {
+        key: value for key, value in CANDIDATE.items() if key != "id"
+    }
+    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        content=json.dumps({"question_candidates": [duplicate]})
+    ))])
+    monkeypatch.setattr("services.openai_services.complete_json", lambda *a, **k: response)
+
+    result = reviewer.expand_review(
+        ("Backend Engineer", "Acme", "", ["postgresql"]), TASK, validate(GOOD, TASK),
+    )
+
+    assert [item["id"] for item in result["question_candidates"]] == ["c1"]
+    assert result["hard_rejected"][-1]["why"] == "duplicates an existing candidate"
+
+
+def test_second_pass_never_changes_a_keep_decision(monkeypatch):
+    kept = validate({
+        **GOOD,
+        "decision": "KEEP",
+        "decision_reason": "The bullet is already clear.",
+        "gap_scan": {key: "settled" for key in GAP_SCAN},
+        "question_candidates": [],
+    }, TASK)
+    monkeypatch.setattr(
+        reviewer, "request_alternatives", lambda *a, **k: pytest.fail("must not call"),
+    )
+    assert reviewer.expand_review(("Role", "Co", "", []), TASK, kept) == kept
 
 
 # ── the reference is scoped to this bullet ───────────────────────────────────
@@ -103,16 +239,29 @@ def test_only_this_bullets_own_requirements_are_referenceable():
 
 
 @pytest.mark.parametrize("reference", ["r5", "r4", "r99"])
-def test_a_reference_outside_the_bullets_context_is_rejected(reference):
-    """r5 is a resume-wide gap, r4 is claimed-but-not-demonstrated, r99 is invented. None of them
-    is a reason to ask THIS bullet anything, and a wrong reference is a concrete error rather than
-    a matter of taste — so the candidate goes, not just the label."""
+def test_a_reference_outside_the_bullets_context_is_removed(reference):
+    """Wrong ranking metadata cannot delete an otherwise grounded question."""
     result = validate(
         {**GOOD, "question_candidates": [{**CANDIDATE, "requirement_reference": reference}]},
         TASK,
     )
+    candidate = result["question_candidates"][0]
+    assert candidate["requirement_reference"] is None
+    assert candidate["removed_requirement_reference"] == reference
+    assert result["hard_rejected"] == []
+
+
+def test_an_invalid_reference_cannot_smuggle_its_requirement_into_the_question():
+    result = validate({
+        **GOOD,
+        "question_candidates": [{
+            **CANDIDATE,
+            "question": "How did Kafka change storing and managing application data?",
+            "requirement_reference": "r5",
+        }],
+    }, TASK)
     assert result["question_candidates"] == []
-    assert reference in result["hard_rejected"][0]["why"]
+    assert "unsupported referenced requirement" in result["hard_rejected"][0]["why"]
 
 
 def test_no_reference_at_all_is_a_valid_answer():
@@ -134,6 +283,7 @@ def test_a_rewrite_beside_questions_is_refused_not_repaired():
 def test_a_rewrite_alone_is_fine():
     result = validate(
         {**GOOD, "decision": "REWRITE", "question_candidates": [],
+         "gap_scan": {key: "settled" for key in GAP_SCAN},
          "rewrite_from_existing_evidence": "Lead with the schema work and cut the filler."},
         TASK,
     )
@@ -251,7 +401,11 @@ def test_one_bad_candidate_does_not_cost_the_good_ones():
                 "expected_resume_change": "The bullet could say what the store held."}
     bad = {**CANDIDATE, "id": "c3",
            "question": "Which Redis cache sat in front of all of that?"}
-    result = validate({**GOOD, "question_candidates": [CANDIDATE, good_two, bad]}, TASK)
+    result = validate({
+        **GOOD,
+        "gap_scan": {**GAP_SCAN, "scope": "ask"},
+        "question_candidates": [CANDIDATE, good_two, bad],
+    }, TASK)
     assert [c["id"] for c in result["question_candidates"]] == ["c1", "c2"]
     assert result["hard_rejected"][0]["id"] == "c3"
 
@@ -339,6 +493,28 @@ def test_decision_contract_requires_a_decision_and_reason():
         validate({**GOOD, "decision_reason": None}, TASK)
 
 
+def test_decision_contract_requires_a_complete_gap_scan():
+    with pytest.raises(ContractViolation, match="scan all five"):
+        validate({**GOOD, "gap_scan": None}, TASK)
+    with pytest.raises(ContractViolation, match="gap_scan values"):
+        validate({**GOOD, "gap_scan": {**GAP_SCAN, "scope": "maybe"}}, TASK)
+
+
+def test_candidates_must_come_from_lenses_marked_ask():
+    scoped = {**CANDIDATE, "recruiter_doubt_type": "scope"}
+    with pytest.raises(ContractViolation, match="not marked ask: scope"):
+        validate({**GOOD, "question_candidates": [CANDIDATE, scoped]}, TASK)
+
+
+def test_keep_and_rewrite_cannot_claim_an_open_gap():
+    with pytest.raises(ContractViolation, match="cannot carry ask lenses"):
+        validate({
+            **GOOD,
+            "decision": "KEEP",
+            "question_candidates": [],
+        }, TASK)
+
+
 def test_silent_baseline_can_still_be_reproduced_explicitly():
     result = validate({**GOOD, "decision": None, "decision_reason": None}, TASK,
                       require_decision=False)
@@ -367,6 +543,7 @@ def test_eval_expectations_reject_wrong_action_and_question_content():
         "rewrite": "required",
         "forbidden_question_terms": ["application data"],
         "required_question_concepts": [["schema"]],
+        "required_doubt_types": ["scope"],
     }
     problems = evaluation_problems(result, expected)
     assert any("decision KEEP" in problem for problem in problems)
@@ -374,6 +551,7 @@ def test_eval_expectations_reject_wrong_action_and_question_content():
     assert any("rewrite instruction was required" in problem for problem in problems)
     assert any("forbidden term" in problem for problem in problems)
     assert any("required concept" in problem for problem in problems)
+    assert any("required doubt type: scope" in problem for problem in problems)
 
 
 def test_eval_forbidden_terms_match_words_and_phrases_not_substrings():
@@ -396,7 +574,9 @@ def test_eval_expectations_count_validator_rejections_and_warnings():
             **GOOD,
             "question_candidates": [
                 {**CANDIDATE, "question": "What was the impact of storing application data?"},
-                {**CANDIDATE, "id": "c2", "requirement_reference": "r5"},
+                {**CANDIDATE, "id": "c2", "question":
+                 "How did Kafka change storing and managing application data?",
+                 "requirement_reference": "r5"},
             ],
         },
         TASK,
@@ -456,6 +636,33 @@ def test_one_bullet_review_reports_an_empty_model_result(monkeypatch):
     assert result["b"]["unavailable_reason"] == "the model returned no review entry"
 
 
+def test_extra_reviews_use_the_unique_target_key_not_position_or_decision(monkeypatch):
+    extra = {**GOOD, "bullet": "b2", "decision": "KEEP", "question_candidates": [],
+             "gap_scan": {key: "settled" for key in GAP_SCAN}}
+    monkeypatch.setattr(reviewer, "request_review", lambda *a, **k: [extra, GOOD])
+    result = review(("Backend", "Acme", "", []), [TASK])["b"]
+    assert result["decision_claimed"] == "ASK"
+    assert result["question_candidates"][0]["question"] == CANDIDATE["question"]
+    assert result["ignored_review_entries"] == 1
+
+
+@pytest.mark.parametrize("keys", [("b2", "b3"), ("b1", "b1")])
+def test_extra_reviews_without_a_unique_target_remain_unavailable(monkeypatch, keys):
+    monkeypatch.setattr(reviewer, "request_review", lambda *a, **k: [
+        {**GOOD, "bullet": key} for key in keys
+    ])
+    result = review(("Backend", "Acme", "", []), [TASK])["b"]
+    assert result["decision"] == REVIEW_UNAVAILABLE
+
+
+def test_extra_reviews_do_not_bypass_target_validation(monkeypatch):
+    monkeypatch.setattr(reviewer, "request_review", lambda *a, **k: [
+        {**GOOD, "decision": "KEEP"}, {**GOOD, "bullet": "b2"},
+    ])
+    with pytest.raises(ContractViolation, match="KEEP carries"):
+        review(("Backend", "Acme", "", []), [TASK])
+
+
 def test_one_bullet_review_accepts_an_unwrapped_review_object(monkeypatch):
     response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
         content=json.dumps(GOOD),
@@ -468,6 +675,30 @@ def test_one_bullet_review_accepts_an_unwrapped_review_object(monkeypatch):
     assert result["b"]["question_candidates"][0]["id"] == "c1"
 
 
+def test_one_bullet_call_sends_and_retries_the_direct_contract(monkeypatch):
+    captured = []
+    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        content=json.dumps(GOOD),
+    ))])
+
+    def complete(messages, **_kwargs):
+        captured.append(messages)
+        return response
+
+    monkeypatch.setattr("services.openai_services.complete_json", complete)
+    raw = reviewer.request_review(
+        ("Backend Engineer", "Acme", "", []), [TASK], correction="wrong shape",
+    )
+
+    assert raw == [GOOD]
+    request = json.loads(captured[0][1]["content"])
+    assert set(request) == {"job_description", "target"}
+    assert "bullet" not in request["target"]
+    correction = captured[0][-1]["content"]
+    assert "one review object directly" in correction
+    assert "Do not return a reviews array" in correction
+
+
 def test_retry_explains_an_empty_review_and_recovers(monkeypatch):
     calls = []
 
@@ -475,6 +706,7 @@ def test_retry_explains_an_empty_review_and_recovers(monkeypatch):
         calls.append(kwargs.get("correction"))
         return [] if len(calls) == 1 else [{**GOOD, "decision": "KEEP",
                                             "decision_reason": "The contribution is concrete.",
+                                            "gap_scan": {key: "settled" for key in GAP_SCAN},
                                             "question_candidates": []}]
 
     monkeypatch.setattr(reviewer, "request_review", request)
@@ -496,6 +728,84 @@ def test_two_empty_reviews_preserve_the_specific_failure_reason(monkeypatch):
 
     assert result["b"]["decision"] == REVIEW_UNAVAILABLE
     assert result["b"]["unavailable_reason"] == "the model returned no review entry"
+
+
+def test_review_worker_expands_a_single_ask_candidate(monkeypatch):
+    triage = {**GOOD, "question_candidates": [], "uncertainties": [GAP]}
+    monkeypatch.setattr(reviewer, "request_review", lambda *_a, **_k: [triage])
+    monkeypatch.setattr(reviewer, "request_alternatives", lambda *_a, **_k: [{
+        "question": "Which storage operations did you personally implement?",
+        "missing_fact": "the data stored in PostgreSQL",
+        "recruiter_doubt_type": "contribution", "uncertainty_id": "g1",
+        "why_it_matters_for_this_job": "The role owns backend data boundaries.",
+        "expected_resume_change": "The bullet could name the records the database stored.",
+        "priority": "medium",
+        "requirement_reference": "r2",
+    }])
+
+    result = reviewer.review_bullets(
+        ("Backend Engineer", "Acme", "", ["postgresql"]), [TASK], concurrency=1,
+    )
+
+    assert [item["id"] for item in result["b"]["question_candidates"]] == ["c1"]
+
+
+def test_failed_question_generation_does_not_turn_an_ask_into_keep(monkeypatch):
+    triage = {**GOOD, "question_candidates": [], "uncertainties": [GAP]}
+    monkeypatch.setattr(reviewer, "request_review", lambda *_a, **_k: [triage])
+
+    def unavailable(*_args, **_kwargs):
+        raise reviewer.ReviewUnavailable("alternative call failed")
+
+    monkeypatch.setattr(reviewer, "request_alternatives", unavailable)
+    result = reviewer.review_bullets(
+        ("Backend Engineer", "Acme", "", ["postgresql"]), [TASK], concurrency=1,
+    )
+
+    assert result["b"]["decision"] == REVIEW_UNAVAILABLE
+    assert result["b"]["unavailable_kind"] == "question_generation"
+    assert "generated no usable question" in result["b"]["unavailable_reason"]
+
+
+def test_all_safely_rejected_candidates_preserve_the_review_as_nonfatal_unavailable(monkeypatch):
+    triage = {**GOOD, "question_candidates": [], "uncertainties": [GAP]}
+    monkeypatch.setattr(reviewer, "request_review", lambda *_a, **_k: [triage])
+    monkeypatch.setattr(reviewer, "request_alternatives", lambda *_a, **_k: [{
+        **CANDIDATE,
+        "uncertainty_id": "wrong-gap",
+    }])
+
+    result = reviewer.review_bullets(
+        ("Backend Engineer", "Acme", "", []), [TASK], concurrency=1,
+    )["b"]
+
+    assert result["decision"] == REVIEW_UNAVAILABLE
+    assert result["unavailable_kind"] == "question_candidates_rejected"
+    assert result["offered"] == 1
+    assert result["hard_rejected"][0]["why"] == (
+        "question does not match an approved uncertainty"
+    )
+    assert result["review_before_unavailable"]["decision_claimed"] == "ASK"
+
+
+def test_question_skill_check_accepts_source_word_forms_and_seeded_implications():
+    task = {
+        **TASK,
+        "text": (
+            "Deployed Dockerized services on Railway with GitHub Actions and 772 automated "
+            "tests, including backend tests against PostgreSQL."
+        ),
+    }
+    candidate = {
+        **CANDIDATE,
+        "question": "What tasks did you perform during deployment and testing?",
+    }
+
+    assert reviewer.unsupported_question_skills(candidate["question"], task) == []
+    assert reviewer._hard_problem(candidate, task, set(), set()) is None
+
+    invented = "Which Redis deployment mechanism did you configure?"
+    assert reviewer.unsupported_question_skills(invented, task) == ["redis"]
 
 
 # ── the fit context is derived from the assessment, never from labels ─────────
@@ -533,3 +843,109 @@ def test_fit_context_separates_the_five_kinds():
     assert partial_ids == {"r5"}
     assert context["related_partial"][0]["inferred_from"] == ["database"]
     assert not referenceable({**TASK, **context}) & (gap_ids | partial_ids | claimed_ids)
+
+
+def test_triage_requires_a_real_source_and_a_precise_uncertainty():
+    raw = {**GOOD, 'question_candidates': [], 'uncertainties': [GAP]}
+    assert validate(raw, TASK, triage_only=True)['uncertainties'] == [GAP]
+    with pytest.raises(ContractViolation, match='precise uncertainty'):
+        validate({**raw, 'uncertainties': []}, TASK, triage_only=True)
+    with pytest.raises(ContractViolation, match='evidence_quote'):
+        validate({**raw, 'uncertainties': [{**GAP, 'evidence_quote': 'Led a team'}]},
+                 TASK, triage_only=True)
+
+
+def test_triage_accepts_one_fact_spanning_two_lenses_and_punctuation_only_quote_change():
+    target = {
+        **TASK,
+        "text": (
+            "Made multi-minute tailoring runs resilient by moving execution to a worker with "
+            "leases and checkpoints; verified recovery by killing a worker mid-run."
+        ),
+    }
+    uncertainty = {
+        **GAP,
+        "evidence_quote": (
+            "Made multi-minute tailoring runs resilient by moving execution to a worker with "
+            "leases and checkpoints."
+        ),
+    }
+    raw = {
+        **GOOD,
+        "gap_scan": {**GAP_SCAN, "implementation": "ask"},
+        "question_candidates": [],
+        "uncertainties": [uncertainty],
+    }
+
+    result = validate(raw, target, triage_only=True)
+
+    assert result["uncertainties"] == [uncertainty]
+    assert result["contract_repairs"] == []
+
+
+def test_triage_repairs_ask_as_type_only_when_the_lens_is_unambiguous():
+    raw = {
+        **GOOD,
+        "gap_scan": {key: "settled" for key in GAP_SCAN} | {"clarification": "ask"},
+        "question_candidates": [],
+        "uncertainties": [{**GAP, "recruiter_doubt_type": "ask"}],
+    }
+
+    result = validate(raw, TASK, triage_only=True)
+
+    assert result["uncertainties"][0]["recruiter_doubt_type"] == "clarification"
+    assert result["contract_repairs"] == [
+        "uncertainty g1: recruiter_doubt_type ask -> clarification"
+    ]
+
+    ambiguous = {
+        **raw,
+        "gap_scan": {**raw["gap_scan"], "contribution": "ask"},
+    }
+    with pytest.raises(ContractViolation, match="use an ask lens"):
+        validate(ambiguous, TASK, triage_only=True)
+    prompt = prompt_for(triage_only=True)
+    assert 'contribution: which work' in prompt
+    assert 'you propose the questions worth asking' not in prompt
+
+
+def test_generator_cannot_silently_escalate_a_settled_lens(monkeypatch):
+    raw = {**GOOD, 'question_candidates': [], 'uncertainties': [GAP]}
+    reviewed = validate(raw, TASK, triage_only=True)
+    monkeypatch.setattr(reviewer, 'request_alternatives', lambda *a, **k: [
+        {**CANDIDATE, 'uncertainty_id': 'g1', 'recruiter_doubt_type': 'scope'}])
+    expanded = reviewer.expand_review(('Role', 'Co', '', []), TASK, reviewed)
+    assert expanded['question_candidates'] == []
+    assert expanded['gap_scan']['scope'] == GAP_SCAN['scope']
+    assert 'approved uncertainty' in expanded['hard_rejected'][0]['why']
+
+
+def test_explicit_reconsideration_is_kept_but_empty_generation_is_unavailable(monkeypatch):
+    raw = {**GOOD, 'question_candidates': [], 'uncertainties': [GAP]}
+    monkeypatch.setattr(reviewer, 'request_review', lambda *a, **k: [raw])
+    monkeypatch.setattr(reviewer, 'request_alternatives', lambda *a, **k: {
+        'resolution': 'no_question', 'resolution_reason': 'The supplied answer identifies the storage operations.',
+        'resolved_uncertainty_ids': ['g1'], 'question_candidates': [],
+    })
+    result = reviewer.review_bullets(('Role', 'Co', '', []), [TASK], concurrency=1)['b']
+    assert result['decision_claimed'] == 'KEEP'
+    assert result['triage_before_reconsideration']['decision_claimed'] == 'ASK'
+    monkeypatch.setattr(reviewer, 'request_alternatives', lambda *a, **k: [])
+    assert reviewer.review_bullets(('Role', 'Co', '', []), [TASK], concurrency=1)['b']['decision'] == REVIEW_UNAVAILABLE
+
+
+def test_triage_ask_cannot_also_instruct_a_rewrite():
+    with pytest.raises(ContractViolation, match='ASK cannot carry'):
+        validate({**GOOD, 'question_candidates': [], 'uncertainties': [GAP],
+                  'rewrite_from_existing_evidence': 'Rewrite the contribution.'}, TASK, triage_only=True)
+
+
+def test_production_generation_uses_pool_ceiling_not_hidden_three(monkeypatch):
+    triage = {**GOOD, 'question_candidates': [], 'uncertainties': [GAP]}
+    monkeypatch.setattr(reviewer, 'request_review', lambda *a, **k: [triage])
+    def generate(*args, **kwargs):
+        assert kwargs['limit'] == reviewer.MAX_QUESTION_CANDIDATES == 20
+        return [{**CANDIDATE, 'uncertainty_id': 'g1'}]
+    monkeypatch.setattr(reviewer, 'request_alternatives', generate)
+    result = reviewer.review_bullets(('Role', 'Co', '', []), [TASK], concurrency=1)['b']
+    assert len(result['question_candidates']) == 1  # ceiling, not quota

@@ -23,6 +23,7 @@ from services.claim_check import (
     explicit_answer_contradictions,
     merge_quality_issue,
     named_skills,
+    omitted_answer_compounds,
     rewrite_quality_issue,
     rewrite_validation_findings,
     unsupported_claims,
@@ -55,7 +56,13 @@ from services.tailoring_plan import (
 )
 from services.usage import QuotaExceeded, check_quota, finalize, reserve
 from services.usage import budget as usage_budget
-from services import bullet_review, bullet_review_v2, question_coordinator_v2
+from services import (
+    bullet_review,
+    bullet_review_v2,
+    focused_review,
+    question_coordinator_v2,
+    tailoring_review_trace,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -123,9 +130,28 @@ You receive only approved tailoring candidates. Work ONE candidate at a time:
    server, all together, after you finish. A target you are given either carries an answer
    already or needs none.
 5. A target whose Decision is "rewrite" gets propose_edit using only what that bullet says.
-   After an answer comes back, propose_edit using the bullet and that answer.
+   After an answer comes back, read the entire answer, not only the clause that directly answers
+   the selected question. Preserve every useful named mechanism, system boundary, verification
+   method, technology, and quantity that the answer supports. Do not replace a named mechanism
+   with only its outcome. Treat a complete, resume-ready answer as the primary draft: reuse it or
+   lightly compress it, then add only distinct useful facts from the original bullet. Do not wrap a
+   strong answer in the vague wording it was meant to replace.
+   Preserve relationships as well as words. Keep each qualifier, number, and result attached to the
+   same operation it described in the evidence. Do not turn "some tests used X" into "all tests used
+   X", combine two listed operations into a new claim, or claim direct implementation of work the
+   answer only says the candidate worked on.
+   Same-entry sibling bullets may be supplied as context. Use them only to avoid repetition; never
+   copy or cite a sibling's facts in this one-bullet edit. If the answer merely repeats a sibling and
+   leaves no distinct improvement for the active bullet, call keep_original.
+   A reviewer's weakness, question, and expected improvement explain why evidence was requested;
+   they are not evidence. Never turn their premise into a resume claim unless the answer states it.
+   Then propose_edit using the bullet and that answer.
 6. If none is appropriate, call keep_original. That FINISHES the candidate successfully — it is
    not a failure and not something to avoid. A candidate is never finished by silence.
+7. If propose_edit returns "rewrite needs one repair before it can be shown", revise the proposal
+   to address every listed concern and call propose_edit again. Do not switch to keep_original just
+   because validation requested a repair. Use keep_original only when the evidence cannot support a
+   corrected worthwhile edit.
 
 Never work on a requirement outside the approved candidate list. Missing and uncertain requirements are
 already handled by the fit engine and are not writing tasks.
@@ -371,6 +397,29 @@ def _target_instruction(target):
     )
     if allowed:
         keep_line += f" You may also use, from the answer: {', '.join(allowed)}."
+    answer_compounds = omitted_answer_compounds(
+        target.get("text") or "", "", target.get("answers") or []
+    )
+    if answer_compounds:
+        keep_line += (
+            " Preserve these exact named answer details in the rewrite: "
+            + ", ".join(answer_compounds) + "."
+        )
+
+    sibling_texts = []
+    for sibling in target.get("sibling_context") or []:
+        text = sibling.get("text") if isinstance(sibling, dict) else sibling
+        text = strip_fence_markers(text or "").replace("\n", " ").strip()
+        if text:
+            sibling_texts.append(text)
+    sibling_block = ""
+    if sibling_texts:
+        sibling_block = (
+            "\n  Same-entry sibling bullets (context only; do not cite or copy their facts):\n  "
+            + RESUME_OPEN + "\n  - "
+            + "\n  - ".join(sibling_texts)
+            + "\n  " + RESUME_CLOSE
+        )
 
     if target.get("decision") == bullet_review.ASK:
         answered = " ".join(target.get("answers") or [])
@@ -392,24 +441,45 @@ def _target_instruction(target):
         if details:
             answer_lines = []
             for detail in details:
-                answer_lines.append(
-                    f"Question: {strip_fence_markers(detail.get('question') or '')}"
-                )
                 if detail.get("status") == "dismissed":
-                    answer_lines.append("Skipped by the candidate; do not supply this fact.")
+                    continue
                 else:
                     answer_lines.append(
-                        f"Answer: {strip_fence_markers(detail.get('answer') or '')}"
+                        f"Candidate answer: {strip_fence_markers(detail.get('answer') or '')}"
                     )
             answer_block = "\n  ".join(answer_lines)
         else:
-            answer_block = f"Question: {line('question')}\n  Answer: {strip_fence_markers(answered)}"
-        return (f"Decision: rewrite from the answers ({kind}) — {problem} They supplied:\n"
+            answer_block = f"Candidate answer: {strip_fence_markers(answered)}"
+        # Questions and review prose describe why evidence was requested, but they are not
+        # evidence. Showing them here let an editor copy "performance optimization" from a
+        # question after the candidate's answer made no such claim. The claim checker excludes
+        # question text for the same reason.
+        answer_keep_line = ""
+        if required:
+            answer_keep_line += f" These source words must remain: {', '.join(required)}."
+        if answer_compounds:
+            answer_keep_line += (
+                " Preserve these exact named answer details: "
+                + ", ".join(answer_compounds) + "."
+            )
+        return (f"Decision: rewrite from candidate-supplied evidence ({kind}). "
+                "The answer block is the only source of new facts:\n"
                 f"  {RESUME_OPEN}\n  {answer_block}\n  {RESUME_CLOSE}\n"
-                f"  propose_edit so that: "
-                f"{line('expected_improvement') or 'the bullet states what the answer says'}."
-                f" Use only the bullet and these answers; add no result the answers do not give."
-                + keep_line)
+                f"{sibling_block}\n"
+                "  Use the candidate answer as the primary draft. Use the old bullet only to "
+                "retain a distinct useful fact; never use the omitted question, review note, or "
+                "job posting as support for a new claim. Add no result the answer does not give."
+                " Start from the answer when it already reads like a resume bullet. Keep only "
+                "distinct useful facts from the old bullet; do not splice its vague scaffolding "
+                "back into the answer. Preserve which action each detail, qualifier, and number "
+                "describes. Compare the sibling context before writing: do not repeat facts a "
+                "sibling already states, and use keep_original if no distinct improvement remains."
+                " Treat the complete answer block as approved resume evidence, not merely a reply "
+                "to the displayed question. Preserve every relevant named mechanism, stored data "
+                "type, positive or negative system boundary, verification method, technology, and "
+                "quantity it supplies. Do not reduce reserve-before-spend to generic idempotency, "
+                "or a boundary such as never plaintext or unwrapped keys to generic encrypted data."
+                + answer_keep_line)
     if target.get("decision") == bullet_review.REWRITE:
         return (f"Decision: rewrite — {line('rewrite_instruction') or problem} Use only what this "
                 f"bullet says; add no result, benefit, technology or new verb. Do not ask."
@@ -771,6 +841,7 @@ def tool_propose_edit(cur, user_id, run_id, arguments, surfacing=None,
             entry_is_ongoing=entry_is_ongoing(original[1]), answers=answers,
             unsupported=invented,
             contradictions=contradictions,
+            preserve_answer_compounds=validation_mode == VALIDATION_REVIEW,
         ) if original else None
     )
     validation = validation or {"hard_blocks": [], "repair_requests": [], "review_warnings": []}
@@ -1382,11 +1453,12 @@ def replay_messages(cur, run_id):
         """
         SELECT step_number, call_id, tool_name, arguments, result, status, error_message
         FROM tool_calls
-        WHERE run_id = %s AND tool_name NOT IN (%s, %s, %s, %s)
+        WHERE run_id = %s AND tool_name NOT IN (%s, %s, %s, %s, %s)
         ORDER BY step_number, created_at
         """,
         (run_id, SUPPLIED, bullet_review.REVIEW,
-         REVIEW_CONTRACT_TOOL, QUESTION_COORDINATOR_TOOL),
+         REVIEW_CONTRACT_TOOL, QUESTION_COORDINATOR_TOOL,
+         tailoring_review_trace.TOOL_NAME),
     )
 
     messages, current_step, pending = [], None, []
@@ -1722,6 +1794,27 @@ def _configured_review_contract(user_id=None):
     existing runs remain pinned so a question answered under one contract is never edited under
     another.
     """
+    if os.environ.get("TAILORING_FOCUSED_REVIEW_ENABLED", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }:
+        return "focused_v1"
+    focused_owners = {
+        value.strip()
+        for value in os.environ.get("TAILORING_FOCUSED_REVIEW_USERS", "").split(",")
+        if value.strip()
+    }
+    if user_id is not None and str(user_id) in focused_owners:
+        return "focused_v1"
+    try:
+        focused_percentage = int(
+            os.environ.get("TAILORING_FOCUSED_REVIEW_PERCENT", "0").strip() or "0"
+        )
+    except ValueError:
+        focused_percentage = 0
+    focused_percentage = max(0, min(focused_percentage, 100))
+    if user_id is not None and _review_rollout_bucket(user_id) < focused_percentage:
+        return "focused_v1"
+
     if os.environ.get("TAILORING_REVIEW_V2_ENABLED", "").strip().lower() in {
         "1", "true", "yes", "on",
     }:
@@ -1749,7 +1842,7 @@ def _stored_review_contract(cur, run_id):
         (run_id, REVIEW_CONTRACT_CALL),
     )
     row = cur.fetchone()
-    return row[0] if row and row[0] in ("v1", "v2") else None
+    return row[0] if row and row[0] in ("v1", "v2", "focused_v1") else None
 
 
 def _record_review_contract(cur, run_id, version):
@@ -1774,14 +1867,14 @@ def _load_coordinator_selection(cur, run_id):
 
 
 def _record_coordinator_selection(cur, run_id, candidates, result, token=None):
-    """Persist ids and reasons, never a second copy of question text.
-
-    The immutable text remains in the stored bullet reviews. Rebuilding the selection validates
-    these ids against those reviews, so stale or invented ids cannot become questions on resume.
-    """
+    """Persist the immutable candidate set and the coordinator's final decisions."""
+    by_id = {item["id"]: item for item in candidates}
     stored = {
         "selected_ids": result.get("selected_ids") or [],
-        "rejected": result.get("rejected") or [],
+        "rejected": [
+            {**item, "question": (by_id.get(item.get("id")) or {}).get("question")}
+            for item in result.get("rejected") or []
+        ],
     }
     if token is not None:
         cur.execute(
@@ -1798,7 +1891,10 @@ def _record_coordinator_selection(cur, run_id, candidates, result, token=None):
         """,
         (
             run_id, QUESTION_COORDINATOR_CALL, QUESTION_COORDINATOR_TOOL,
-            json.dumps({"candidate_ids": [item["id"] for item in candidates]}),
+            json.dumps({
+                "candidate_ids": [item["id"] for item in candidates],
+                "candidates": candidates,
+            }),
             json.dumps(stored),
         ),
     )
@@ -1806,13 +1902,11 @@ def _record_coordinator_selection(cur, run_id, candidates, result, token=None):
 
 def _coordinator_bullets(tasks, reviews):
     """The coordinator boundary: validated V2 candidates plus their exact bullet context."""
-    by_id = {task["bullet_id"]: task for task in tasks}
     bullets = []
-    for bullet_id, review in (reviews or {}).items():
-        if (review or {}).get("decision_claimed") != "ASK":
-            continue
-        task = by_id.get(bullet_id)
-        if task is None:
+    for task in tasks:
+        bullet_id = task["bullet_id"]
+        review = (reviews or {}).get(bullet_id) or {}
+        if review.get("decision_claimed") != "ASK":
             continue
         bullets.append({
             "bullet_id": bullet_id,
@@ -1821,6 +1915,12 @@ def _coordinator_bullets(tasks, reviews):
             "siblings": task.get("siblings") or [],
             "answers": task.get("answers") or [],
             "question_candidates": review.get("question_candidates") or [],
+            "review_findings": {k: review.get(k) for k in (
+                "established_facts", "strength_assessment", "decision_reason", "uncertainties",
+                "focused_findings", "finding_dispositions")},
+            "fit_context": {k: task.get(k) or [] for k in (
+                "supported_explicit", "related_inferred", "claimed_not_demonstrated",
+                "related_partial", "resume_gaps")},
         })
     return bullets
 
@@ -1839,8 +1939,14 @@ def _v2_reviews_for_editor(reviews, selection):
         selected = selected_by_bullet.get(str(bullet_id), [])
         if decision == "ASK" and not selected:
             # The coordinator found no question worth the person's time. That means no work,
-            # not permission for the editor to invent a rewrite.
-            decision = bullet_review.KEEP
+            # not permission for the editor to invent a rewrite. Focused review may separately
+            # have found a rewrite already supported by existing evidence; preserve that work.
+            decision = (
+                bullet_review.REWRITE
+                if review.get("review_contract") == "focused_v1"
+                and review.get("rewrite_from_existing_evidence")
+                else bullet_review.KEEP
+            )
         levels = [item.get("priority") for item in selected if item.get("priority")]
         effective[bullet_id] = {
             "decision": decision or review.get("decision"),
@@ -1900,7 +2006,7 @@ def _review_context(plan, bullet_id):
     return [label for _rank, label in sorted(seen)]
 
 
-def _decision_targets(decision, bullet_id, text):
+def _decision_targets(decision, bullet_id, text, sibling_context=()):
     return {
         "bullet_id": bullet_id,
         "text": text,
@@ -1915,6 +2021,10 @@ def _decision_targets(decision, bullet_id, text):
         "expected_improvement": decision.get("expected_resume_improvement"),
         "improvement_level": decision.get("improvement_level"),
         "facts_to_preserve": decision.get("facts_to_preserve") or [],
+        # Context for composition, never evidence for this one-bullet proposal. The tool boundary
+        # still permits citing only ``bullet_id``; this lets the editor avoid copying the same
+        # answered inventory into two bullets without widening its authority.
+        "sibling_context": list(sibling_context or []),
     }
 
 
@@ -1963,7 +2073,12 @@ def review_candidates(plan, reviews, tasks):
             "importance": "required" if context else "preferred",
             "reason": decision.get("specific_problem") or "",
             "requirement_context": context,
-            "targets": [_decision_targets(decision, bullet_id, task.get("text") or "")],
+            "targets": [_decision_targets(
+                decision,
+                bullet_id,
+                task.get("text") or "",
+                task.get("sibling_bullets") or task.get("siblings") or [],
+            )],
         })
     return candidates
 
@@ -2211,7 +2326,7 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
             review_contract = review_contract or _configured_review_contract(user_id)
             _record_review_contract(cur, run_id, review_contract)
         review_contract = review_contract or "v1"  # old stored runs keep their original rules
-        review_enabled = bullet_review.ENABLED or review_contract == "v2"
+        review_enabled = bullet_review.ENABLED or review_contract in ("v2", "focused_v1")
         if review_enabled and not state["pool"] and not resume_from:
             found = bullets_for_review(cur, user_id)
             omitted = found["omitted"]
@@ -2222,15 +2337,29 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
         all_tasks = (
             bullet_review_v2.build_v2_tasks(
                 cur, user_id, run_id, assessment, plan, state["pool"],
-            ) if review_contract == "v2" else
+            ) if review_contract in ("v2", "focused_v1") else
             bullet_review.build_tasks(cur, user_id, run_id, assessment, state["pool"])
         ) if state["pool"] else []
         owed = set(state["missing"])
         tasks = [task for task in all_tasks if task["bullet_id"] in owed]
         reviews = dict(state["reviews"])
         stored_selection = _load_coordinator_selection(cur, run_id)
+        focused_stage_cache = (
+            tailoring_review_trace.load_completed(cur, run_id)
+            if review_contract == "focused_v1" else {}
+        )
 
     review_error = None
+
+    def store_stage(event):
+        if token:
+            renew(get_cursor, run_id, token)
+        with get_cursor(commit=True) as cur:
+            try:
+                tailoring_review_trace.record(cur, run_id, event, token=token)
+            except tailoring_review_trace.LeaseLost as exc:
+                raise LeaseLost(str(exc)) from exc
+
     if tasks:
         def store(_index, chunk, chunk_reviews):
             # Persisted as each review lands. One stored chunk is not a finished review —
@@ -2250,21 +2379,34 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
 
         # no connection held across the calls
         try:
-            review_service = bullet_review_v2 if review_contract == "v2" else bullet_review
-            review_service.review_bullets(
-                job, tasks, budget=usage_budget(user_id, "tailoring_review", run_id=run_id),
-                on_chunk=store,
-            )
+            review_service = {
+                "focused_v1": focused_review,
+                "v2": bullet_review_v2,
+            }.get(review_contract, bullet_review)
+            review_kwargs = {
+                "budget": usage_budget(user_id, "tailoring_review", run_id=run_id),
+                "on_chunk": store,
+            }
+            if review_contract == "focused_v1":
+                review_kwargs.update({
+                    "on_stage": store_stage,
+                    "stage_cache": focused_stage_cache,
+                })
+            review_service.review_bullets(job, tasks, **review_kwargs)
         except QuotaExceeded:
             review_error = "quota_exceeded"
         except Exception:
             logger.exception("bullet review failed run_id=%s", run_id)
             review_error = "model_call_failed"
 
-    if review_contract == "v2" and not review_error:
+    if review_contract in ("v2", "focused_v1") and not review_error:
         unavailable_reviews = [
             bullet_id for bullet_id, review in reviews.items()
-            if (review or {}).get("decision") == bullet_review.REVIEW_UNAVAILABLE
+            if (
+                (review or {}).get("decision") == bullet_review.REVIEW_UNAVAILABLE
+                and (review or {}).get("unavailable_kind")
+                != "question_candidates_rejected"
+            )
         ]
         if unavailable_reviews:
             # An unread bullet is not a KEEP decision. Continuing would silently turn a model
@@ -2278,7 +2420,7 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
             review_error = "review_unavailable"
 
     coordinator_result = None
-    if review_contract == "v2" and not review_error:
+    if review_contract in ("v2", "focused_v1") and not review_error:
         coordinator_bullets = _coordinator_bullets(all_tasks, reviews)
         coordinator_candidates = question_coordinator_v2.collect_candidates(coordinator_bullets)
         if coordinator_candidates:
@@ -2288,6 +2430,10 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
                         job,
                         coordinator_candidates,
                         budget=usage_budget(user_id, "tailoring_review", run_id=run_id),
+                        trace_callback=(store_stage if review_contract == "focused_v1" else None),
+                        trace_scope="resume",
+                        stage_cache=(focused_stage_cache
+                                     if review_contract == "focused_v1" else None),
                     )
                     coordinator_result = question_coordinator_v2.validate(
                         raw_selection, coordinator_candidates,
@@ -2316,7 +2462,7 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
 
     effective_reviews = (
         _v2_reviews_for_editor(reviews, coordinator_result)
-        if review_contract == "v2" and coordinator_result is not None else reviews
+        if review_contract in ("v2", "focused_v1") and coordinator_result is not None else reviews
     )
 
     with get_cursor(commit=True) as cur:
@@ -2606,7 +2752,7 @@ def execute_run(get_cursor, user_id, job_id, run_id, max_steps=DEFAULT_MAX_STEPS
                                 candidate_ids=candidate_ids,
                                 resolved=resolved,
                                 validation_mode=(
-                                    VALIDATION_REVIEW if review_contract == "v2"
+                                    VALIDATION_REVIEW if review_contract in ("v2", "focused_v1")
                                     else VALIDATION_STRICT
                                 ),
                             )
@@ -2983,7 +3129,8 @@ def load_run(cur, user_id, run_id):
     _job, assessment, requirements = load_job_context(cur, user_id, run["job_id"])
     run["review_contract"] = _stored_review_contract(cur, run_id) or "v1"
     run["validation_mode"] = (
-        VALIDATION_REVIEW if run["review_contract"] == "v2" else VALIDATION_STRICT
+        VALIDATION_REVIEW
+        if run["review_contract"] in ("v2", "focused_v1") else VALIDATION_STRICT
     )
     run["reviews"] = bullet_review.load(cur, run_id)
     # Two phases, counted separately. The review is one model call per bullet and can be most of
@@ -3168,7 +3315,7 @@ def load_run(cur, user_id, run_id):
         FROM tool_calls
         WHERE run_id = %s AND tool_name NOT IN (
             'evidence_supplied', 'bullet_review',
-            'tailoring_review_contract', 'question_coordinator'
+            'tailoring_review_contract', 'question_coordinator', 'tailoring_review_stage'
         )
         ORDER BY step_number, created_at
         """,
@@ -3178,6 +3325,7 @@ def load_run(cur, user_id, run_id):
         {"step": r[0], "tool": r[1], "arguments": r[2], "status": r[3], "error": r[4]}
         for r in cur.fetchall()
     ]
+    run["review_stage_trace"] = tailoring_review_trace.readable(cur, run_id)
 
     # From the candidate table, not from the trace. It used to be reconstructed by grouping
     # identical `propose_edit` arguments, which named the work by the requirement the model

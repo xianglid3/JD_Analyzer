@@ -109,7 +109,7 @@
           }
         ]
       },
-      "expect": "Candidates about what they designed or wrote. None may reference r4 — testing is a resume-wide gap, not this bullet's business.",
+      "expect": "Ask what work they personally performed. None may reference r4 — testing is a resume-wide gap, not this bullet's business.",
       "expected": {
         "decisions": [
           "ASK"
@@ -125,7 +125,9 @@
             "yourself",
             "designed",
             "built",
-            "wrote"
+            "wrote",
+            "tasks did you perform",
+            "tasks did you do"
           ]
         ],
         "forbidden_question_terms": [
@@ -142,7 +144,7 @@
         "Created backend functionality for managing users, messages, and channels."
       ],
       "fit": {},
-      "expect": "A result is claimed. A candidate may ask what showed it; none may ask for a metric, and none may assume one exists.",
+      "expect": "Results are claimed without the change or mechanism. Ask what they changed or what supported the claim; never assume a metric.",
       "expected": {
         "decisions": [
           "ASK"
@@ -156,6 +158,8 @@
           [
             "observ",
             "show",
+            "change",
+            "implement",
             "reliab",
             "duplicate",
             "prevent"
@@ -386,16 +390,19 @@
           }
         ]
       },
-      "expect": "The case the ceiling exists for. Several genuinely distinct gaps: which part was theirs, checkout versus payments, what changed, whether it shipped. Distinct is the test — two questions one answer would settle are one question.",
+      "expect": "Candidate-pool case: expose more than the first ownership gap without padding to the ceiling. The coordinator, not this isolated generator, makes the final selection.",
       "expected": {
         "decisions": [
           "ASK"
         ],
         "questions": {
-          "min": 1,
-          "max": 2
+          "min": 2,
+          "max": 4
         },
         "rewrite": "forbidden",
+        "required_doubt_types": [
+          "contribution"
+        ],
         "required_question_concepts": [
           [
             "personally",
@@ -407,7 +414,9 @@
         ],
         "forbidden_question_terms": [
           "testing"
-        ]
+        ],
+        "max_hard_rejections": 1,
+        "max_warned_candidates": 2
       }
     },
     {
@@ -430,14 +439,14 @@
           }
         ]
       },
-      "expect": "Two pieces of work in one bullet — a migration and a dashboard change — so two answers would put different information in the bullet. Unlike multi_gap_payments (which the model read as one gap, and it was right), the independence here is in the bullet's own text. Two questions is the correct answer; one is acceptable if it covers both; three is padding.",
+      "expect": "Candidate-pool case: expose both independently claimed workstreams. Extra options are visible here and are judged by the coordinator before reaching the user.",
       "expected": {
         "decisions": [
           "ASK"
         ],
         "questions": {
-          "min": 1,
-          "max": 2
+          "min": 2,
+          "max": 4
         },
         "rewrite": "forbidden",
         "required_question_concepts": [
@@ -448,7 +457,9 @@
           [
             "dashboard"
           ]
-        ]
+        ],
+        "max_hard_rejections": 1,
+        "max_warned_candidates": 2
       }
     },
     {

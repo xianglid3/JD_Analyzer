@@ -4,6 +4,7 @@
 """
 
 from services.claim_check import (
+    answer_detail_terms,
     abstraction_padding,
     compression_only,
     explicit_answer_contradictions,
@@ -11,6 +12,7 @@ from services.claim_check import (
     bullet_is_already_strong,
     bullet_quality_gaps,
     numeric_claims,
+    omitted_answer_compounds,
     ownership_inflation,
     recruiter_doubt,
     rewrite_quality_issue,
@@ -322,6 +324,88 @@ def test_an_answer_that_says_they_built_it_licenses_saying_so():
     assert rewrite_quality_issue(
         original, proposed, answers=["I built the order-status service in Python."],
     ) is None
+
+
+def test_concrete_answer_details_count_as_an_improvement():
+    original = "Improved background processing so long runs recover after failures."
+    answer = (
+        "Moved execution to a separate worker service with expiring leases, fencing tokens, "
+        "and per-step checkpoints."
+    )
+    proposed = (
+        "Improved background processing with a separate worker service, expiring leases, "
+        "fencing tokens, and per-step checkpoints so long runs recover after failures."
+    )
+
+    assert {"worker", "leases", "fencing", "checkpoints"} <= set(
+        answer_detail_terms(original, proposed, [answer])
+    )
+    assert improvements(original, proposed, answers=[answer])["answer_detail"] is True
+    assert rewrite_quality_issue(original, proposed, answers=[answer]) is None
+
+
+def test_an_answer_does_not_license_a_cosmetic_rewrite():
+    original = "Worked on background processing for long tailoring runs."
+    answer = "Used a worker service with leases and checkpoints."
+    proposed = "Handled background processing for long tailoring runs."
+
+    assert answer_detail_terms(original, proposed, [answer]) == []
+    issue = rewrite_quality_issue(original, proposed, answers=[answer])
+    assert issue and "only changes phrasing" in issue
+
+
+def test_answer_compound_omission_is_a_review_repair_not_a_default_truth_gate():
+    original = "Added idempotency to avoid duplicate processing and repeated API calls."
+    answer = (
+        "Implemented reserve-before-spend idempotency for job-draft creation with "
+        "stored-response replay."
+    )
+    proposed = (
+        "Added idempotency for job-draft creation with stored-response replay to avoid "
+        "duplicate processing."
+    )
+
+    assert omitted_answer_compounds(original, proposed, [answer]) == ["reserve-before-spend"]
+    assert not any(
+        item["code"] == "possible_answer_detail_omission"
+        for item in rewrite_validation_findings(original, proposed, answers=[answer])[
+            "repair_requests"
+        ]
+    )
+    review = rewrite_validation_findings(
+        original, proposed, answers=[answer], preserve_answer_compounds=True,
+    )
+    assert any(
+        item["code"] == "possible_answer_detail_omission"
+        and "reserve-before-spend" in item["message"]
+        for item in review["repair_requests"]
+    )
+
+
+def test_answer_compound_preservation_needs_no_repair():
+    original = "Added idempotency to avoid duplicate processing."
+    answer = "Implemented reserve-before-spend idempotency for job-draft creation."
+    proposed = "Implemented reserve-before-spend idempotency for job-draft creation."
+
+    findings = rewrite_validation_findings(
+        original, proposed, answers=[answer], preserve_answer_compounds=True,
+    )
+    assert not any(
+        item["code"] == "possible_answer_detail_omission"
+        for item in findings["repair_requests"]
+    )
+
+
+def test_avoiding_duplicates_is_an_existing_result_not_an_invented_one():
+    findings = rewrite_validation_findings(
+        "Added idempotency to avoid duplicate processing and repeated API calls.",
+        "Implemented idempotency for job drafts, preventing duplicate processing and API calls.",
+        answers=["Used reserve-before-spend idempotency for job-draft creation."],
+    )
+
+    assert "unclear_outcome_support" not in {
+        item["code"] for item in findings["repair_requests"]
+    }
 
 
 # ── certainty-aware validation ───────────────────────────────────────────────

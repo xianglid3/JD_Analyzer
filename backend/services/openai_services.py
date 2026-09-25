@@ -529,10 +529,20 @@ def surface_rewrite(skill, detail, bullets, budget=None):
 
 
 def complete_json(messages, model="gpt-4o-mini", timeout=30, budget=None,
-                  kind="skill_relations"):
+                  kind="skill_relations", schema=None, schema_name="response"):
     """One JSON-mode call. Shared by the smaller enrichment callers that need a model but
     not a whole extraction pipeline."""
+    response_format = {"type": "json_object"}
+    if schema is not None:
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": schema_name,
+                "strict": True,
+                "schema": schema,
+            },
+        }
     return _paid(
         budget, kind, model=model, timeout=timeout, messages=messages,
-        response_format={"type": "json_object"}, temperature=0,
+        response_format=response_format, temperature=0,
     )
