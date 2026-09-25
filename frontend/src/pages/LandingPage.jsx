@@ -41,6 +41,7 @@ function Example({ step }) {
 
 export default function LandingPage() {
   const [step, setStep] = useState(0)
+  const [videoPlaying, setVideoPlaying] = useState(false)
   return (
     <div className="landing-page">
       <a href="#main" className="landing-skip">Skip to content</a>
@@ -85,14 +86,20 @@ export default function LandingPage() {
             <p>See how JobMatcha reviews a resume, asks for missing details, and turns those answers into edits you can approve.</p>
           </div>
           <div className="landing-video-frame">
-            <iframe
-              src="https://www.youtube-nocookie.com/embed/RoPAPT4rQGw?rel=0"
-              title="JobMatcha example resume tailoring run"
-              loading="lazy"
-              referrerPolicy="strict-origin-when-cross-origin"
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-              allowFullScreen
-            />
+            {videoPlaying ? (
+              <iframe
+                src="https://www.youtube-nocookie.com/embed/RoPAPT4rQGw?autoplay=1&rel=0"
+                title="JobMatcha example resume tailoring run"
+                referrerPolicy="strict-origin-when-cross-origin"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                allowFullScreen
+              />
+            ) : (
+              <button className="landing-video-poster" type="button" onClick={() => setVideoPlaying(true)} aria-label="Play the JobMatcha tailoring demo">
+                <img src="https://img.youtube.com/vi/RoPAPT4rQGw/maxresdefault.jpg" alt="JobMatcha tailoring run showing questions generated from a resume" loading="lazy" />
+                <span className="landing-video-play" aria-hidden="true">▶</span>
+              </button>
+            )}
           </div>
         </section>
 

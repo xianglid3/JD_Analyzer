@@ -44,8 +44,12 @@
 .landing-video-heading h2 { font-weight: 400; font-size: clamp(30px, 3.5vw, 42px); letter-spacing: -0.055em; line-height: 1.15; }
 .landing-video-heading h2 span { color: var(--color-muted); }
 .landing-video-heading > p { max-width: 345px; color: var(--color-muted); font-size: 14px; line-height: 1.8; }
-.landing-video-frame { position: relative; aspect-ratio: 16 / 9; overflow: hidden; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-ink); }
+.landing-video-frame { position: relative; aspect-ratio: 16 / 9; overflow: hidden; border: 1px solid var(--color-border); border-radius: 8px; background: white; }
 .landing-video-frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+.landing-video-poster { position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; overflow: hidden; background: white; }
+.landing-video-poster img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.landing-video-play { position: absolute; left: 50%; top: 50%; display: grid; place-items: center; width: 64px; height: 64px; border-radius: 50%; transform: translate(-50%, -50%); background: var(--color-ink); color: white; font-size: 20px; padding-left: 4px; transition: transform 150ms ease; }
+.landing-video-poster:hover .landing-video-play, .landing-video-poster:focus-visible .landing-video-play { transform: translate(-50%, -50%) scale(1.06); }
 .landing-engineering { padding-block: 96px 0; }
 .landing-section-heading { display: flex; justify-content: space-between; gap: 40px; margin-top: 24px; align-items: end; }
 .landing-section-heading h2, .landing-cta h2 { font-weight: 400; font-size: clamp(30px, 3.5vw, 42px); letter-spacing: -0.055em; line-height: 1.15; }
