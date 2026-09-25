@@ -45,6 +45,15 @@ node_modules
 # Local notes — top-level markdown stays out of the repo
 /*.md
 !README.md
+docs/
+doc/
 
 # Vendored style references
 frontend/design/SKILL.md
+
+# Private real-resume eval artifacts and provider traces
+backend/evals/artifacts/
+backend/evals/real_jd.md
+backend/evals/real_resume.json
+backend/evals/real_resume_vague.json
+backend/evals/real_resume_human_labels.json
