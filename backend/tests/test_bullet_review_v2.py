@@ -909,6 +909,51 @@ def test_triage_repairs_ask_as_type_only_when_the_lens_is_unambiguous():
     assert 'you propose the questions worth asking' not in prompt
 
 
+def test_triage_restores_missing_ask_lens_from_typed_uncertainty():
+    raw = {
+        **GOOD,
+        "gap_scan": {key: "settled" for key in GAP_SCAN},
+        "question_candidates": [],
+        "uncertainties": [GAP],
+    }
+
+    result = validate(raw, TASK, triage_only=True)
+
+    assert result["gap_scan"][GAP["recruiter_doubt_type"]] == "ask"
+    assert result["contract_repairs"] == [
+        "gap_scan: restored ask lens(es) from typed uncertainties: contribution"
+    ]
+
+
+def test_triage_uses_complete_settled_scan_when_ask_has_no_uncertainty():
+    base = {
+        **GOOD,
+        "gap_scan": {key: "settled" for key in GAP_SCAN},
+        "question_candidates": [],
+    }
+
+    result = validate({**base, "uncertainties": []}, TASK, triage_only=True)
+
+    assert result["decision_claimed"] == "KEEP"
+    assert result["contract_repairs"] == [
+        "decision: ASK -> KEEP because gap_scan has no ask lens or uncertainty"
+    ]
+
+
+def test_triage_cannot_invent_an_ask_lens_from_an_invalid_uncertainty():
+    base = {
+        **GOOD,
+        "gap_scan": {key: "settled" for key in GAP_SCAN},
+        "question_candidates": [],
+    }
+
+    with pytest.raises(ContractViolation, match="ASK requires at least one ask lens"):
+        validate({
+            **base,
+            "uncertainties": [{**GAP, "recruiter_doubt_type": "not-a-lens"}],
+        }, TASK, triage_only=True)
+
+
 def test_generator_cannot_silently_escalate_a_settled_lens(monkeypatch):
     raw = {**GOOD, 'question_candidates': [], 'uncertainties': [GAP]}
     reviewed = validate(raw, TASK, triage_only=True)

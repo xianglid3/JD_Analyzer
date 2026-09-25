@@ -879,6 +879,8 @@ def validate(raw, task, require_decision=True, triage_only=False):
         if triage_only and proposed:
             raise ContractViolation("triage must not generate question candidates")
 
+    uncertainties = list(raw.get("uncertainties") or [])
+    contract_repairs = []
     gap_scan = raw.get("gap_scan")
     if require_decision:
         if not isinstance(gap_scan, dict) or set(gap_scan) != set(DOUBT_TYPES):
@@ -890,7 +892,40 @@ def validate(raw, task, require_decision=True, triage_only=False):
             raise ContractViolation("gap_scan values must be ask, settled or not_material")
         asked_lenses = {key for key, value in gap_scan.items() if value == "ask"}
         if decision == "ASK" and not asked_lenses:
-            raise ContractViolation("ASK requires at least one ask lens in gap_scan")
+            # ``gap_scan`` and ``uncertainties`` redundantly encode the same choice. Production
+            # saw two otherwise readable ASK responses exhaust their retries because the model
+            # supplied typed uncertainties but left every lens settled. Reconcile only when every
+            # uncertainty names a real lens; the later validation still checks its required fields,
+            # exact evidence quote, and uniqueness. With no usable uncertainty there is no safe
+            # decision to infer, so the response still fails.
+            uncertainty_lenses = [
+                item.get("recruiter_doubt_type")
+                for item in uncertainties if isinstance(item, dict)
+            ]
+            if (
+                triage_only
+                and uncertainties
+                and len(uncertainty_lenses) == len(uncertainties)
+                and all(lens in DOUBT_TYPES for lens in uncertainty_lenses)
+            ):
+                for lens in set(uncertainty_lenses):
+                    gap_scan[lens] = "ask"
+                asked_lenses = set(uncertainty_lenses)
+                contract_repairs.append(
+                    "gap_scan: restored ask lens(es) from typed uncertainties: "
+                    + ", ".join(sorted(asked_lenses))
+                )
+            elif triage_only and not uncertainties:
+                # The detailed scan says every lens is settled/not material and the response
+                # supplies no missing fact. In that exact shape the isolated ASK token is the
+                # inconsistent field; keep the completed review and audit the downgrade rather
+                # than charging for another identical retry or failing the whole resume.
+                decision = "KEEP"
+                contract_repairs.append(
+                    "decision: ASK -> KEEP because gap_scan has no ask lens or uncertainty"
+                )
+            else:
+                raise ContractViolation("ASK requires at least one ask lens in gap_scan")
         if decision != "ASK" and asked_lenses:
             raise ContractViolation(f"{decision} cannot carry ask lenses in gap_scan")
         proposed_types = {
@@ -903,8 +938,6 @@ def validate(raw, task, require_decision=True, triage_only=False):
                 "question candidates use lenses not marked ask: " + ", ".join(sorted(unscanned))
             )
 
-    uncertainties = list(raw.get("uncertainties") or [])
-    contract_repairs = []
     if triage_only:
         if not isinstance(uncertainties, list) or len(uncertainties) > MAX_QUESTION_CANDIDATES:
             raise ContractViolation("uncertainties must be a bounded array")
