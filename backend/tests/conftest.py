@@ -21,6 +21,15 @@ os.environ["MAX_SIGNUPS_PER_DAY"] = "0"
 # suite refusing to spend
 os.environ["LLM_DAILY_USD"] = "1.00"
 os.environ["LLM_GLOBAL_DAILY_USD"] = "10.00"
+# Generic agent tests script the production V1 reviewer. Opt-in V2/focused tests set their own
+# flags explicitly; a developer .env or imported eval module must not select a paid reviewer for
+# unrelated tests.
+os.environ["TAILORING_FOCUSED_REVIEW_ENABLED"] = "0"
+os.environ["TAILORING_FOCUSED_REVIEW_USERS"] = ""
+os.environ["TAILORING_FOCUSED_REVIEW_PERCENT"] = "0"
+os.environ["TAILORING_REVIEW_V2_ENABLED"] = "0"
+os.environ["TAILORING_REVIEW_V2_USERS"] = ""
+os.environ["TAILORING_REVIEW_V2_PERCENT"] = "0"
 
 import pathlib
 import psycopg2
@@ -127,6 +136,25 @@ def _run_tailoring_inline(monkeypatch):
     execution path, lease and fencing token included, in one process.
     """
     monkeypatch.setenv("TAILORING_INLINE", "1")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_tailoring_review_rollouts(monkeypatch):
+    """Each test opts into an experimental reviewer explicitly.
+
+    Eval helpers and selector tests intentionally modify process-wide environment variables. A
+    monkeypatch-owned baseline restores every flag after each test so one selector test cannot
+    switch all later database tests to a reviewer they did not script.
+    """
+    for key, value in {
+        "TAILORING_FOCUSED_REVIEW_ENABLED": "0",
+        "TAILORING_FOCUSED_REVIEW_USERS": "",
+        "TAILORING_FOCUSED_REVIEW_PERCENT": "0",
+        "TAILORING_REVIEW_V2_ENABLED": "0",
+        "TAILORING_REVIEW_V2_USERS": "",
+        "TAILORING_REVIEW_V2_PERCENT": "0",
+    }.items():
+        monkeypatch.setenv(key, value)
 
 
 @pytest.fixture(autouse=True)

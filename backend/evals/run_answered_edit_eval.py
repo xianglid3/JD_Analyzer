@@ -11,6 +11,7 @@ small resume step.
 
 import argparse
 import json
+import os
 import pathlib
 import sys
 
@@ -18,7 +19,16 @@ HERE = pathlib.Path(__file__).resolve().parent
 BACKEND = HERE.parent
 sys.path.insert(0, str(BACKEND))
 
-# Import this first: it pins the disposable local eval database before ``db`` is imported.
+# This CLI resumes rows from the disposable eval database. Keep that configuration local to
+# execution; importing an eval helper must never alter a production or pytest process.
+if __name__ == "__main__":
+    os.environ["SUPABASE_URL"] = os.environ.get(
+        "TAILORING_EVAL_DSN", "postgresql://postgres:postgres@localhost:5432/jd_test"
+    )
+    os.environ["APP_ENV"] = "test"
+    os.environ["SENTRY_DSN"] = ""
+    os.environ.setdefault("JWT_SECRET", "eval-jwt-secret-not-a-real-key-000000000")
+
 from evals.run_tailoring_v2_eval import answer_batch
 from evals.run_real_resume_v2_eval import load_existing_run
 from db import get_cursor

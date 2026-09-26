@@ -3,6 +3,27 @@ import pytest
 from services import tailoring_review_trace as trace
 
 
+@pytest.fixture
+def run_owner(_db):
+    """A committed owner/job pair visible to the separate connections used by start_run."""
+    with _db.cursor() as cur:
+        cur.execute(
+            "INSERT INTO users (username, password_hash) VALUES ('trace-owner', 'x') RETURNING id"
+        )
+        user_id = cur.fetchone()[0]
+        cur.execute(
+            """
+            INSERT INTO jobs (user_id, raw_description, title)
+            VALUES (%s, 'trace test posting', 'Trace Test')
+            RETURNING id
+            """,
+            (user_id,),
+        )
+        job_id = cur.fetchone()[0]
+    _db.commit()
+    return {"user_id": user_id, "job_id": job_id}
+
+
 def test_stage_call_ids_are_stable_and_attempt_scoped():
     assert trace.call_id("entry 1", "clarity") == (
         "review-stage:focused_v1:entry-1:clarity:1"
@@ -12,11 +33,20 @@ def test_stage_call_ids_are_stable_and_attempt_scoped():
         trace.call_id("entry", "editor", 1)
 
 
-def test_record_is_fenced_and_completed_stages_are_recoverable(fixtures, _db):
-    from services.tailoring_agent import start_run
+def test_record_is_fenced_and_completed_stages_are_recoverable(run_owner, _db):
     from db import get_cursor
 
-    run_id = start_run(get_cursor, fixtures["user_id"], fixtures["job_id"])["run_id"]
+    with _db.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO tailoring_runs (user_id, job_id, model, max_steps)
+            VALUES (%s, %s, 'test-model', 12)
+            RETURNING id
+            """,
+            (run_owner["user_id"], run_owner["job_id"]),
+        )
+        run_id = cur.fetchone()[0]
+    _db.commit()
     event = {
         "stage": "clarity", "scope_id": "entry-1", "attempt": 1,
         "status": "completed", "model": "gpt-4o-mini",
@@ -41,4 +71,9 @@ def test_record_is_fenced_and_completed_stages_are_recoverable(fixtures, _db):
 
     with pytest.raises(trace.LeaseLost):
         with get_cursor(commit=True) as cur:
-            trace.record(cur, run_id, {**event, "attempt": 2}, token="bad-token")
+            trace.record(
+                cur,
+                run_id,
+                {**event, "attempt": 2},
+                token="00000000-0000-0000-0000-000000000001",
+            )

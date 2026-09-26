@@ -2543,8 +2543,11 @@ def test_the_brief_names_what_this_runs_answer_allows(monkeypatch, fixtures, k8s
                 resume_from=resumed["steps_used"])
 
     brief = sent[0][1]["content"]
-    assert "These words must appear in your rewrite: kubernetes" in brief
-    assert "You may also use, from the answer: terraform" in brief
+    assert "These source words must remain: kubernetes." in brief
+    assert (
+        "Candidate answer: I wrote the Helm charts and the Terraform modules behind them."
+        in brief
+    )
 
 
 # ── one active candidate, and only its bullet ────────────────────────────────
@@ -3161,6 +3164,7 @@ def plan_v2_questions(monkeypatch, *, selected=True):
     def review(_job, tasks, **_kwargs):
         calls["review"] += 1
         assert len(tasks) == 1, "production V2 reviews one bullet per model call"
+        assert _kwargs.get("triage_only") is True
         task = tasks[0]
         asking = "Kubernetes deployments" in task["text"]
         return [{
@@ -3177,8 +3181,35 @@ def plan_v2_questions(monkeypatch, *, selected=True):
                 v2_gap_scan("contribution", "implementation")
                 if asking else v2_gap_scan()
             ),
-            "question_candidates": [dict(item) for item in V2_QUESTIONS] if asking else [],
+            "uncertainties": ([
+                {
+                    "id": "g1",
+                    "recruiter_doubt_type": "contribution",
+                    "missing_fact": "the deployments the candidate personally configured",
+                    "evidence_quote": "Kubernetes deployments",
+                    "why_unanswered": "Worked on does not identify the candidate's work.",
+                    "expected_resume_change": "Name the deployment work the candidate owned.",
+                },
+                {
+                    "id": "g2",
+                    "recruiter_doubt_type": "implementation",
+                    "missing_fact": "the failure the deployments handled",
+                    "evidence_quote": "Kubernetes deployments across three regions",
+                    "why_unanswered": "The source gives scale but no reliability mechanism.",
+                    "expected_resume_change": "Add the supported failure mode or mechanism.",
+                },
+            ] if asking else []),
+            "question_candidates": [],
         }]
+
+    def generate(_job, task, _existing, **_kwargs):
+        assert "Kubernetes deployments" in task["text"]
+        return {
+            "question_candidates": [
+                {**item, "uncertainty_id": f"g{index}"}
+                for index, item in enumerate(V2_QUESTIONS, start=1)
+            ],
+        }
 
     def coordinate(_job, candidates, **_kwargs):
         calls["coordinator"] += 1
@@ -3192,6 +3223,7 @@ def plan_v2_questions(monkeypatch, *, selected=True):
         }
 
     monkeypatch.setattr(bullet_review_v2, "request_review", review)
+    monkeypatch.setattr(bullet_review_v2, "request_alternatives", generate)
     monkeypatch.setattr(question_coordinator_v2, "request_selection", coordinate)
     return calls
 
@@ -3254,7 +3286,8 @@ def test_v2_files_all_selected_questions_and_waits_for_every_resolution(
     assert len(sent) == 1, "all answers for one bullet use one editor call"
     brief = sent[0][1]["content"]
     assert "Configured rolling updates" in brief
-    assert "Skipped by the candidate" in brief
+    assert "Skipped by the candidate" not in brief
+    assert V2_QUESTIONS[1]["question"] not in brief
     assert calls == {"review": 2, "coordinator": 1}, \
         "stored reviews and selection are reused on resume"
 
@@ -3441,7 +3474,7 @@ def test_v2_safely_rejected_question_pool_does_not_abort_other_bullets(
             for task in tasks
         }
         if on_chunk:
-            on_chunk(tasks, reviews)
+            on_chunk(1, tasks, reviews)
         return reviews
 
     monkeypatch.setattr(bullet_review_v2, "review_bullets", reviewed_but_rejected)

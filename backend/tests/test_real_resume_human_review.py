@@ -1,4 +1,6 @@
 import json
+import importlib
+import os
 from pathlib import Path
 
 import pytest
@@ -13,6 +15,22 @@ from evals.run_real_resume_v2_eval import (
 def test_real_resume_runner_accepts_a_comma_separated_job_subset():
     selected = select_jobs('palantir,aerotech')
     assert [item[1] for item in selected] == ['palantir_swe', 'aerotech_software']
+
+
+def test_importing_eval_helpers_does_not_change_runtime_configuration(monkeypatch):
+    from evals import run_real_resume_v2_eval as real_runner
+    from evals import run_tailoring_v2_eval as tailoring_runner
+
+    monkeypatch.setenv('SUPABASE_URL', 'postgresql://example.invalid/application')
+    monkeypatch.setenv('TAILORING_REVIEW_V2_ENABLED', 'sentinel')
+    monkeypatch.delenv('TAILORING_REVIEW_V2_LOG_RAW', raising=False)
+
+    importlib.reload(tailoring_runner)
+    importlib.reload(real_runner)
+
+    assert os.environ['SUPABASE_URL'] == 'postgresql://example.invalid/application'
+    assert os.environ['TAILORING_REVIEW_V2_ENABLED'] == 'sentinel'
+    assert 'TAILORING_REVIEW_V2_LOG_RAW' not in os.environ
 
 
 def test_real_resume_runner_retries_transient_job_analysis(monkeypatch):

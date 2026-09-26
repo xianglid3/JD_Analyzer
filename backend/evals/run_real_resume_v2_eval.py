@@ -29,7 +29,15 @@ BACKEND = HERE.parent
 sys.path.insert(0, str(BACKEND))
 # The production default is off. This real-input audit needs the original provider JSON when the
 # reviewer violates its one-target contract; normalized tool-call rows cannot reconstruct it.
-os.environ["TAILORING_REVIEW_V2_LOG_RAW"] = "1"
+if __name__ == "__main__":
+    eval_dsn = os.environ.get(
+        "TAILORING_EVAL_DSN", "postgresql://postgres:postgres@localhost:5432/jd_test"
+    )
+    os.environ["SUPABASE_URL"] = eval_dsn
+    os.environ["APP_ENV"] = "test"
+    os.environ["SENTRY_DSN"] = ""
+    os.environ["TAILORING_REVIEW_V2_LOG_RAW"] = "1"
+    os.environ.setdefault("JWT_SECRET", "eval-jwt-secret-not-a-real-key-000000000")
 
 from evals.run_tailoring_v2_eval import (
     EVAL_DSN,

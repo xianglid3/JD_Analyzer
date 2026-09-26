@@ -23,11 +23,24 @@ import sys
 EVAL_DSN = os.environ.get(
     "TAILORING_EVAL_DSN", "postgresql://postgres:postgres@localhost:5432/jd_test"
 )
-os.environ["SUPABASE_URL"] = EVAL_DSN
-os.environ["APP_ENV"] = "test"
-os.environ["SENTRY_DSN"] = ""
-os.environ["TAILORING_REVIEW_V2_ENABLED"] = "1"
-os.environ.setdefault("JWT_SECRET", "eval-jwt-secret-not-a-real-key-000000000")
+
+
+def configure_eval_environment():
+    """Pin destructive/paid settings only when this file is run as an eval CLI.
+
+    Other eval helpers import this module for fixture builders. Mutating rollout flags during that
+    import changes whichever application or pytest process imported it, which previously switched
+    the entire database-backed CI suite to V2 during test collection.
+    """
+    os.environ["SUPABASE_URL"] = EVAL_DSN
+    os.environ["APP_ENV"] = "test"
+    os.environ["SENTRY_DSN"] = ""
+    os.environ["TAILORING_REVIEW_V2_ENABLED"] = "1"
+    os.environ.setdefault("JWT_SECRET", "eval-jwt-secret-not-a-real-key-000000000")
+
+
+if __name__ == "__main__":
+    configure_eval_environment()
 
 BACKEND = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND))
