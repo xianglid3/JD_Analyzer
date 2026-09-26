@@ -69,6 +69,7 @@ describe('authentication screens', () => {
 
     await user.type(screen.getByLabelText(/^Username/), 'newuser')
     await user.type(screen.getByLabelText(/^Password/), 'Symbols!123')
+    await user.type(screen.getByLabelText(/^Confirm password/), 'Symbols!123')
     await user.click(screen.getByRole('button', { name: 'Create account' }))
 
     expect(await screen.findByText('Account created. You can log in now.')).toBeInTheDocument()
@@ -96,6 +97,7 @@ describe('authentication screens', () => {
 
     await user.type(screen.getByLabelText(/^Username/), 'invited')
     await user.type(screen.getByLabelText(/^Password/), 'Symbols!123')
+    await user.type(screen.getByLabelText(/^Confirm password/), 'Symbols!123')
     await user.type(screen.getByLabelText(/Invite code/), 'let-me-in')
     await user.click(screen.getByRole('button', { name: 'Create account' }))
 
@@ -103,6 +105,19 @@ describe('authentication screens', () => {
       method: 'POST',
       body: JSON.stringify({ username: 'invited', password: 'Symbols!123', invite_code: 'let-me-in' }),
     })
+  })
+
+  it('does not submit signup when the passwords do not match', async () => {
+    const user = userEvent.setup()
+    renderRoutes('/signup', <Route path="/signup" element={<SignupPage />} />)
+
+    await user.type(screen.getByLabelText(/^Username/), 'newuser')
+    await user.type(screen.getByLabelText(/^Password/), 'Symbols!123')
+    await user.type(screen.getByLabelText(/^Confirm password/), 'Different!123')
+    await user.click(screen.getByRole('button', { name: 'Create account' }))
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Passwords do not match.')
+    expect(apiFetch).not.toHaveBeenCalled()
   })
 
   it('redirects unauthenticated users away from protected content', async () => {

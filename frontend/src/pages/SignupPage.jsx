@@ -8,6 +8,8 @@ import { apiFetch } from '../lib/api'
 export default function SignupPage() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [confirmationError, setConfirmationError] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [inviteCode, setInviteCode] = useState('')
   const navigate = useNavigate()
@@ -31,6 +33,11 @@ export default function SignupPage() {
 
   function handleSubmit(event) {
     event.preventDefault()
+    if (password !== confirmPassword) {
+      setConfirmationError('Passwords do not match.')
+      return
+    }
+    setConfirmationError('')
     signupMutation.mutate(inviteRequired ? { username, password, invite_code: inviteCode } : { username, password })
   }
 
@@ -41,6 +48,7 @@ export default function SignupPage() {
       footer={<>Already have an account? <Link to="/login" className="text-ink underline underline-offset-4">Log in</Link></>}
     >
       {signupMutation.error && <InlineAlert className="mb-4">{signupMutation.error.message}</InlineAlert>}
+      {confirmationError && <InlineAlert className="mb-4">{confirmationError}</InlineAlert>}
 
       <form onSubmit={handleSubmit} className="space-y-4">
         <label className="block text-sm text-ink">
@@ -65,7 +73,10 @@ export default function SignupPage() {
               type={showPassword ? 'text' : 'password'}
               autoComplete="new-password"
               value={password}
-              onChange={(event) => setPassword(event.target.value)}
+              onChange={(event) => {
+                setPassword(event.target.value)
+                setConfirmationError('')
+              }}
               placeholder="Create a password"
               className="control px-3 py-3 pr-16 text-sm"
             />
@@ -78,6 +89,23 @@ export default function SignupPage() {
             </button>
           </span>
           <span className="mt-1 block text-xs text-muted">At least 8 characters, no spaces</span>
+        </label>
+
+        <label className="block text-sm text-ink">
+          Confirm password
+          <input
+            required
+            type={showPassword ? 'text' : 'password'}
+            autoComplete="new-password"
+            value={confirmPassword}
+            onChange={(event) => {
+              setConfirmPassword(event.target.value)
+              setConfirmationError('')
+            }}
+            placeholder="Enter your password again"
+            aria-invalid={confirmationError ? 'true' : undefined}
+            className="control mt-2 px-3 py-3 text-sm"
+          />
         </label>
 
         {inviteRequired && (
