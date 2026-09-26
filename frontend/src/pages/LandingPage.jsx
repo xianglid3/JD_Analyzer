@@ -88,7 +88,7 @@ export default function LandingPage() {
           <div className="landing-video-frame">
             {videoPlaying ? (
               <iframe
-                src="https://www.youtube-nocookie.com/embed/RoPAPT4rQGw?autoplay=1&rel=0"
+                src="https://www.youtube-nocookie.com/embed/kP2k26Xvk8E?autoplay=1&rel=0"
                 title="JobMatcha example resume tailoring run"
                 referrerPolicy="strict-origin-when-cross-origin"
                 allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
@@ -96,7 +96,7 @@ export default function LandingPage() {
               />
             ) : (
               <button className="landing-video-poster" type="button" onClick={() => setVideoPlaying(true)} aria-label="Play the JobMatcha tailoring demo">
-                <img src="https://img.youtube.com/vi/RoPAPT4rQGw/maxresdefault.jpg" alt="JobMatcha tailoring run showing questions generated from a resume" loading="lazy" />
+                <img src="https://img.youtube.com/vi/kP2k26Xvk8E/maxresdefault.jpg" alt="JobMatcha tailoring run showing questions generated from a resume" loading="lazy" />
                 <span className="landing-video-play" aria-hidden="true">▶</span>
               </button>
             )}
