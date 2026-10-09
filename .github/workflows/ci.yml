@@ -47,7 +47,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           # jsdom 30 requires Node 22.22.2+; match the verified local runtime.
           node-version: "22.22.2"
